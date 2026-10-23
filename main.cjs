@@ -70,6 +70,10 @@ let ollamaPullRunning = false;
 let tailTimer = null;
 let audioTimer = null;
 let hideTimer = null;
+let hideDeadline = 0;
+let hideRemaining = 0;
+let hideDuration = 0;
+let hidePaused = false;
 let speechController = null;
 let quitting = false;
 
@@ -176,6 +180,7 @@ function normalizeSettings() {
   settings.permissionMode = permissions.normalizePermissionMode(settings.permissionMode);
   settings.permissionCustom = permissions.normalizeCustomPermissions(settings.permissionCustom);
   if (!['agent', 'dictation'].includes(settings.mode)) settings.mode = 'agent';
+  if (!['island', 'notch'].includes(settings.overlayStyle)) settings.overlayStyle = 'island';
 }
 
 function normalizeConsoleArgs(args) {
@@ -451,6 +456,7 @@ function saveSettingsPatch(patch) {
   }
   const whisperChanged = next.whisperModel !== settings.whisperModel || next.whisperDevice !== settings.whisperDevice;
   const hotkeysChanged = next.dictationHotkey !== settings.dictationHotkey || next.agentHotkey !== settings.agentHotkey;
+  const overlayStyleChanged = next.overlayStyle !== settings.overlayStyle;
   const chatChanged = next.chatProvider !== settings.chatProvider
     || JSON.stringify(next.providers) !== JSON.stringify(settings.providers);
   if (hotkeysChanged && (turnRunning || currentTurn)) {
@@ -473,6 +479,7 @@ function saveSettingsPatch(patch) {
   }
   settings = next;
   applyAutostart();
+  if (overlayStyleChanged) overlay?.setStyle(next.overlayStyle);
   if (whisperChanged) {
     services.stopWhisper();
     logger.info('whisper server', 'Whisper will restart with the new model settings.');
@@ -749,12 +756,67 @@ function finishTurn(turn) {
   refreshTray();
 }
 
+function clearOverlayHideTimer() {
+  clearTimeout(hideTimer);
+  hideTimer = null;
+  hideDeadline = 0;
+  hideRemaining = 0;
+  hideDuration = 0;
+  hidePaused = false;
+  overlay?.setDismiss(null);
+}
+
 function scheduleOverlayHide(delay) {
   clearTimeout(hideTimer);
+  hidePaused = false;
+  hideDuration = Math.max(0, Number(delay) || 0);
+  hideRemaining = hideDuration;
+  hideDeadline = Date.now() + hideRemaining;
   hideTimer = setTimeout(() => {
+    hideTimer = null;
+    hidePaused = false;
+    hideRemaining = 0;
     if (!currentTurn) overlay?.hide();
-  }, delay);
+  }, hideRemaining);
   hideTimer.unref?.();
+  overlay?.setDismiss({
+    duration: hideDuration,
+    startedAt: Date.now(),
+    paused: false,
+    remaining: hideRemaining
+  });
+}
+
+function pauseOverlayHide() {
+  if (hidePaused || (!hideTimer && !hideRemaining)) return;
+  clearTimeout(hideTimer);
+  hideTimer = null;
+  hideRemaining = Math.max(0, hideDeadline - Date.now());
+  hidePaused = true;
+  overlay?.setDismiss({
+    duration: hideDuration || hideRemaining,
+    startedAt: Date.now(),
+    paused: true,
+    remaining: hideRemaining
+  });
+}
+
+function resumeOverlayHide() {
+  if (!hidePaused) return;
+  hidePaused = false;
+  hideDeadline = Date.now() + hideRemaining;
+  hideTimer = setTimeout(() => {
+    hideTimer = null;
+    hideRemaining = 0;
+    if (!currentTurn) overlay?.hide();
+  }, hideRemaining);
+  hideTimer.unref?.();
+  overlay?.setDismiss({
+    duration: hideDuration || hideRemaining,
+    startedAt: Date.now() - Math.max(0, (hideDuration || hideRemaining) - hideRemaining),
+    paused: false,
+    remaining: hideRemaining
+  });
 }
 
 function showTurnError(turn, message, detail = '') {
@@ -777,12 +839,13 @@ function failTurn(turn, message, detail = '') {
 
 function abortTurn(reason = 'cancelled') {
   const turn = currentTurn;
+  clearOverlayHideTimer();
   if (turn) {
     logger.info('turn', `Cancelled: ${reason}`);
     turn.controller.abort();
     if (turn.recorderId) recorderManager?.cancel(turn.recorderId, reason);
     finishTurn(turn);
-    overlay?.hideNow();
+    overlay?.hide();
   } else {
     speechController?.abort();
     speechController = null;
@@ -813,7 +876,7 @@ async function beginTurn(mode, origin = 'hotkey') {
     logger.warn('hotkey', 'Activation ignored while another turn is active.');
     return false;
   }
-  clearTimeout(hideTimer);
+  clearOverlayHideTimer();
   const turn = {
     id: nextTurnId++,
     mode,
@@ -1188,7 +1251,7 @@ async function executeTool(turn, call, providerName = settings.chatProvider) {
   try {
     const message = await prepared.run();
     executed.add(fingerprint);
-    if (turnAlive(turn)) overlay.setState({ status: 'thinking', message: 'Checking the result…', approval: null });
+    if (turnAlive(turn)) overlay.setState({ status: 'verifying', message: 'Checking the result…', approval: null });
     logger.info('tool', `${name} completed`);
     return { ok: true, message: message || `Completed ${name.replaceAll('_', ' ')}.` };
   } catch (error) {
@@ -1362,11 +1425,12 @@ async function runMicTest() {
 }
 
 function previewOverlay(status, message) {
-  if (currentTurn) throw new Error('Finish the current turn before previewing the notch.');
-  const allowed = ['idle', 'listening', 'thinking', 'answer', 'approval', 'error'];
+  if (currentTurn) throw new Error('Finish the current turn before previewing the overlay.');
+  const allowed = ['idle', 'listening', 'thinking', 'executing', 'verifying', 'answer', 'approval', 'error', 'done'];
   const next = allowed.includes(String(status).toLowerCase()) ? String(status).toLowerCase() : 'listening';
   if (next === 'idle') {
-    overlay.hideNow();
+    clearOverlayHideTimer();
+    overlay.hide();
     return true;
   }
   const approval = next === 'approval'
@@ -1375,11 +1439,12 @@ function previewOverlay(status, message) {
   overlay.show({
     status: next,
     mode: settings.mode,
-    message: message || `Notch preview · ${next}`,
+    message: message || `Overlay preview · ${next}`,
     approval,
     canCopy: next === 'answer'
   });
-  scheduleOverlayHide(next === 'approval' ? 8000 : 6000);
+  const motionScale = overlay.state().slowMotion ? 4 : 1;
+  scheduleOverlayHide((next === 'approval' ? 8000 : next === 'done' ? 3200 : 6000) * motionScale);
   return true;
 }
 
@@ -1539,6 +1604,10 @@ function registerIpc() {
   handle('logs:read', () => logger.read(LIMITS.MAX_LOG_LINES));
   handle('overlay:preview', (status, message) => previewOverlay(status, message));
   handle('overlay:test', () => previewOverlay('listening', 'Overlay test from the dashboard.'));
+  handle('overlay:gallery-options', (options = {}) => {
+    overlay?.setPreviewOptions({ slowMotion: Boolean(options?.slowMotion) });
+    return true;
+  });
   handle('voice:test', async () => {
     if (currentTurn) throw new Error('Finish the current turn before testing voice.');
     if (micTestRunning) throw new Error('Wait for the microphone test to finish before testing voice.');
@@ -1575,8 +1644,20 @@ function registerIpc() {
     if (!size || typeof size !== 'object') return;
     overlay.resize(Number(size.width) || 0, Number(size.height) || 0);
   }, ['overlay']);
+  listen('overlay:interactive', (active) => {
+    overlay?.setInteractive(Boolean(active));
+  }, ['overlay']);
+  listen('overlay:hidden', () => {
+    overlay?.acknowledgeHide();
+  }, ['overlay']);
+  listen('overlay:dismiss-pause', () => {
+    pauseOverlayHide();
+  }, ['overlay']);
+  listen('overlay:dismiss-resume', () => {
+    resumeOverlayHide();
+  }, ['overlay']);
   listen('overlay:stop', () => {
-    abortTurn('notch stop button');
+    abortTurn('overlay stop button');
   }, ['overlay']);
   listen('overlay:copy', (text) => {
     clipboard.writeText(String(text || '').slice(0, 20000));
@@ -1717,6 +1798,7 @@ async function initialize() {
     registerIpc();
     overlay = createOverlay({ log: logger });
     overlay.create();
+    overlay.setStyle(settings.overlayStyle);
     attachConsoleLogging(overlay.getWindow(), 'overlay');
     recorderManager = createRecorderManager({ getWindow: () => recorderWindow, log: logger });
     hotkeys = createHotkeys({

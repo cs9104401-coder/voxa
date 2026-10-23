@@ -10,7 +10,7 @@ Voxa is a local-first Windows voice assistant with two push-to-talk modes, a top
 
 The dashboard contains Dashboard, Insights, History, Dictation, Agent, Logs, Apps, Settings, and About pages. Change either mode shortcut from its card using the press-to-record editor. The defaults are **Ctrl+Q** for Dictation and **Alt+Q** for Agent; the editor also offers **F9** and **Ctrl+Space** presets. Ctrl+Space may conflict with the Windows input-language switch, and Alt shortcuts may still reach the focused application's menu because the native hook observes keys rather than suppressing them. A hold shorter than 250 ms is ignored; recognized audio includes a 300 ms release tail. Recordings under 500 ms or with near-zero RMS are not sent to a transcription service.
 
-The notch tracks the display containing the pointer, sits against the top of the work area, and resizes to its content. The shape keeps a fixed-size camera cutout and fits states through Listening, Thinking, Answer, Approval, and Error. It is non-focusable, hides when idle, and shows live microphone level while listening. Approval requests must be allowed or denied in the notch.
+The overlay tracks the display containing the pointer. By default it is a floating black **Island** pill about 10 px below the top of the work area: compact for listening, medium for status text, and expanded for streamed answers, approvals, errors, and done. Width, height, and radius morph with a spring, content crossfades, waveform bars follow live microphone level, and the window stays fixed-size and click-through outside the pill. Choose **Settings > Preferences > Overlay style > Notch** to return to the older attached shape. It is non-focusable, hides when idle, and approval requests must be allowed or denied in the pill.
 
 Dictation settings include a microphone picker, a live input meter, and a three-second **Mic test** that records, plays back, and transcribes a sample. Capture runs in a dedicated hidden renderer with media permission scoped to Voxa and background throttling disabled. Use **Settings > Diagnostics > Test overlay** to preview the notch.
 
@@ -111,7 +111,7 @@ Dictation and `type_text` paste through the clipboard. Voxa backs up the availab
 npm run ui-gallery
 ```
 
-The gallery uses sample turns, apps, and service statuses without requiring Ollama or Whisper. The Dashboard page exposes notch-state previews; the sidebar and user menu open every dashboard page with sample data.
+The gallery uses sample turns, apps, and service statuses without requiring Ollama or Whisper. The Dashboard page includes an overlay playground with a button per state, a full sequence (appear, listening, thinking, streamed answer, approval, done, disappear), 0.25x slow motion, loop, and an Island/Notch style switch. The sidebar and user menu open every dashboard page with sample data.
 
 ## Self-test
 

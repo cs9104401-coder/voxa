@@ -24,6 +24,7 @@ const INVOKE_CHANNELS = new Set([
   'logs:read',
   'overlay:preview',
   'overlay:test',
+  'overlay:gallery-options',
   'voice:test',
   'window:action'
 ]);
@@ -33,6 +34,10 @@ const SEND_CHANNELS = new Set([
   'overlay:resize',
   'overlay:stop',
   'overlay:copy',
+  'overlay:interactive',
+  'overlay:hidden',
+  'overlay:dismiss-pause',
+  'overlay:dismiss-resume',
   'recorder:audio',
   'recorder:error',
   'recorder:audio-level',
@@ -108,6 +113,7 @@ contextBridge.exposeInMainWorld('voiceAgent', {
   readLogs: () => invoke('logs:read'),
   previewOverlay: (status, message) => invoke('overlay:preview', status, message),
   testOverlay: () => invoke('overlay:test'),
+  setOverlayOptions: (options) => invoke('overlay:gallery-options', options),
   testVoice: () => invoke('voice:test'),
   windowAction: (action) => invoke('window:action', action),
   respondApproval: (id, allowed) => send('approval:respond', { id, allowed }),
@@ -130,6 +136,10 @@ contextBridge.exposeInMainWorld('voiceAgent', {
     resize: (width, height) => send('overlay:resize', { width, height }),
     stop: () => send('overlay:stop'),
     approve: (id, allowed) => send('approval:respond', { id, allowed }),
-    copy: (text) => send('overlay:copy', text)
+    copy: (text) => send('overlay:copy', text),
+    interactive: (active) => send('overlay:interactive', Boolean(active)),
+    hidden: () => send('overlay:hidden'),
+    pauseDismiss: () => send('overlay:dismiss-pause'),
+    resumeDismiss: () => send('overlay:dismiss-resume')
   }
 });

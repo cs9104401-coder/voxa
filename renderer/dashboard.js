@@ -36,6 +36,10 @@ let toastTimer = null;
 let monitorActive = false;
 let micTestRunning = false;
 let lastFocused = null;
+let gallerySlowMotion = false;
+let galleryLoop = false;
+let gallerySequenceToken = 0;
+let gallerySequenceRunning = false;
 
 function esc(value) {
   return String(value ?? '').replace(/[&<>"']/g, (character) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[character]));
@@ -261,14 +265,61 @@ function modeCard(mode, title, copy, hotkey, enabled) {
 function gallery() {
   if (!data.gallery) return '';
   const samples = [
-    ['listening', 'Listening', 'Dictation · release to type'],
-    ['thinking', 'Thinking', 'Preparing a response…'],
-    ['answer', 'Answer', 'A short sample answer from Voxa.'],
+    ['idle', 'Idle', ''],
+    ['listening', 'Listening', 'Listening · release to ask'],
+    ['thinking', 'Thinking', 'Thinking…'],
+    ['executing', 'Executing', 'Opening Notepad…'],
+    ['verifying', 'Verifying', 'Checking the result…'],
+    ['answer', 'Answer', 'Here is a sample answer from Voxa. The island grows to fit the card, and the height follows the text as it streams in.'],
     ['approval', 'Approval', 'Allow this sample action? Nothing will run.'],
-    ['error', 'Error', 'A sample microphone or service error.']
+    ['error', 'Error', 'A sample microphone or service error.'],
+    ['done', 'Done', 'Done.']
   ];
-  return `<div class="gallery-banner"><span><b>Gallery preview</b> · Check every notch state without starting a turn.</span></div>
-  <div class="card gallery-control"><b>Notch states</b><div class="row-side">${samples.map(([status, label, detail]) => `<button class="button" data-preview-status="${status}" data-preview-detail="${esc(detail)}">${label}</button>`).join('')}</div></div>`;
+  const style = settings.overlayStyle === 'notch' ? 'notch' : 'island';
+  return `<div class="gallery-banner"><span><b>Gallery preview</b> · Check every island state without starting a turn.</span></div>
+  <div class="card gallery-control">
+    <b>Overlay playground</b>
+    <div class="gallery-row"><span class="gallery-label">States</span>${samples.map(([status, label, detail]) => `<button class="button" data-preview-status="${status}" data-preview-detail="${esc(detail)}">${label}</button>`).join('')}</div>
+    <div class="gallery-row"><span class="gallery-label">Sequence</span><button class="button primary" data-action="play-sequence">${gallerySequenceRunning ? 'Restart sequence' : 'Play full sequence'}</button><button class="button" data-gallery-slow aria-pressed="${gallerySlowMotion}">Slow motion · 0.25x</button><button class="button" data-gallery-loop aria-pressed="${galleryLoop}">Loop</button></div>
+    <div class="gallery-row"><span class="gallery-label">Style</span><button class="button ${style === 'island' ? 'is-active' : ''}" data-gallery-style="island" aria-pressed="${style === 'island'}">Island</button><button class="button ${style === 'notch' ? 'is-active' : ''}" data-gallery-style="notch" aria-pressed="${style === 'notch'}">Notch</button></div>
+    <p class="gallery-hint">The sequence plays appear, listening, thinking, streamed answer, approval, done, and disappear. Slow motion also affects the island springs.</p>
+  </div>`;
+}
+
+function galleryDelay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function playGallerySequence() {
+  const token = ++gallerySequenceToken;
+  gallerySequenceRunning = true;
+  if (activePage === 'dashboard') refreshPage('dashboard');
+  const steps = [
+    ['listening', 'Listening · release to ask', 900],
+    ['thinking', 'Thinking…', 900],
+    ['executing', 'Opening Notepad…', 900],
+    ['answer', 'Here is a sample answer from Voxa. Words fade in as the island settles into its expanded card, and the height follows the content without a jump.', 2200],
+    ['approval', 'Allow this sample action? Nothing will run in the gallery.', 1500],
+    ['done', 'Done.', 900],
+    ['idle', '', 850]
+  ];
+  try {
+    await api.setOverlayOptions({ slowMotion: gallerySlowMotion });
+    do {
+      for (const [status, message, ms] of steps) {
+        if (token !== gallerySequenceToken) return;
+        await api.previewOverlay(status, message);
+        await galleryDelay(ms * (gallerySlowMotion ? 4 : 1));
+      }
+    } while (galleryLoop && token === gallerySequenceToken);
+  } catch (error) {
+    note(error.message || 'The gallery sequence stopped.');
+  } finally {
+    if (token === gallerySequenceToken) {
+      gallerySequenceRunning = false;
+      if (activePage === 'dashboard') refreshPage('dashboard');
+    }
+  }
 }
 
 function dashboard() {
@@ -410,6 +461,7 @@ function settingsPage() {
     <article class="card"><h2 class="card-title">Preferences</h2>
       <div class="row"><div class="row-main"><b>Start with Windows</b><small>Keep Voxa ready in the tray.</small></div>${toggle('startup', Boolean(settings.startWithWindows), 'Start with Windows', 'startWithWindows')}</div>
       <div class="row"><div class="row-main"><b>Spoken replies</b><small>Use the Windows built-in voice.</small></div>${toggle('spokenRepliesSettings', settings.spokenReplies !== false, 'Spoken replies', 'spokenReplies')}<button class="button" data-action="test-voice">Test voice</button></div>
+      <div class="row"><div class="row-main"><b>Overlay style</b><small>Island floats below the work area; Notch stays attached to the top edge.</small></div><div class="row-side"><select class="select" id="overlayStyle" aria-label="Overlay style"><option value="island" ${settings.overlayStyle !== 'notch' ? 'selected' : ''}>Island</option><option value="notch" ${settings.overlayStyle === 'notch' ? 'selected' : ''}>Notch</option></select><button class="button" data-action="save-page">Save appearance</button></div></div>
     </article>
     <article class="card"><h2 class="card-title">Diagnostics</h2><div class="row-side"><span class="badge info">Mode · ${esc(settings.mode || 'agent')}</span><span class="badge ${hotkey.mode === 'uiohook' ? 'good' : 'bad'}">Hotkey · ${esc(hotkey.mode || 'Unknown')}</span>${healthChip('settingsHealthOllama', serviceStatus(health.ollama, 'Ollama'))}${healthChip('settingsHealthWhisper', serviceStatus(health.whisper, 'Whisper'))}</div><p class="card-note">${esc(hotkey.error || 'Global shortcuts are active.')}</p><div class="row-side" style="margin:12px 0"><button class="button" data-action="test-overlay">Test overlay</button><button class="button" data-action="test-voice">Test voice</button><button class="button" data-page-link="logs">Open logs</button></div></article>
   </div>`;
@@ -538,6 +590,13 @@ function nav(page, force = false) {
     } catch {}
   }
   if (previous === page && !force) return;
+  if (previous === 'dashboard' && page !== 'dashboard' && data.gallery) {
+    gallerySequenceToken += 1;
+    gallerySequenceRunning = false;
+    gallerySlowMotion = false;
+    void api.setOverlayOptions({ slowMotion: false }).catch(() => {});
+    void api.previewOverlay('idle').catch(() => {});
+  }
   if (previous === 'dictation') stopMicMonitor();
   if (page === 'dictation') {
     void refreshMicrophones();
@@ -577,6 +636,7 @@ function collectPagePatch() {
   } else if (activePage === 'settings') {
     patch.displayName = $('#displayName')?.value ?? settings.displayName;
     patch.communityUrl = $('#communityUrl')?.value ?? settings.communityUrl;
+    patch.overlayStyle = $('#overlayStyle')?.value ?? settings.overlayStyle;
   }
   return patch;
 }
@@ -784,6 +844,32 @@ function wire() {
       }
     };
   });
+  $$('[data-gallery-slow]').forEach((button) => {
+    button.onclick = () => {
+      gallerySlowMotion = !gallerySlowMotion;
+      button.setAttribute('aria-pressed', String(gallerySlowMotion));
+      void api.setOverlayOptions({ slowMotion: gallerySlowMotion }).catch((error) => note(error.message));
+    };
+  });
+  $$('[data-gallery-loop]').forEach((button) => {
+    button.onclick = () => {
+      galleryLoop = !galleryLoop;
+      button.setAttribute('aria-pressed', String(galleryLoop));
+    };
+  });
+  $$('[data-gallery-style]').forEach((button) => {
+    button.onclick = async () => {
+      try {
+        const saved = await api.saveSettings({ overlayStyle: button.dataset.galleryStyle });
+        settings = { ...settings, ...saved };
+        data.settings = settings;
+        note(`Overlay style · ${button.dataset.galleryStyle === 'notch' ? 'Notch' : 'Island'}`);
+        refreshPage('dashboard');
+      } catch (error) {
+        note(error.message || 'Could not change the overlay style.');
+      }
+    };
+  });
 
   const talk = $('#talkNow');
   if (talk) {
@@ -979,6 +1065,10 @@ async function handleAction(action, button) {
       await api.previewOverlay('listening', 'Overlay test from settings. Nothing is recording.');
       return;
     }
+    if (action === 'play-sequence') {
+      await playGallerySequence();
+      return;
+    }
     if (action === 'test-voice') {
       button.disabled = true;
       const result = await api.testVoice();
@@ -1121,6 +1211,10 @@ window.addEventListener('hashchange', () => {
 });
 window.addEventListener('beforeunload', () => {
   stopMicMonitor();
+  if (data.gallery) {
+    gallerySequenceToken += 1;
+    void api.setOverlayOptions({ slowMotion: false }).catch(() => {});
+  }
 });
 document.addEventListener('visibilitychange', () => {
   if (document.hidden) stopMicMonitor();

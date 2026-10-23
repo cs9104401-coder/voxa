@@ -6,32 +6,47 @@
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <meta name="color-scheme" content="dark">
   <link rel="stylesheet" href="style.css">
-  <title>Voxa notch</title>
+  <title>Voxa island</title>
 </head>
 <body class="notch-body">
-  <main id="notch" class="notch" data-state="idle" data-visible="false" data-mode="agent">
-    <header class="notch-head">
-      <div class="brand-mini">
-        <span class="mini-mark" aria-hidden="true">
-          <svg viewBox="0 0 24 24"><path d="M3 13h4l2-6 4 11 2-5h6"/></svg>
-        </span>
-        <div id="dots" class="dots" aria-hidden="true"><i></i><i></i><i></i></div>
-        <span id="levelMeter" class="level-meter" aria-label="Microphone level"><i></i><i></i><i></i><i></i><i></i></span>
-        <span id="notchState">Idle</span>
+  <div id="overlayStage" class="overlay-stage" data-style="island">
+    <main id="notch" class="pill" data-state="idle" data-visible="false" data-mode="agent" data-style="island" data-size="compact">
+      <div class="pill-glow" aria-hidden="true"></div>
+      <div class="pill-surface" aria-hidden="true"></div>
+      <div class="pill-clip">
+        <div class="pill-content">
+          <header class="pill-head">
+            <span id="statusIcon" class="status-icon" aria-hidden="true">
+              <svg class="glyph glyph-mark" viewBox="0 0 24 24"><path d="M3 13h4l2-6 4 11 2-5h6"/></svg>
+              <svg class="glyph glyph-alert" viewBox="0 0 24 24"><path d="M12 3.8 2.9 20.2h18.2z"/><path d="M12 9v5.2m0 2.9v.1"/></svg>
+              <svg class="glyph glyph-check" viewBox="0 0 24 24"><path d="m5 12.6 4.5 4.5L19 7.4"/></svg>
+              <span id="dots" class="dots"><i></i><i></i><i></i></span>
+            </span>
+            <div class="head-center">
+              <span id="levelMeter" class="level-meter" aria-label="Microphone level"><i></i><i></i><i></i><i></i><i></i></span>
+              <span id="notchState" class="state-label">Idle</span>
+            </div>
+            <button id="stopButton" class="stop-button" type="button" aria-label="Stop recording or close">
+              <span class="stop-glyph" aria-hidden="true"></span>
+            </button>
+          </header>
+          <div class="pill-body">
+            <section id="notchCard" class="pill-card" aria-live="polite">
+              <div id="cardText" class="card-text"></div>
+              <div class="card-actions">
+                <div id="approvalActions" class="approval-actions" hidden>
+                  <button id="denyButton" class="notch-button secondary" type="button">Deny <kbd>Esc</kbd></button>
+                  <button id="allowButton" class="notch-button primary" type="button">Allow <kbd>Enter</kbd></button>
+                </div>
+                <button id="copyButton" class="copy-button" type="button" hidden>Copy</button>
+              </div>
+            </section>
+          </div>
+        </div>
       </div>
-      <button id="stopButton" class="stop-button" type="button" aria-label="Stop recording or close">
-        <i aria-hidden="true"></i>
-      </button>
-    </header>
-    <section id="notchCard" class="notch-card" aria-live="polite">
-      <div id="cardText" class="card-text"></div>
-      <div id="approvalActions" class="approval-actions" hidden>
-        <button id="denyButton" class="notch-button secondary" type="button">Deny</button>
-        <button id="allowButton" class="notch-button primary" type="button">Allow</button>
-      </div>
-      <button id="copyButton" class="copy-button" type="button" hidden>Copy</button>
-    </section>
-  </main>
+      <div id="progressLine" class="progress-line" aria-hidden="true"><i></i></div>
+    </main>
+  </div>
   <script src="overlay.js"></script>
 </body>
 </html>
