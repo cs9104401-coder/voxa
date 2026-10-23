@@ -30,7 +30,11 @@ const INVOKE_CHANNELS = new Set([
   'overlay:test',
   'overlay:gallery-options',
   'voice:test',
-  'window:action'
+  'window:action',
+  'updater:get-status',
+  'updater:check',
+  'updater:download',
+  'updater:install'
 ]);
 
 const SEND_CHANNELS = new Set([
@@ -71,7 +75,8 @@ const EVENT_CHANNELS = new Set([
   'recorder:start',
   'recorder:stop',
   'recorder:cancel',
-  'recorder:request'
+  'recorder:request',
+  'updater:status'
 ]);
 
 function invoke(channel, ...args) {
@@ -149,5 +154,15 @@ contextBridge.exposeInMainWorld('voiceAgent', {
     hidden: () => send('overlay:hidden'),
     pauseDismiss: () => send('overlay:dismiss-pause'),
     resumeDismiss: () => send('overlay:dismiss-resume')
+  }
+});
+
+contextBridge.exposeInMainWorld('voxa', {
+  updater: {
+    getStatus: () => invoke('updater:get-status'),
+    check: () => invoke('updater:check'),
+    download: () => invoke('updater:download'),
+    install: () => invoke('updater:install'),
+    onStatus: (callback) => on('updater:status', callback)
   }
 });

@@ -1,6 +1,7 @@
 'use strict';
 
 const api = window.voiceAgent;
+const updaterApi = window.voxa?.updater;
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];
 const WHISPER_MODELS = [
@@ -41,6 +42,7 @@ const SENSITIVE_PERMISSION_LABELS = [
 
 let data = { settings: {} };
 let settings = {};
+let updaterStatus = { state: 'idle' };
 let activePage = 'dashboard';
 let historyQuery = '';
 let logQuery = '';
@@ -444,6 +446,58 @@ function updateOllamaProgress(progress = {}) {
 
 function toggle(id, checked, label, setting = '', tool = '', permission = '') {
   return `<label class="toggle" aria-label="${esc(label)}"><input id="${esc(id)}" type="checkbox" ${checked ? 'checked' : ''} data-setting="${esc(setting)}" data-tool="${esc(tool)}"${permission ? ` data-permission="${esc(permission)}"` : ''}><span></span></label>`;
+}
+
+function updaterStatusText(status) {
+  switch (status?.state) {
+    case 'disabled-dev': return 'Updates are available in installed builds.';
+    case 'checking': return 'Checking for updates…';
+    case 'available': return status.version ? `Version ${status.version} is available.` : 'An update is available.';
+    case 'not-available': return 'Voxa is up to date.';
+    case 'downloading': return status.percent == null ? 'Downloading update…' : `Downloading update… ${status.percent}%`;
+    case 'downloaded': return status.version ? `Version ${status.version} is ready. It will install when Voxa quits.` : 'The update is ready. It will install when Voxa quits.';
+    case 'error': return 'Could not check for updates. Voxa will try again later.';
+    default: return 'Not checked yet.';
+  }
+}
+
+function updateUpdaterUi(status = updaterStatus) {
+  updaterStatus = status || updaterStatus;
+  const state = updaterStatus.state || 'idle';
+  const version = $('#updateCurrentVersion');
+  const currentVersion = updaterStatus.currentVersion || data.appVersion || '';
+  if (version) version.textContent = currentVersion ? `Version ${currentVersion}` : 'Development build';
+  const text = $('#updateStatusText');
+  if (text) text.textContent = updaterStatus.message || updaterStatusText(updaterStatus);
+  const check = $('#updateCheck');
+  if (check) check.disabled = state === 'disabled-dev' || state === 'checking' || state === 'downloading';
+  const download = $('#updateDownload');
+  if (download) {
+    download.hidden = state !== 'available';
+    download.disabled = false;
+  }
+  const progress = $('#updateProgress');
+  if (progress) progress.hidden = state !== 'downloading';
+  const rawPercent = updaterStatus.percent == null ? NaN : Number(updaterStatus.percent);
+  const percent = Number.isFinite(rawPercent) ? Math.max(0, Math.min(100, Math.round(rawPercent))) : null;
+  const bar = $('#updateProgressBar');
+  if (bar) {
+    bar.classList.toggle('indeterminate', percent == null);
+    bar.style.width = percent == null ? '' : `${percent}%`;
+  }
+  const progressText = $('#updateProgressText');
+  if (progressText) progressText.textContent = percent == null ? 'Downloading…' : `${percent}%`;
+  const install = $('#updateInstall');
+  if (install) {
+    install.hidden = state !== 'downloaded';
+    install.disabled = false;
+  }
+  const notes = $('#updateReleaseNotes');
+  if (notes) {
+    const releaseNotes = String(updaterStatus.releaseNotes || '');
+    notes.textContent = releaseNotes;
+    notes.hidden = !releaseNotes;
+  }
 }
 
 function keycap(key) {
@@ -1101,6 +1155,12 @@ function settingsPage() {
       <div class="row"><div class="row-main"><b>Spoken replies</b><small>Use the Windows built-in voice.</small></div>${toggle('spokenRepliesSettings', settings.spokenReplies !== false, 'Spoken replies', 'spokenReplies')}<button class="button" data-action="test-voice">Test voice</button></div>
       <div class="row"><div class="row-main"><b>Overlay style</b><small>Island floats below the work area; Notch stays attached to the top edge.</small></div><div class="row-side"><select class="select" id="overlayStyle" aria-label="Overlay style"><option value="island" ${settings.overlayStyle !== 'notch' ? 'selected' : ''}>Island</option><option value="notch" ${settings.overlayStyle === 'notch' ? 'selected' : ''}>Notch</option></select><button class="button" data-action="save-page">Save appearance</button></div></div>
     </article>
+    <article class="card"><h2 class="card-title">Updates</h2>
+      <div class="row"><div class="row-main"><b id="updateCurrentVersion">Current version</b><small id="updateStatusText">Not checked yet.</small></div><div class="row-side"><button class="button" id="updateCheck" data-action="update-check">Check for updates</button><button class="button primary" id="updateDownload" data-action="update-download" hidden>Download update</button><button class="button primary" id="updateInstall" data-action="update-install" hidden>Restart and install</button></div></div>
+      <div id="updateProgress" hidden><div class="progress-track"><i id="updateProgressBar"></i></div><p class="card-note" id="updateProgressText"></p></div>
+      <p class="card-note" id="updateReleaseNotes" style="white-space:pre-wrap" hidden></p>
+      <div class="row"><div class="row-main"><b>Automatically check for updates</b><small>Check GitHub Releases after launch and every six hours.</small></div>${toggle('autoCheckUpdates', settings.autoCheckUpdates !== false, 'Automatically check for updates', 'autoCheckUpdates')}</div>
+    </article>
     <article class="card"><h2 class="card-title">Diagnostics</h2><div class="row-side"><span class="badge info">Mode · ${esc(settings.mode || 'agent')}</span><span class="badge ${hotkey.mode === 'uiohook' ? 'good' : 'bad'}">Hotkey · ${esc(hotkey.mode || 'Unknown')}</span>${healthChip('settingsHealthOllama', serviceStatus(health.ollama, 'Ollama'))}${healthChip('settingsHealthWhisper', serviceStatus(health.whisper, 'Whisper'))}</div><p class="card-note">${esc(hotkey.error || 'Global shortcuts are active.')}</p><div class="row-side" style="margin:12px 0"><button class="button" data-action="test-overlay">Test overlay</button><button class="button" data-action="test-voice">Test voice</button><button class="button" data-page-link="logs">Open logs</button></div></article>
   </div>`;
 }
@@ -1142,6 +1202,7 @@ function renderAll() {
   }
   wire();
   updateShell();
+  updateUpdaterUi();
 }
 
 function refreshPage(name) {
@@ -1151,6 +1212,7 @@ function refreshPage(name) {
   page.innerHTML = render();
   wire();
   updateShell();
+  updateUpdaterUi();
 }
 
 function updateShell() {
@@ -1752,6 +1814,27 @@ async function handleAction(action, button) {
   try {
     if (action === 'save-page') return await savePage();
     if (action === 'save-profile') return await saveProfile();
+    if (action === 'update-check') {
+      if (!updaterApi) return note('Updates are unavailable.');
+      button.disabled = true;
+      updaterStatus = await updaterApi.check();
+      updateUpdaterUi();
+      return;
+    }
+    if (action === 'update-download') {
+      if (!updaterApi) return note('Updates are unavailable.');
+      button.disabled = true;
+      updaterStatus = await updaterApi.download();
+      updateUpdaterUi();
+      return;
+    }
+    if (action === 'update-install') {
+      if (!updaterApi) return note('Updates are unavailable.');
+      button.disabled = true;
+      updaterStatus = await updaterApi.install();
+      updateUpdaterUi();
+      return;
+    }
     if (action === 'reset-permissions') {
       if (!window.confirm('Reset saved permissions and return to Ask Every Time?')) return;
       const saved = await api.saveSettings({
@@ -1936,6 +2019,13 @@ async function runMicTest() {
 async function load() {
   try {
     data = await api.getState();
+    if (updaterApi) {
+      try {
+        updaterStatus = await updaterApi.getStatus();
+      } catch (error) {
+        console.error('updater status failed', error);
+      }
+    }
     if (data.gallery) {
       data.turns = [
         { time: new Date().toISOString(), said: 'Summarize my meeting notes', did: 'A concise summary is ready.' },
@@ -2035,6 +2125,11 @@ api.on('health:updated', (health) => {
 });
 api.on('ollama:pull-progress', (progress) => {
   updateOllamaProgress(progress || {});
+});
+updaterApi?.onStatus((status) => {
+  if (!status) return;
+  updaterStatus = status;
+  updateUpdaterUi();
 });
 
 window.addEventListener('hashchange', () => {

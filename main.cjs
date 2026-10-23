@@ -13,6 +13,7 @@ const { runAgentLoop } = require('./lib/agent-loop.cjs');
 const permissions = require('./lib/permissions.cjs');
 const { parseToolArguments } = require('./lib/tool-schema.cjs');
 const store = require('./lib/store.cjs');
+const updater = require('./lib/updater.cjs');
 const apps = require('./lib/apps.cjs');
 const desktop = require('./lib/desktop.cjs');
 const services = require('./lib/services.cjs');
@@ -194,6 +195,7 @@ function hotkeyStatus() {
 function buildDashboardState() {
   return {
     appName: APP_NAME,
+    appVersion: app.getVersion(),
     userName,
     gallery: GALLERY,
     settings: publicSettings(),
@@ -464,6 +466,10 @@ function trayTemplate() {
       }
     } },
     { type: 'separator' },
+    { label: 'Check for updates', click: () => {
+      showDashboard();
+      updater.checkNow().catch((error) => logger.warn('updater', cleanError(error)));
+    } },
     { label: 'Settings', click: () => { showDashboard(); sendToDashboardWhenReady('settings:refresh', 'settings'); } },
     { label: 'Quit', click: () => app.quit() }
   ];
@@ -1688,6 +1694,10 @@ function listen(channel, handler, roles = ['dashboard']) {
 
 function registerIpc() {
   handle('app:state', () => buildDashboardState());
+  handle('updater:get-status', () => updater.getStatus());
+  handle('updater:check', () => updater.checkNow());
+  handle('updater:download', () => updater.downloadUpdate());
+  handle('updater:install', () => updater.installNow());
   handle('settings:save', (patch) => saveSettingsPatch(patch));
   handle('provider:save-key', (provider, key) => {
     if (typeof provider !== 'string' || !Object.hasOwn(settings.providers, provider) || provider === 'local') throw new Error('Unknown provider.');
@@ -2056,6 +2066,10 @@ async function initialize() {
       return;
     }
     if (GALLERY || !START_HIDDEN) showDashboard();
+    updater.init(() => dashboardWindow, store, logger, {
+      isBusy: () => Boolean(currentTurn || turnRunning || micTestRunning),
+      onStatus: (status) => broadcast('updater:status', status)
+    });
     applyAutostart();
     if (!GALLERY) warmServices();
     logger.info('app', 'Startup complete');
