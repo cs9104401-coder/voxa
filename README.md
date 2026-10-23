@@ -103,8 +103,6 @@ The global listener records only whether a configured shortcut was pressed or re
 
 History, memory, preferences, and activation logs are stored in Electron's user data directory (`%APPDATA%\my-voice-app`). The bundled Whisper model cache is stored in `%APPDATA%\my-voice-app\whisper-models`; Ollama keeps its models in Ollama's own data folder. Provider API keys use the operating system's secure storage when available. Local model and transcription requests stay on the machine unless a cloud provider is selected.
 
-On startup, any previous plain-text `activation.log` is renamed to `activation.log.legacy-<timestamp>` before the JSONL log is opened. Older builds wrote every system-wide keystroke to that file; inspect it before sharing logs, then delete it if it is no longer needed.
-
 Dictation and `type_text` paste through the clipboard. Voxa backs up the available clipboard formats and restores them after pasting; formats that Windows refuses to copy may not survive. Text insertion is refused when the original target window is no longer focused.
 
 ## UI gallery
