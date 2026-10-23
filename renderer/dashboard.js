@@ -3,7 +3,20 @@
 const api = window.voiceAgent;
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];
-const WHISPER_MODELS = ['tiny', 'base', 'small', 'medium', 'large-v3'];
+const WHISPER_MODELS = [
+  { id: 'tiny', label: 'Tiny', sizeBytes: 75525797 },
+  { id: 'base', label: 'Base', sizeBytes: 145466455 },
+  { id: 'small', label: 'Small', sizeBytes: 484190939 },
+  { id: 'medium', label: 'Medium', sizeBytes: 1530000000 },
+  { id: 'large-v3-turbo', label: 'Large v3 Turbo', sizeBytes: 1620000000 },
+  { id: 'large-v3', label: 'Large v3', sizeBytes: 3090000000 }
+];
+const WHISPER_PRESETS = {
+  fast: { label: 'Fast', model: 'base', description: 'Lower latency and a smaller download.' },
+  balanced: { label: 'Balanced', model: 'small', description: 'Good everyday speed and accuracy.' },
+  accurate: { label: 'Accurate', model: 'large-v3', description: 'Best accuracy with the largest download.' },
+  custom: { label: 'Custom', model: '', description: 'Choose any installed or downloadable model.' }
+};
 const PERMISSION_MODES = [
   ['ask', 'Ask Every Time', 'Show an approval prompt before every desktop action.'],
   ['routine', 'Allow Routine Actions', 'Open files, folders, apps, and websites without repeated prompts. Sensitive actions still ask.'],
@@ -62,9 +75,15 @@ function chip(text, kind = '') {
   return `<span class="badge ${kind}">${esc(text)}</span>`;
 }
 
+const FREELLMAPI_PROVIDER = 'freellmapi';
+const FREELLMAPI_RECOMMENDED = ['auto', 'auto:fast', 'auto:smart'];
+const modelMemory = new Map();
+const comboStates = new WeakMap();
+
 function providerLabel(name) {
   return ({
     local: 'Local',
+    freellmapi: 'FreeLLMAPI',
     openai: 'OpenAI',
     groq: 'Groq',
     gemini: 'Gemini',
@@ -73,19 +92,28 @@ function providerLabel(name) {
   })[name] || String(name || 'Agent');
 }
 
+function providerNeedsKey(name) {
+  return name !== 'local' && name !== FREELLMAPI_PROVIDER;
+}
+
+function isCloudProvider(name) {
+  return Boolean(name && name !== 'none' && !['local', FREELLMAPI_PROVIDER].includes(name));
+}
+
 function serviceStatus(service = {}, name) {
-  if (service.ok) return { text: `${name} Ready`, kind: 'good', title: service.message || '' };
   if (service.status === 'downloading') {
     const percent = service.progress?.percent;
+    const stalled = Boolean(service.progress?.stalled);
     return {
-      text: percent == null ? `${name} Downloading` : `${name} ${percent}%`,
-      kind: 'info',
+      text: stalled ? `${name} Download stalled` : percent == null ? `${name} Downloading` : `${name} Downloading ${percent}%`,
+      kind: stalled ? 'bad' : 'info',
       title: service.message || `Downloading ${service.model || name}.`
     };
   }
   if (service.status === 'loading') {
     return { text: `${name} Loading`, kind: 'info', title: service.message || `Loading ${service.model || name}.` };
   }
+  if (service.ok) return { text: `${name} Ready`, kind: 'good', title: service.message || '' };
   if (service.status === 'mismatch') {
     return { text: `${name} Mismatch`, kind: 'bad', title: service.message || '' };
   }
@@ -93,6 +121,47 @@ function serviceStatus(service = {}, name) {
     return { text: `${name} Error`, kind: 'bad', title: service.message || '' };
   }
   return { text: `${name} Offline`, kind: 'bad', title: service.message || '' };
+}
+
+function formatBytes(value, empty = 'Unknown size') {
+  const bytes = Number(value);
+  if (!Number.isFinite(bytes) || bytes <= 0) return empty;
+  if (bytes >= 1024 ** 3) return `${(bytes / 1024 ** 3).toFixed(1)} GB`;
+  return `${Math.max(1, Math.round(bytes / 1024 ** 2))} MB`;
+}
+
+function formatSpeed(value) {
+  const bytes = Number(value);
+  if (!Number.isFinite(bytes) || bytes <= 0) return '';
+  if (bytes >= 1024 ** 2) return `${(bytes / 1024 ** 2).toFixed(1)} MB/s`;
+  return `${Math.max(1, Math.round(bytes / 1024))} KB/s`;
+}
+
+function whisperCatalog() {
+  const health = data.health?.whisper;
+  const source = Array.isArray(health?.models) && health.models.length ? health.models : null;
+  if (source) {
+    return source.map((item) => ({
+      id: String(item.id || ''),
+      label: String(item.label || item.id || ''),
+      sizeBytes: Number(item.sizeBytes ?? item.size_bytes) || 0,
+      downloaded: typeof item.downloaded === 'boolean' ? item.downloaded : null,
+      active: Boolean(item.active),
+      status: String(item.status || '')
+    })).filter((item) => item.id);
+  }
+  return WHISPER_MODELS.map((item) => ({
+    ...item,
+    downloaded: null,
+    active: false,
+    status: 'Unknown'
+  }));
+}
+
+function whisperPresetForSelection(model) {
+  const current = settings.performancePreset;
+  if (current && current !== 'custom' && WHISPER_PRESETS[current]?.model === model) return current;
+  return 'custom';
 }
 
 function healthChip(id, status) {
@@ -119,13 +188,28 @@ function updateHealthBadges() {
 
 function whisperProgressState(service = {}) {
   const status = service.status;
-  if (!['downloading', 'loading'].includes(status)) return { visible: false, percent: null, text: '' };
-  const raw = Number(service.progress?.percent);
-  const percent = Number.isFinite(raw) ? Math.max(0, Math.min(100, Math.round(raw))) : null;
+  if (!['downloading', 'loading'].includes(status)) {
+    return { visible: false, status, percent: null, text: '', stalled: false, cancellable: false };
+  }
+  const progress = service.progress || {};
+  const raw = progress.percent == null ? NaN : Number(progress.percent);
+  const percent = status === 'loading' ? null : Number.isFinite(raw) ? Math.max(0, Math.min(100, Math.round(raw))) : null;
+  const stalled = Boolean(progress.stalled);
+  const speed = formatSpeed(progress.speedBps);
+  const detail = Number(progress.totalBytes) > 0
+    ? `${formatBytes(progress.downloadedBytes, '0 MB')} of ${formatBytes(progress.totalBytes)}`
+    : '';
+  let text = service.message || (status === 'loading' ? 'Loading the speech model…' : 'Downloading the speech model…');
+  if (status === 'downloading' && detail) text += ` · ${detail}`;
+  if (!stalled && speed) text += ` · ${speed}`;
+  if (stalled) text += ' · No progress for 60 seconds. Retry or cancel.';
   return {
     visible: true,
+    status,
     percent,
-    text: service.message || (status === 'loading' ? 'Loading the speech model…' : 'Downloading the speech model…')
+    text,
+    stalled,
+    cancellable: status === 'downloading' || status === 'loading'
   };
 }
 
@@ -133,15 +217,16 @@ function whisperProgressRow() {
   return `<div class="row download-row" id="whisperProgressRow" hidden>
     <span class="row-icon">${icon('M12 3v12m0 0 4-4m-4 4-4-4M5 21h14')}</span>
     <div class="row-main"><b>Speech model</b><small id="whisperProgressText">Preparing the model…</small><div class="progress-track"><i id="whisperProgressBar"></i></div></div>
-    <div class="row-side"><span id="whisperProgressPercent" class="badge info">Working</span></div>
+    <div class="row-side"><span id="whisperProgressPercent" class="badge info">Working</span><button class="button" data-action="whisper-cancel" hidden>Cancel</button><button class="button" data-action="whisper-retry" hidden>Retry</button></div>
   </div>`;
 }
 
 function whisperProgressPanel() {
   return `<div class="whisper-download" id="dictationWhisperProgress" hidden>
-    <div class="row-side" style="justify-content:space-between"><b>Whisper model download</b><span class="badge info" id="dictationWhisperPercent">Working</span></div>
+    <div class="row-side" style="justify-content:space-between"><b>Whisper model</b><span class="badge info" id="dictationWhisperPercent">Working</span></div>
     <div class="progress-track"><i id="dictationWhisperBar"></i></div>
     <small class="card-note" id="dictationWhisperText"></small>
+    <div class="row-side" style="justify-content:flex-end;margin-top:10px"><button class="button" data-action="whisper-cancel" hidden>Cancel</button><button class="button primary" data-action="whisper-retry" hidden>Retry</button></div>
   </div>`;
 }
 
@@ -155,16 +240,136 @@ function updateWhisperProgress() {
     const row = document.getElementById(rowId);
     if (!row) continue;
     row.hidden = !state.visible;
-    if (!state.visible) continue;
     const text = document.getElementById(textId);
     const bar = document.getElementById(barId);
     const percent = document.getElementById(percentId);
+    const cancel = row.querySelector('[data-action="whisper-cancel"]');
+    const retry = row.querySelector('[data-action="whisper-retry"]');
+    if (cancel) cancel.hidden = !state.visible || !state.cancellable;
+    if (retry) retry.hidden = !state.visible || !state.stalled;
+    if (!state.visible) continue;
     if (text) text.textContent = state.text;
     if (bar) {
-      bar.classList.toggle('indeterminate', state.percent == null);
+      bar.classList.toggle('indeterminate', state.percent == null && !state.stalled);
       bar.style.width = state.percent == null ? '' : `${state.percent}%`;
     }
-    if (percent) percent.textContent = state.percent == null ? 'Working' : `${state.percent}%`;
+    if (percent) {
+      percent.textContent = state.stalled ? 'Stalled' : state.percent == null ? 'Working' : `${state.percent}%`;
+      percent.className = `badge ${state.stalled ? 'bad' : 'info'}`;
+    }
+  }
+}
+
+function whisperInfoFor(model) {
+  const id = String(model || '');
+  return whisperCatalog().find((item) => item.id === id)
+    || WHISPER_MODELS.find((item) => item.id === id)
+    || { id, label: id || 'Whisper', sizeBytes: 0, downloaded: null, active: false, status: 'Unknown' };
+}
+
+function whisperModelLabel(model) {
+  return whisperInfoFor(model).label || model || 'Whisper';
+}
+
+function whisperOptionText(item, activeModel = '') {
+  const active = item.active || (activeModel && activeModel === item.id);
+  const status = active ? 'Active' : item.downloaded === true ? 'Downloaded' : item.downloaded === false ? 'Not downloaded' : 'Status unknown';
+  return `${item.label} · ${formatBytes(item.sizeBytes)} · ${status}`;
+}
+
+function whisperModelOptions(selected) {
+  const models = whisperCatalog();
+  if (selected && !models.some((item) => item.id === selected)) {
+    models.push({ ...whisperInfoFor(selected), id: selected });
+  }
+  const activeModel = data.health?.whisper?.activeModel || '';
+  return models.map((item) => `<option value="${esc(item.id)}" ${selected === item.id ? 'selected' : ''}>${esc(whisperOptionText(item, activeModel))}</option>`).join('');
+}
+
+function whisperModelCard() {
+  const selected = settings.whisperModel || 'small';
+  const info = whisperInfoFor(selected);
+  return `<div class="whisper-model-card" id="whisperModelCard">
+    <div class="row-side" style="justify-content:space-between;align-items:flex-start">
+      <div class="row-main"><b id="whisperSelectedName">${esc(info.label)}</b><small class="card-note" id="whisperSelectedMeta">${esc(info.status || 'Status unknown')}</small></div>
+      <span class="badge info" id="whisperStatusBadge">${esc(info.status || 'Status unknown')}</span>
+    </div>
+    <div class="whisper-facts"><span>Download <b id="whisperSize">${esc(formatBytes(info.sizeBytes))}</b></span><span>Active model <b id="whisperActiveModel">None</b></span></div>
+    <div class="row-side" style="justify-content:space-between;margin-top:10px"><span class="card-note" id="whisperActionNote"></span><button class="button primary" id="whisperAction" type="button" data-action="whisper-switch" data-model="${esc(selected)}">Download</button></div>
+  </div>`;
+}
+
+function updateWhisperModelControls() {
+  const select = $('#whisper');
+  const selected = select?.value || settings.whisperModel || 'small';
+  const info = whisperInfoFor(selected);
+  const health = data.health?.whisper || {};
+  const activeModel = health.activeModel || health.active_model || '';
+  const downloaded = info.downloaded;
+  const isActive = Boolean(activeModel ? activeModel === selected : info.active);
+  const switching = Boolean(health.switching) || ['downloading', 'loading'].includes(health.status);
+  const stalled = Boolean(health.progress?.stalled);
+  const targetModel = health.targetModel || health.target_model || '';
+  const targetMatches = !targetModel || targetModel === selected;
+  const switchError = targetMatches ? health.switchError || health.switch_error || '' : '';
+  const failedForSelection = targetMatches && health.status === 'error';
+  const statusText = isActive ? 'Active' : downloaded === true ? 'Downloaded' : downloaded === false ? 'Not downloaded' : 'Status unknown';
+  const badgeKind = isActive || downloaded === true ? 'good' : 'info';
+  const name = $('#whisperSelectedName');
+  const meta = $('#whisperSelectedMeta');
+  const badge = $('#whisperStatusBadge');
+  const size = $('#whisperSize');
+  const active = $('#whisperActiveModel');
+  const action = $('#whisperAction');
+  const actionNote = $('#whisperActionNote');
+  const preset = $('#performancePreset');
+  const presetNote = $('#performancePresetNote');
+  if (name) name.textContent = info.label;
+  if (meta) meta.textContent = statusText;
+  if (badge) {
+    badge.textContent = statusText;
+    badge.className = `badge ${badgeKind}`;
+  }
+  if (size) size.textContent = formatBytes(info.sizeBytes);
+  if (active) active.textContent = activeModel ? whisperModelLabel(activeModel) : 'None';
+  if (preset) {
+    preset.disabled = switching;
+    if (document.activeElement !== preset) preset.value = settings.performancePreset || 'custom';
+  }
+  if (presetNote) {
+    const presetValue = preset?.value || settings.performancePreset || 'custom';
+    presetNote.textContent = WHISPER_PRESETS[presetValue]?.description || WHISPER_PRESETS.custom.description;
+  }
+  if (select) {
+    select.disabled = switching;
+    for (const option of select.options) {
+      option.textContent = whisperOptionText(whisperInfoFor(option.value), activeModel);
+    }
+    if (!switching) select.value = selected;
+  }
+  if (action) {
+    const activeWork = switching && !stalled;
+    action.disabled = isActive || activeWork;
+    action.dataset.model = selected;
+    action.textContent = isActive ? 'Active' : activeWork ? 'Switching…' : stalled || failedForSelection || switchError ? 'Retry' : downloaded === true ? 'Switch' : 'Download';
+  }
+  if (actionNote) {
+    const noteError = isActive ? '' : switchError;
+    actionNote.textContent = stalled
+      ? 'Download stalled. Retry or cancel.'
+      : switching
+        ? health.message || `Preparing ${whisperModelLabel(targetModel || selected)}.`
+        : failedForSelection
+          ? health.message || 'The Whisper model failed to load.'
+          : noteError
+            ? `Switch failed: ${noteError}`
+            : downloaded === false
+              ? activeModel
+                ? 'Not downloaded yet. Choose Download; the current model keeps working until the switch completes.'
+                : 'Not downloaded yet. Choose Download to fetch it.'
+              : downloaded == null
+                ? 'Start Whisper to check whether this model is installed.'
+                : isActive ? 'This model is ready for dictation.' : 'Ready to switch without restarting the app.';
   }
 }
 
@@ -387,7 +592,8 @@ function dictation() {
   const microphones = settings._microphones || [];
   const selected = settings.microphoneId || '';
   const selectedModel = settings.whisperModel || 'small';
-  const whisperModels = [...new Set([...WHISPER_MODELS, selectedModel])];
+  const preset = Object.hasOwn(WHISPER_PRESETS, settings.performancePreset) ? settings.performancePreset : 'custom';
+  const presetInfo = WHISPER_PRESETS[preset];
   return `${heading('Dictation', 'Set up how Voxa listens and types.')}
   <div class="page-stack">
     <article class="card"><h2 class="card-title">Dictation shortcut</h2><p class="card-note">Hold the shortcut to record. Releasing it sends the transcript. Ctrl+Space may conflict with Windows input switching.</p><div class="row-side"><button class="button" data-edit-hotkey="dictation">Edit · ${esc(settings.dictationHotkey || 'Ctrl+Q')}</button>${toggle('dictationEnabled', settings.dictationEnabled !== false, 'Enable dictation', 'dictationEnabled')}</div></article>
@@ -396,37 +602,469 @@ function dictation() {
         <label class="field">Transcription<select class="select" id="sttProvider"><option value="local" ${settings.sttProvider !== 'cloud' ? 'selected' : ''}>Local Whisper</option><option value="cloud" ${settings.sttProvider === 'cloud' ? 'selected' : ''}>Cloud API</option></select></label>
         <label class="field">Cloud service<select class="select" id="sttCloudProvider">${['openai', 'groq'].map((provider) => `<option value="${provider}" ${settings.sttCloudProvider === provider ? 'selected' : ''}>${provider}</option>`).join('')}</select></label>
         <label class="field">Cloud model<input class="input" id="sttModel" value="${esc(settings.sttModel || 'whisper-1')}"></label>
-        <label class="field">Whisper model<select class="select" id="whisper">${whisperModels.map((model) => `<option value="${esc(model)}" ${selectedModel === model ? 'selected' : ''}>${esc(model === 'small' ? 'small · recommended' : model === 'large-v3' ? 'large-v3 · highest accuracy' : model)}</option>`).join('')}</select></label>
+        <label class="field">Performance preset<select class="select" id="performancePreset">${Object.entries(WHISPER_PRESETS).map(([id, item]) => `<option value="${esc(id)}" ${preset === id ? 'selected' : ''}>${esc(item.label)}${item.model ? ` · ${esc(item.model)}` : ''}</option>`).join('')}</select><small class="card-note" id="performancePresetNote">${esc(presetInfo.description)}</small></label>
+        <label class="field">Whisper model<select class="select" id="whisper">${whisperModelOptions(selectedModel)}</select></label>
         <label class="field">Compute<select class="select" id="device"><option value="cpu" ${settings.whisperDevice !== 'cuda' ? 'selected' : ''}>CPU · int8</option><option value="cuda" ${settings.whisperDevice === 'cuda' ? 'selected' : ''}>NVIDIA GPU · float16</option></select></label>
         <label class="field">Microphone<select class="select" id="mic"><option value="">System default</option>${microphones.map((item) => `<option value="${esc(item.id)}" ${selected === item.id ? 'selected' : ''}>${esc(item.label)}</option>`).join('')}</select></label>
         <button class="button" id="refreshMic" type="button">Refresh microphones</button>
         <div class="field"><span>Input level</span><div class="input-meter"><i id="settingsMicLevel"></i></div></div>
         <div class="row-side field full"><button class="button" id="micTest" type="button" ${micTestRunning ? 'disabled' : ''}>Mic test · record 3 seconds</button><span id="micTestResult" class="card-note">Records, plays back, then transcribes.</span></div>
       </div>
+      ${whisperModelCard()}
       ${whisperProgressPanel()}
-      <p class="card-note">The first local start downloads the selected model into AppData. Progress appears here and on the Dashboard, and the app waits for it before transcribing.</p>
+      <p class="card-note">Models download into AppData. Downloads run in the background, show real progress here and on the Dashboard, and can be canceled or retried. Switching keeps the current model active until the new one is ready.</p>
     </article>
     <button class="button primary" data-action="save-page">Save dictation settings</button>
   </div>`;
 }
+
+function modelCombo(id, value, providerSource, kind, placeholder = 'Choose a model or type a custom name') {
+  return `<div class="combo" data-model-combo data-model-kind="${esc(kind)}" data-model-id="${esc(id)}" data-provider-source="${esc(providerSource)}"${kind === 'chat' ? ' data-url-source="chatUrl"' : ''}>
+    <div class="combo-input-wrap">
+      <input class="input combo-input" id="${esc(id)}" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="${esc(id)}List" autocomplete="off" spellcheck="false" placeholder="${esc(placeholder)}" value="${esc(value)}">
+      <button type="button" class="combo-toggle" data-combo-toggle aria-label="Show models" tabindex="-1">▾</button>
+    </div>
+    <div class="combo-pop" id="${esc(id)}List" role="listbox" aria-label="Models" hidden>
+      <div class="combo-status" data-combo-status hidden></div>
+      <div class="combo-groups" data-combo-groups></div>
+    </div>
+    <small class="card-note combo-meta" data-combo-meta></small>
+  </div>`;
+}
+
+function comboState(combo) {
+  let state = comboStates.get(combo);
+  if (!state) {
+    state = {
+      models: [],
+      loaded: false,
+      loading: false,
+      error: '',
+      filter: '',
+      active: -1,
+      options: [],
+      requestId: 0,
+      provider: ''
+    };
+    comboStates.set(combo, state);
+  }
+  return state;
+}
+
+function comboInput(combo) {
+  return combo.querySelector('input[role="combobox"]');
+}
+
+function comboProvider(combo) {
+  const source = combo.dataset.providerSource;
+  const select = source ? document.getElementById(source) : null;
+  return select?.value || '';
+}
+
+function modelMemoryKey(kind, provider) {
+  return `${kind}:${provider}`;
+}
+
+function rememberComboValue(combo) {
+  const provider = combo.dataset.provider || comboProvider(combo);
+  const input = comboInput(combo);
+  if (!provider || !input) return;
+  modelMemory.set(modelMemoryKey(combo.dataset.modelKind, provider), input.value.trim());
+}
+
+function updateComboMeta(combo) {
+  const state = comboState(combo);
+  const meta = combo.querySelector('[data-combo-meta]');
+  if (!meta) return;
+  if (state.loading && !state.models.length) {
+    meta.textContent = 'Loading models…';
+  } else if (state.error) {
+    meta.textContent = '';
+  } else if (state.loaded) {
+    const count = state.models.length;
+    meta.textContent = `${count} model${count === 1 ? '' : 's'} available`;
+  } else {
+    meta.textContent = '';
+  }
+}
+
+function groupedModels(provider, models) {
+  const available = [...new Set((models || []).filter((model) => typeof model === 'string' && model.trim()))];
+  const groups = [];
+  const pinned = provider === FREELLMAPI_PROVIDER ? [...FREELLMAPI_RECOMMENDED] : [];
+  if (pinned.length) groups.push({ title: 'Recommended', models: pinned });
+  const pinnedSet = new Set(pinned);
+  const remaining = available.filter((model) => !pinnedSet.has(model));
+  if (provider !== FREELLMAPI_PROVIDER) {
+    if (remaining.length) groups.push({ title: '', models: remaining.sort((a, b) => a.localeCompare(b)) });
+    return groups;
+  }
+
+  const byProvider = new Map();
+  for (const model of remaining) {
+    const slash = model.indexOf('/');
+    const colon = model.indexOf(':');
+    let separator = slash;
+    if (separator < 0 || (colon >= 0 && colon < separator)) separator = colon;
+    const group = separator > 0 ? model.slice(0, separator) : 'Other';
+    if (!byProvider.has(group)) byProvider.set(group, []);
+    byProvider.get(group).push(model);
+  }
+  const names = [...byProvider.keys()].sort((a, b) => {
+    if (a === 'Other') return 1;
+    if (b === 'Other') return -1;
+    return a.localeCompare(b);
+  });
+  for (const name of names) {
+    const items = byProvider.get(name).sort((a, b) => a.localeCompare(b));
+    if (items.length) groups.push({ title: name, models: items });
+  }
+  return groups;
+}
+
+function renderComboList(combo) {
+  const state = comboState(combo);
+  const input = comboInput(combo);
+  const provider = comboProvider(combo);
+  const status = combo.querySelector('[data-combo-status]');
+  const groupsBox = combo.querySelector('[data-combo-groups]');
+  if (!input || !status || !groupsBox) return;
+
+  if (state.loading) {
+    status.hidden = false;
+    status.innerHTML = '<span class="combo-loading"><i></i>Loading models…</span>';
+  } else if (state.error) {
+    status.hidden = false;
+    status.innerHTML = `<span class="combo-error">Couldn't load models: ${esc(state.error)}</span> <button type="button" class="link-button" data-combo-retry>Retry</button>`;
+  } else {
+    status.hidden = true;
+    status.innerHTML = '';
+  }
+
+  const filter = state.filter.trim().toLowerCase();
+  const groups = groupedModels(provider, state.models)
+    .map((group) => ({
+      title: group.title,
+      models: group.models.filter((model) => !filter || model.toLowerCase().includes(filter))
+    }))
+    .filter((group) => group.models.length);
+
+  if (groups.length) {
+    groupsBox.innerHTML = groups.map((group, groupIndex) => `<div class="combo-group">
+      ${group.title ? `<div class="combo-group-title">${esc(group.title)}</div>` : ''}
+      ${group.models.map((model, index) => `<div class="combo-option" role="option" id="${esc(combo.dataset.modelId)}Option${groupIndex}-${index}" data-combo-value="${esc(model)}" aria-selected="${input.value === model ? 'true' : 'false'}">${esc(model)}</div>`).join('')}
+    </div>`).join('');
+  } else if (!state.loading && !state.error) {
+    const message = filter
+      ? `No models match. Press Enter to use “${esc(input.value.trim())}” as a custom model.`
+      : state.loaded ? 'The provider returned no models. Type a model name to use it anyway.' : 'Open the list to load models.';
+    groupsBox.innerHTML = `<div class="combo-empty">${message}</div>`;
+  } else {
+    groupsBox.innerHTML = '';
+  }
+
+  state.options = [...groupsBox.querySelectorAll('[data-combo-value]')];
+  const selected = state.options.findIndex((option) => option.dataset.comboValue === input.value);
+  state.active = selected >= 0 ? selected : (state.options.length ? 0 : -1);
+  state.options.forEach((option, index) => option.classList.toggle('is-active', index === state.active));
+  if (state.active >= 0) input.setAttribute('aria-activedescendant', state.options[state.active].id);
+  else input.removeAttribute('aria-activedescendant');
+}
+
+function setActiveComboOption(combo, index) {
+  const state = comboState(combo);
+  const input = comboInput(combo);
+  if (!state.options.length) {
+    state.active = -1;
+    input?.removeAttribute('aria-activedescendant');
+    return;
+  }
+  state.active = (index + state.options.length) % state.options.length;
+  state.options.forEach((option, optionIndex) => option.classList.toggle('is-active', optionIndex === state.active));
+  input?.setAttribute('aria-activedescendant', state.options[state.active].id);
+  state.options[state.active].scrollIntoView({ block: 'nearest' });
+}
+
+function openCombo(combo, resetFilter = true) {
+  const provider = comboProvider(combo);
+  const pop = combo.querySelector('.combo-pop');
+  const input = comboInput(combo);
+  if (!pop || !input || !provider || provider === 'none') return;
+  const state = comboState(combo);
+  const providerChanged = state.provider && state.provider !== provider;
+  if (providerChanged) {
+    state.models = [];
+    state.loaded = false;
+    state.error = '';
+  }
+  state.provider = provider;
+  if (resetFilter) state.filter = '';
+  pop.hidden = false;
+  input.setAttribute('aria-expanded', 'true');
+  renderComboList(combo);
+  if (!state.loading || providerChanged) void refreshComboModels(combo);
+}
+
+function closeCombo(combo) {
+  const pop = combo.querySelector('.combo-pop');
+  const input = comboInput(combo);
+  if (pop) pop.hidden = true;
+  if (input) {
+    input.setAttribute('aria-expanded', 'false');
+    input.removeAttribute('aria-activedescendant');
+  }
+}
+
+function selectComboValue(combo, value) {
+  const input = comboInput(combo);
+  if (!input) return;
+  input.value = value;
+  const provider = comboProvider(combo);
+  if (provider) modelMemory.set(modelMemoryKey(combo.dataset.modelKind, provider), value);
+  closeCombo(combo);
+  settingsDirty = activePage === 'agent';
+}
+
+async function refreshComboModels(combo, { force = false } = {}) {
+  const provider = comboProvider(combo);
+  const state = comboState(combo);
+  const input = comboInput(combo);
+  if (!input) return;
+  if (!provider || provider === 'none') {
+    state.models = [];
+    state.loaded = false;
+    state.loading = false;
+    state.error = '';
+    updateComboMeta(combo);
+    renderComboList(combo);
+    return;
+  }
+  const requestId = ++state.requestId;
+  state.provider = provider;
+  state.loading = true;
+  state.error = '';
+  updateComboMeta(combo);
+  renderComboList(combo);
+  const config = {};
+  const urlSource = combo.dataset.urlSource;
+  if (urlSource) {
+    const urlInput = document.getElementById(urlSource);
+    if (urlInput?.value.trim()) config.url = urlInput.value.trim();
+  }
+  if (providerNeedsKey(provider)) {
+    const keyInput = combo.dataset.modelKind === 'fallback' ? $('#fallbackKey') : $('#chatKey');
+    const typedKey = keyInput?.value.trim();
+    if (typedKey) config.apiKey = typedKey;
+  }
+  try {
+    const models = await api.listModels(provider, config, { force });
+    if (requestId !== state.requestId || provider !== comboProvider(combo)) return;
+    state.models = Array.isArray(models) ? models.filter((model) => typeof model === 'string' && model) : [];
+    state.loaded = true;
+    state.loading = false;
+    state.error = '';
+  } catch (error) {
+    if (requestId !== state.requestId || provider !== comboProvider(combo)) return;
+    state.models = [];
+    state.loaded = false;
+    state.loading = false;
+    state.error = String(error?.message || 'The provider did not respond.').replace(/^Error invoking remote method '[^']*':\s*(?:Error:\s*)?/, '').split(/\r?\n/)[0].trim();
+  }
+  updateComboMeta(combo);
+  renderComboList(combo);
+}
+
+async function refreshAllModelCombos(options = {}) {
+  await Promise.all($$('[data-model-combo]').map((combo) => refreshComboModels(combo, options)));
+}
+
+function restoreComboModel(kind, provider) {
+  const combo = $(`[data-model-combo][data-model-kind="${kind}"]`);
+  if (!combo) return;
+  const input = comboInput(combo);
+  if (!input) return;
+  const remembered = modelMemory.get(modelMemoryKey(kind, provider));
+  const configured = settings.providers?.[provider]?.model || '';
+  input.value = remembered !== undefined ? remembered : configured || (provider === FREELLMAPI_PROVIDER ? 'auto' : '');
+  const state = comboState(combo);
+  state.models = [];
+  state.loaded = false;
+  state.loading = false;
+  state.error = '';
+  state.filter = '';
+  state.active = -1;
+  state.provider = provider;
+  combo.dataset.provider = provider;
+  updateComboMeta(combo);
+  closeCombo(combo);
+  renderComboList(combo);
+}
+
+function updateProviderControls() {
+  const provider = $('#chatProvider')?.value || settings.chatProvider || 'local';
+  const detect = $('#detectProvider');
+  if (detect) detect.hidden = provider !== FREELLMAPI_PROVIDER;
+  const key = $('#chatKey');
+  if (key) {
+    key.placeholder = data.keyStatus?.[provider]
+      ? 'Saved securely · enter to replace'
+      : providerNeedsKey(provider) ? 'Required' : 'Not needed for this provider';
+  }
+}
+
+function updateFallbackControls() {
+  const select = $('#fallbackProvider');
+  if (!select) return;
+  const provider = select.value || 'none';
+  const cloud = isCloudProvider(provider);
+  const keySaved = Boolean(data.keyStatus?.[provider]);
+  const modelField = $('#fallbackModelField');
+  const keyField = $('#fallbackKeyField');
+  const warning = $('#fallbackWarning');
+  const hint = $('#fallbackHint');
+  const keyInput = $('#fallbackKey');
+  const toggleInput = $('#fallbackEnabled');
+  if (modelField) modelField.hidden = provider === 'none';
+  if (keyField) keyField.hidden = provider === 'none' || !cloud;
+  if (keyInput) keyInput.placeholder = keySaved ? 'Saved securely · enter to replace' : 'Required';
+  if (warning) {
+    warning.hidden = !cloud;
+    warning.textContent = cloud ? `Prompts will be sent to ${providerLabel(provider)} when the local model fails.` : '';
+  }
+  if (toggleInput) {
+    const blocked = provider === 'none' || (cloud && !keySaved);
+    toggleInput.disabled = blocked;
+    if (blocked) toggleInput.checked = false;
+  }
+  if (hint) {
+    hint.textContent = provider === 'none'
+      ? 'No cloud fallback is used.'
+      : cloud && !keySaved
+        ? `Save an API key for ${providerLabel(provider)} to allow this cloud fallback.`
+        : 'The fallback runs only when the local model fails before any desktop action starts.';
+  }
+}
+
+function initializeModelCombos() {
+  $$('[data-model-combo]').forEach((combo) => {
+    if (combo.dataset.comboBound) return;
+    combo.dataset.comboBound = '1';
+    const input = comboInput(combo);
+    const provider = comboProvider(combo);
+    combo.dataset.provider = provider;
+    if (provider && input?.value.trim() && !modelMemory.has(modelMemoryKey(combo.dataset.modelKind, provider))) {
+      modelMemory.set(modelMemoryKey(combo.dataset.modelKind, provider), input.value.trim());
+    }
+    const state = comboState(combo);
+    state.provider = provider;
+
+    input.addEventListener('focus', () => openCombo(combo));
+    input.addEventListener('click', () => openCombo(combo));
+    input.addEventListener('input', () => {
+      const activeProvider = comboProvider(combo);
+      if (activeProvider) modelMemory.set(modelMemoryKey(combo.dataset.modelKind, activeProvider), input.value.trim());
+      state.filter = input.value;
+      const pop = combo.querySelector('.combo-pop');
+      if (pop?.hidden) {
+        const current = comboProvider(combo);
+        if (current && current !== 'none') {
+          pop.hidden = false;
+          input.setAttribute('aria-expanded', 'true');
+          void refreshComboModels(combo);
+        }
+      }
+      renderComboList(combo);
+    });
+    input.addEventListener('keydown', (event) => {
+      const pop = combo.querySelector('.combo-pop');
+      if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+        event.preventDefault();
+        if (pop?.hidden) openCombo(combo);
+        if (!state.options.length && state.loaded) renderComboList(combo);
+        setActiveComboOption(combo, state.active < 0 ? 0 : state.active + (event.key === 'ArrowDown' ? 1 : -1));
+        return;
+      }
+      if (event.key === 'Enter') {
+        if (pop?.hidden) return;
+        event.preventDefault();
+        const option = state.options[state.active] || state.options[0];
+        if (option) selectComboValue(combo, option.dataset.comboValue);
+        else closeCombo(combo);
+        return;
+      }
+      if (event.key === 'Escape') {
+        if (!pop?.hidden) {
+          event.preventDefault();
+          event.stopPropagation();
+          closeCombo(combo);
+        }
+        return;
+      }
+      if (event.key === 'Tab') closeCombo(combo);
+    });
+
+    const toggle = combo.querySelector('[data-combo-toggle]');
+    if (toggle) {
+      toggle.addEventListener('mousedown', (event) => event.preventDefault());
+      toggle.addEventListener('click', () => {
+        const pop = combo.querySelector('.combo-pop');
+        if (pop?.hidden) openCombo(combo);
+        else closeCombo(combo);
+        input.focus();
+      });
+    }
+    const pop = combo.querySelector('.combo-pop');
+    if (pop) {
+      pop.addEventListener('mousedown', (event) => event.preventDefault());
+      pop.addEventListener('click', (event) => {
+        const retry = event.target.closest('[data-combo-retry]');
+        if (retry) {
+          void refreshComboModels(combo, { force: true });
+          return;
+        }
+        const option = event.target.closest('[data-combo-value]');
+        if (option) selectComboValue(combo, option.dataset.comboValue);
+      });
+    }
+  });
+}
+
+document.addEventListener('mousedown', (event) => {
+  $$('[data-model-combo]').forEach((combo) => {
+    if (!combo.contains(event.target)) closeCombo(combo);
+  });
+});
 
 function agent() {
   const providers = settings.providers || {};
   const provider = settings.chatProvider || 'local';
   const config = providers[provider] || {};
   const keySaved = Boolean(data.keyStatus?.[provider]);
+  const fallbackProvider = settings.fallbackProvider || 'none';
+  const fallbackConfig = providers[fallbackProvider] || {};
+  const fallbackCloud = isCloudProvider(fallbackProvider);
+  const fallbackKeySaved = Boolean(data.keyStatus?.[fallbackProvider]);
+  const fallbackBlocked = fallbackProvider === 'none' || (fallbackCloud && !fallbackKeySaved);
+  const fallbackModel = fallbackProvider === 'none' ? '' : fallbackConfig.model || '';
+  const providerOptions = Object.keys(providers).map((name) => `<option value="${esc(name)}" ${provider === name ? 'selected' : ''}>${esc(name === 'local' ? 'Local · Ollama' : providerLabel(name))}</option>`).join('');
+  const fallbackOptions = ['none', ...Object.keys(providers).filter((name) => name !== 'local')]
+    .map((name) => `<option value="${esc(name)}" ${fallbackProvider === name ? 'selected' : ''}>${esc(name === 'none' ? 'None' : providerLabel(name))}</option>`).join('');
   return `${heading('Agent', 'Choose a model and the actions it can request.')}
   <div class="page-stack">
     <article class="card"><h2 class="card-title">Agent shortcut</h2><p class="card-note">Hold both keys to ask. Releasing either sends the request. Alt shortcuts are detected but Windows may also react to them.</p><div class="row-side"><button class="button" data-edit-hotkey="agent">Edit · ${esc(settings.agentHotkey || 'Alt+Q')}</button>${toggle('agentEnabled', settings.agentEnabled !== false, 'Enable agent', 'agentEnabled')}</div></article>
     <article class="card"><h2 class="card-title">Provider</h2>
       <div class="form-grid">
-        <label class="field">Provider<select class="select" id="chatProvider">${Object.keys(providers).map((name) => `<option value="${esc(name)}" ${provider === name ? 'selected' : ''}>${esc(name === 'local' ? 'Local · Ollama' : name[0].toUpperCase() + name.slice(1))}</option>`).join('')}</select></label>
-        <label class="field">Base URL<input class="input" id="chatUrl" value="${esc(config.url || '')}"></label>
-        <label class="field">Model<input class="input" id="chatModel" list="modelOptions" value="${esc(config.model || '')}"><datalist id="modelOptions"></datalist></label>
-        <label class="field">API key<input class="input" id="chatKey" type="password" autocomplete="off" placeholder="${keySaved ? 'Saved securely · enter to replace' : 'Not needed for local'}"></label>
-        <label class="field">Fallback provider<select class="select" id="fallbackProvider">${['openai', 'groq', 'gemini', 'anthropic', 'custom'].map((name) => `<option value="${name}" ${settings.fallbackProvider === name ? 'selected' : ''}>${name}</option>`).join('')}</select></label>
-        <label class="field">Use fallback if local fails<div>${toggle('fallbackEnabled', Boolean(settings.fallbackEnabled), 'Enable fallback', 'fallbackEnabled')}</div></label>
+        <label class="field">Provider<select class="select" id="chatProvider">${providerOptions}</select></label>
+        <div class="field"><label for="chatUrl">Base URL</label><div class="input-action"><input class="input" id="chatUrl" value="${esc(config.url || '')}"><button class="button" id="detectProvider" type="button" data-action="detect-provider" ${provider === FREELLMAPI_PROVIDER ? '' : 'hidden'}>Detect</button></div><small class="card-note">Remote addresses must use HTTPS. http:// is allowed only for localhost.</small></div>
+        <div class="field"><label for="chatModel">Model</label>${modelCombo('chatModel', config.model || '', 'chatProvider', 'chat')}</div>
+        <label class="field">API key<input class="input" id="chatKey" type="password" autocomplete="off" placeholder="${keySaved ? 'Saved securely · enter to replace' : providerNeedsKey(provider) ? 'Required' : 'Not needed for this provider'}"></label>
+        <label class="field">Fallback provider<select class="select" id="fallbackProvider">${fallbackOptions}</select></label>
+        <div class="field" id="fallbackModelField" ${fallbackProvider === 'none' ? 'hidden' : ''}><label for="fallbackModel">Fallback model</label>${modelCombo('fallbackModel', fallbackModel, 'fallbackProvider', 'fallback')}</div>
+        <label class="field" id="fallbackKeyField" ${fallbackProvider === 'none' || !fallbackCloud ? 'hidden' : ''}>Fallback API key<input class="input" id="fallbackKey" type="password" autocomplete="off" placeholder="${fallbackKeySaved ? 'Saved securely · enter to replace' : 'Required'}"></label>
+        <label class="field">Use fallback if local fails<div>${toggle('fallbackEnabled', Boolean(settings.fallbackEnabled) && !fallbackBlocked, 'Enable fallback', 'fallbackEnabled')}</div></label>
       </div>
+      <p class="card-note fallback-warning" id="fallbackWarning" ${fallbackCloud ? '' : 'hidden'}>${fallbackCloud ? esc(`Prompts will be sent to ${providerLabel(fallbackProvider)} when the local model fails.`) : ''}</p>
+      <p class="card-note" id="fallbackHint">${esc(fallbackProvider === 'none' ? 'No cloud fallback is used.' : fallbackCloud && !fallbackKeySaved ? `Save an API key for ${providerLabel(fallbackProvider)} to allow this cloud fallback.` : 'The fallback runs only when the local model fails before any desktop action starts.')}</p>
       <div class="row-side" style="margin-top:14px"><button class="button" data-action="test-provider">Test connection</button><button class="button" data-action="refresh-models">Refresh models</button><span id="providerStatus" class="card-note"></span></div>
     </article>
     ${provider === 'local' ? ollamaSetupCard() : ''}
@@ -521,7 +1159,7 @@ function updateShell() {
   $('#sideAvatar').textContent = name[0]?.toUpperCase() || 'V';
   $('#brandName').textContent = api.appName;
   document.title = api.appName;
-  $('#tierBadge').textContent = settings.chatProvider === 'local' || !settings.chatProvider ? 'LOCAL' : 'CLOUD';
+  $('#tierBadge').textContent = isCloudProvider(settings.chatProvider) ? 'CLOUD' : 'LOCAL';
   const community = $('#community');
   if (community) {
     community.hidden = !settings.communityUrl;
@@ -532,14 +1170,18 @@ function updateShell() {
   const providerName = providerLabel(provider);
   const chat = data.health?.chat;
   const chatOk = chat ? Boolean(chat.ok) : Boolean(data.health?.ollama?.ok);
-  const needsKey = provider !== 'local' && !data.keyStatus?.[provider];
+  const needsKey = providerNeedsKey(provider) && !data.keyStatus?.[provider];
   const whisperStatus = data.health?.whisper?.status;
+  const whisperPercent = data.health?.whisper?.progress?.percent;
   const preparing = whisperStatus === 'downloading' || whisperStatus === 'loading';
   status.classList.toggle('bad', !chatOk && !preparing);
   $('#appStatusText').textContent = preparing
-    ? whisperStatus === 'downloading' ? 'Downloading speech model' : 'Loading speech model'
+    ? whisperStatus === 'downloading'
+      ? whisperPercent == null ? 'Downloading speech model' : `Downloading speech model ${whisperPercent}%`
+      : 'Loading speech model'
     : chatOk ? `${providerName} and ready` : needsKey ? `${providerName} key required` : provider === 'local' ? 'Check local services' : `${providerName} unavailable`;
   updateHealthBadges();
+  updateWhisperModelControls();
   updateWhisperProgress();
   updateOllamaSetup();
 }
@@ -610,22 +1252,33 @@ function collectPagePatch() {
     patch.sttProvider = $('#sttProvider')?.value || settings.sttProvider;
     patch.sttCloudProvider = $('#sttCloudProvider')?.value || settings.sttCloudProvider;
     patch.sttModel = $('#sttModel')?.value || settings.sttModel;
+    patch.performancePreset = $('#performancePreset')?.value || settings.performancePreset;
     patch.whisperModel = $('#whisper')?.value || settings.whisperModel;
+    if (patch.performancePreset !== 'custom' && WHISPER_PRESETS[patch.performancePreset]?.model !== patch.whisperModel) {
+      patch.performancePreset = 'custom';
+    }
     patch.whisperDevice = $('#device')?.value || settings.whisperDevice;
     patch.microphoneId = $('#mic')?.value ?? settings.microphoneId;
   } else if (activePage === 'agent') {
     const provider = $('#chatProvider')?.value || settings.chatProvider;
+    const fallbackProvider = $('#fallbackProvider')?.value || settings.fallbackProvider || 'none';
     patch.chatProvider = provider;
     patch.activeMode = provider === 'local' ? 'local' : 'cloud';
     if (provider !== 'local') patch.lastCloudProvider = provider;
-    patch.fallbackEnabled = $('#fallbackEnabled')?.checked ?? Boolean(settings.fallbackEnabled);
-    patch.fallbackProvider = $('#fallbackProvider')?.value || settings.fallbackProvider;
-    patch.providers = {
+    patch.fallbackProvider = fallbackProvider;
+    patch.fallbackEnabled = fallbackProvider === 'none' ? false : Boolean($('#fallbackEnabled')?.checked);
+    const providersPatch = {
       [provider]: {
         url: $('#chatUrl')?.value || settings.providers?.[provider]?.url,
-        model: $('#chatModel')?.value || settings.providers?.[provider]?.model
+        model: $('#chatModel')?.value.trim() || settings.providers?.[provider]?.model
       }
     };
+    if (fallbackProvider !== 'none' && fallbackProvider !== provider) {
+      providersPatch[fallbackProvider] = {
+        model: $('#fallbackModel')?.value.trim() || settings.providers?.[fallbackProvider]?.model
+      };
+    }
+    patch.providers = providersPatch;
     if ($('#permissionMode')) {
       patch.permissionMode = $('#permissionMode').value;
       patch.permissionCustom = {};
@@ -648,9 +1301,16 @@ async function savePage() {
     if (activePage === 'agent') {
       const provider = $('#chatProvider')?.value;
       const key = $('#chatKey')?.value.trim();
-      if (provider && provider !== 'local' && key) {
+      if (provider && key) {
         await api.saveProviderKey(provider, key);
         savedKey = true;
+        if (data.keyStatus) data.keyStatus[provider] = true;
+      }
+      const fallbackProvider = $('#fallbackProvider')?.value;
+      const fallbackKey = $('#fallbackKey')?.value.trim();
+      if (fallbackProvider && fallbackProvider !== 'none' && fallbackKey) {
+        await api.saveProviderKey(fallbackProvider, fallbackKey);
+        if (data.keyStatus) data.keyStatus[fallbackProvider] = true;
       }
     }
     const previousMicrophone = settings.microphoneId || '';
@@ -659,9 +1319,16 @@ async function savePage() {
     data.settings = settings;
     settingsDirty = false;
     if ($('#chatKey')) $('#chatKey').value = '';
+    if ($('#fallbackKey')) $('#fallbackKey').value = '';
     if (data.keyStatus) data.keyStatus[settings.chatProvider] = savedKey || Boolean(data.keyStatus?.[settings.chatProvider]);
     note('Saved.');
     renderAll();
+    if (activePage === 'agent') {
+      initializeModelCombos();
+      updateProviderControls();
+      updateFallbackControls();
+      void refreshAllModelCombos({ force: true });
+    }
     if (activePage === 'dictation' && previousMicrophone !== (settings.microphoneId || '') && monitorActive) {
       stopMicMonitor();
       startMicMonitor();
@@ -681,6 +1348,9 @@ async function saveInlineToggle(input) {
       patch.approval = { [input.dataset.tool]: input.checked };
     } else if (input.dataset.setting) {
       patch[input.dataset.setting] = input.checked;
+      if (input.id === 'fallbackEnabled') {
+        patch.fallbackProvider = $('#fallbackProvider')?.value || settings.fallbackProvider;
+      }
     } else {
       return;
     }
@@ -692,6 +1362,95 @@ async function saveInlineToggle(input) {
   } catch (error) {
     input.checked = !previous;
     note(error.message || 'Could not save that setting.');
+  }
+}
+
+async function loadWhisperSelection(model, presetId = '') {
+  const target = String(model || '').trim();
+  if (!target) return;
+  const preset = presetId || whisperPresetForSelection(target);
+  const saved = await api.saveSettings({
+    whisperModel: target,
+    performancePreset: preset
+  });
+  settings = { ...settings, ...saved };
+  data.settings = settings;
+  updateWhisperModelControls();
+  const health = await api.loadWhisperModel(target);
+  data.health = data.health || {};
+  data.health.whisper = health;
+  updateShell();
+}
+
+async function chooseWhisperModel(model) {
+  const target = String(model || '').trim();
+  if (!target) return;
+  try {
+    const info = whisperInfoFor(target);
+    const saved = await api.saveSettings({ whisperModel: target, performancePreset: 'custom' });
+    settings = { ...settings, ...saved };
+    data.settings = settings;
+    if (info.active) {
+      note(`${info.label} is already the active model.`);
+      updateWhisperModelControls();
+      return;
+    }
+    if (info.downloaded === true) {
+      await loadWhisperSelection(target, 'custom');
+      note(`Switching to ${info.label} in the background.`);
+      return;
+    }
+    updateWhisperModelControls();
+    note(info.downloaded === false
+      ? `${info.label} is selected. Choose Download to fetch it.`
+      : `${info.label} is selected. Choose Download to start Whisper.`);
+  } catch (error) {
+    const select = $('#whisper');
+    if (select) select.value = settings.whisperModel || '';
+    updateWhisperModelControls();
+    note(error.message || 'Could not select that Whisper model.');
+  }
+}
+
+async function chooseWhisperPreset(presetId) {
+  const preset = WHISPER_PRESETS[presetId];
+  if (!preset) return;
+  try {
+    if (presetId === 'custom') {
+      const saved = await api.saveSettings({ performancePreset: 'custom' });
+      settings = { ...settings, ...saved };
+      data.settings = settings;
+      updateWhisperModelControls();
+      note('Custom model selection enabled.');
+      return;
+    }
+    const select = $('#whisper');
+    if (select) select.value = preset.model;
+    const info = whisperInfoFor(preset.model);
+    const saved = await api.saveSettings({ whisperModel: preset.model, performancePreset: presetId });
+    settings = { ...settings, ...saved };
+    data.settings = settings;
+    if (info.active) {
+      note(`${info.label} is already the active model.`);
+      updateWhisperModelControls();
+      return;
+    }
+    if (info.downloaded === true) {
+      await loadWhisperSelection(preset.model, presetId);
+      note(`Switching to ${info.label} in the background.`);
+      return;
+    }
+    updateWhisperModelControls();
+    note(info.downloaded === false
+      ? `${info.label} is selected. Choose Download to fetch it.`
+      : `${info.label} is selected. Choose Download to start Whisper.`);
+  } catch (error) {
+    const select = $('#whisper');
+    if (select) select.value = settings.whisperModel || '';
+    const preset = $('#performancePreset');
+    if (preset) preset.value = settings.performancePreset || 'custom';
+    updateWhisperModelControls();
+    note(error.message || 'Could not apply that performance preset.');
   }
 }
 
@@ -933,15 +1692,34 @@ function wire() {
     };
   }
 
+  initializeModelCombos();
+  updateProviderControls();
+  updateFallbackControls();
+
   const chatProvider = $('#chatProvider');
   if (chatProvider) {
     chatProvider.onchange = () => {
       const provider = chatProvider.value;
       const config = settings.providers?.[provider] || {};
-      if ($('#chatUrl')) $('#chatUrl').value = config.url || '';
-      if ($('#chatModel')) $('#chatModel').value = config.model || '';
-      if ($('#chatKey')) $('#chatKey').placeholder = data.keyStatus?.[provider] ? 'Saved securely · enter to replace' : provider === 'local' ? 'Not needed for local' : 'Required';
+      const combo = $('[data-model-combo][data-model-kind="chat"]');
+      if (combo) rememberComboValue(combo);
+      if ($('#chatUrl')) $('#chatUrl').value = config.url || (provider === FREELLMAPI_PROVIDER ? 'http://127.0.0.1:31415/v1' : '');
+      if ($('#chatKey')) $('#chatKey').value = '';
       if ($('#providerStatus')) $('#providerStatus').textContent = '';
+      restoreComboModel('chat', provider);
+      updateProviderControls();
+      if (combo) void refreshComboModels(combo);
+    };
+  }
+
+  const fallbackProvider = $('#fallbackProvider');
+  if (fallbackProvider) {
+    fallbackProvider.onchange = () => {
+      const combo = $('[data-model-combo][data-model-kind="fallback"]');
+      if (combo) rememberComboValue(combo);
+      if ($('#fallbackKey')) $('#fallbackKey').value = '';
+      restoreComboModel('fallback', fallbackProvider.value);
+      updateFallbackControls();
     };
   }
 
@@ -949,6 +1727,10 @@ function wire() {
   if (refreshMic) refreshMic.onclick = () => void refreshMicrophones();
   const micTest = $('#micTest');
   if (micTest) micTest.onclick = () => void runMicTest();
+  const performancePreset = $('#performancePreset');
+  if (performancePreset) performancePreset.onchange = () => void chooseWhisperPreset(performancePreset.value);
+  const whisperSelect = $('#whisper');
+  if (whisperSelect) whisperSelect.onchange = () => void chooseWhisperModel(whisperSelect.value);
   const refreshLogs = $('#refreshLogs');
   if (refreshLogs) {
     refreshLogs.onclick = async () => {
@@ -981,6 +1763,37 @@ async function handleAction(action, button) {
       settingsDirty = false;
       note('Saved permissions were reset. Agent Mode will ask every time.');
       renderAll();
+      return;
+    }
+    if (action === 'whisper-switch') {
+      const model = button.dataset.model || settings.whisperModel;
+      button.disabled = true;
+      await loadWhisperSelection(model);
+      note(`Preparing ${whisperModelLabel(model)}.`);
+      return;
+    }
+    if (action === 'whisper-retry') {
+      const model = data.health?.whisper?.targetModel || settings.whisperModel;
+      button.disabled = true;
+      try {
+        await loadWhisperSelection(model);
+        note(`Retrying ${whisperModelLabel(model)}.`);
+      } finally {
+        button.disabled = false;
+      }
+      return;
+    }
+    if (action === 'whisper-cancel') {
+      button.disabled = true;
+      try {
+        const health = await api.cancelWhisperLoad();
+        data.health = data.health || {};
+        data.health.whisper = health;
+        updateShell();
+        note('Whisper model switch canceled.');
+      } finally {
+        button.disabled = false;
+      }
       return;
     }
     if (action === 'health') {
@@ -1043,19 +1856,38 @@ async function handleAction(action, button) {
       }, $('#chatKey')?.value.trim());
       button.disabled = false;
       if (status) status.textContent = result.message;
+      if (result.connected || result.ok) {
+        const combo = $('[data-model-combo][data-model-kind="chat"]');
+        if (combo) void refreshComboModels(combo, { force: true });
+      }
       return;
     }
     if (action === 'refresh-models') {
-      const provider = $('#chatProvider')?.value;
+      const combos = $$('[data-model-combo]').filter((combo) => comboProvider(combo) && comboProvider(combo) !== 'none');
       button.disabled = true;
       try {
-        const models = await api.listModels(provider, {
-          url: $('#chatUrl')?.value.trim(),
-          model: $('#chatModel')?.value.trim()
-        });
-        const datalist = $('#modelOptions');
-        if (datalist) datalist.innerHTML = models.map((model) => `<option value="${esc(model)}"></option>`).join('');
-        note(`${models.length} model${models.length === 1 ? '' : 's'} found.`);
+        await Promise.all(combos.map((combo) => refreshComboModels(combo, { force: true })));
+        const total = combos.reduce((sum, combo) => sum + comboState(combo).models.length, 0);
+        note(`${total} model${total === 1 ? '' : 's'} found.`);
+      } finally {
+        button.disabled = false;
+      }
+      return;
+    }
+    if (action === 'detect-provider') {
+      const provider = $('#chatProvider')?.value;
+      if (provider !== FREELLMAPI_PROVIDER) return;
+      button.disabled = true;
+      const status = $('#providerStatus');
+      if (status) status.textContent = 'Detecting FreeLLMAPI…';
+      try {
+        const result = await api.detectProvider();
+        if ($('#chatUrl')) $('#chatUrl').value = result.url;
+        if (status) status.textContent = `Detected FreeLLMAPI at ${result.url}`;
+        const combo = $('[data-model-combo][data-model-kind="chat"]');
+        if (combo) void refreshComboModels(combo, { force: true });
+      } catch (error) {
+        if (status) status.textContent = error.message || 'No FreeLLMAPI server was found.';
       } finally {
         button.disabled = false;
       }

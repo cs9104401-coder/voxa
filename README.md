@@ -62,6 +62,12 @@ ollama pull qwen3:8b
 
 The app checks that the exact configured model tag is installed.
 
+### Model picker and fallback
+
+Agent model fields are searchable comboboxes filled from the connected provider by the main process, so API keys stay out of the renderer. The list refreshes when it opens, after a successful connection test or save, and from **Refresh models**; results are cached for five minutes. You can still type a custom model name. Ollama uses `/api/tags`, and the **FreeLLMAPI** provider presets `http://127.0.0.1:31415/v1` with `auto`, `auto:fast`, and `auto:smart` pinned as recommended; **Detect** probes ports 31415 and 3001 on `127.0.0.1`.
+
+Fallback is off by default with provider **None**. Choosing a cloud fallback shows a privacy warning, and the fallback can only be enabled after an API key for that provider is saved.
+
 ### Local speech recognition
 
 Voxa ships a single-file `voxa-whisper.exe` built with PyInstaller, so users do not need Python installed. In development Voxa runs `whisper-server\server.py` from the virtual environment; a packaged build launches `resources\whisper-server\voxa-whisper.exe`. The default is `small` on CPU with int8; `large-v3` remains available in **Dictation** for higher accuracy. The server parses `--host`, `--port`, `--model`, `--device`, `--compute-type`, and `--cache-dir`, reports download and loading progress through `/health`, and runs inference off the event loop.

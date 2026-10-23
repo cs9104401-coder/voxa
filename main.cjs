@@ -20,7 +20,8 @@ const { createRecorderManager } = require('./lib/recorder.cjs');
 const { createOverlay } = require('./lib/overlay.cjs');
 const { createHotkeys, isValidHotkey } = require('./lib/hotkeys.cjs');
 const {
-  APP_NAME, APPROVABLE_TOOLS, LIMITS, MESSAGES, STT_CLOUD_PROVIDERS, TOOL_DEFINITIONS, TOOL_NAMES, defaults
+  APP_NAME, APPROVABLE_TOOLS, LIMITS, MESSAGES, STT_CLOUD_PROVIDERS, TOOL_DEFINITIONS, TOOL_NAMES,
+  WHISPER_MODELS, WHISPER_PRESETS, defaults
 } = require('./lib/constants.cjs');
 
 const START_HIDDEN = process.argv.includes('--hidden');
@@ -58,6 +59,8 @@ let lastHealth = {
 let currentTurn = null;
 let turnRunning = false;
 let nextTurnId = 1;
+const MODEL_CACHE_TTL_MS = 5 * 60 * 1000;
+const modelListCache = new Map();
 const approvalGate = createApprovalGate({
   timeoutMs: LIMITS.APPROVAL_TIMEOUT_MS,
   onTimeout: () => {
@@ -67,6 +70,8 @@ const approvalGate = createApprovalGate({
 });
 let micTestRunning = false;
 let ollamaPullRunning = false;
+let whisperWatchTimer = null;
+let whisperWatchToken = 0;
 let tailTimer = null;
 let audioTimer = null;
 let hideTimer = null;
@@ -89,6 +94,42 @@ ipcMain.on('brand:name', (event) => {
 
 function cleanError(error) {
   return String(error?.message || error || 'The action failed.').split(/\r?\n/)[0].trim().slice(0, 500);
+}
+
+function providerNeedsKey(provider) {
+  return provider !== 'local' && provider !== 'freellmapi';
+}
+
+function isCloudProvider(provider) {
+  return Boolean(provider && provider !== 'none' && provider !== 'local' && provider !== 'freellmapi');
+}
+
+function clearModelCache(provider = '') {
+  if (!provider) {
+    modelListCache.clear();
+    return;
+  }
+  for (const key of modelListCache.keys()) {
+    if (key.startsWith(`${provider}|`)) modelListCache.delete(key);
+  }
+}
+
+async function loadProviderModels(provider, config = {}, force = false) {
+  if (typeof provider !== 'string' || !Object.hasOwn(settings.providers, provider)) throw new Error('Unknown provider.');
+  const base = { ...settings.providers[provider] };
+  const url = store.normalizeProviderUrl(provider, config?.url || base.url);
+  if (!url) throw new Error(store.BASE_URL_ERROR);
+  base.url = url;
+  if (config?.model) base.model = String(config.model).trim().slice(0, 200);
+  const typedKey = providerNeedsKey(provider) ? String(config?.apiKey || '').trim() : '';
+  const key = typedKey || (providerNeedsKey(provider) ? secrets[provider] : '');
+  if (providerNeedsKey(provider) && !key) throw new Error(`Add an API key for ${provider} first.`);
+  const cacheKey = `${provider}|${url}`;
+  const cached = modelListCache.get(cacheKey);
+  if (!force && cached && Date.now() - cached.at < MODEL_CACHE_TTL_MS) return cached.models;
+  const models = await services.listModels(provider, base, key);
+  modelListCache.set(cacheKey, { at: Date.now(), models });
+  return models;
 }
 
 function toBuffer(payload) {
@@ -169,7 +210,8 @@ function buildDashboardState() {
 function normalizeSettings() {
   if (!settings.providers || typeof settings.providers !== 'object') settings.providers = structuredClone(defaults(userName).providers);
   if (!STT_CLOUD_PROVIDERS.includes(settings.sttCloudProvider)) settings.sttCloudProvider = 'openai';
-  if (!settings.fallbackProvider || settings.fallbackProvider === 'local' || !Object.hasOwn(settings.providers, settings.fallbackProvider)) settings.fallbackProvider = 'openai';
+  if (settings.fallbackProvider !== 'none' && (!settings.fallbackProvider || settings.fallbackProvider === 'local' || !Object.hasOwn(settings.providers, settings.fallbackProvider))) settings.fallbackProvider = 'none';
+  if (settings.fallbackProvider === 'none') settings.fallbackEnabled = false;
   if (!settings.lastCloudProvider || settings.lastCloudProvider === 'local' || !Object.hasOwn(settings.providers, settings.lastCloudProvider)) settings.lastCloudProvider = 'openai';
   if (settings.chatProvider === 'local') {
     settings.activeMode = 'local';
@@ -181,6 +223,10 @@ function normalizeSettings() {
   settings.permissionCustom = permissions.normalizeCustomPermissions(settings.permissionCustom);
   if (!['agent', 'dictation'].includes(settings.mode)) settings.mode = 'agent';
   if (!['island', 'notch'].includes(settings.overlayStyle)) settings.overlayStyle = 'island';
+  if (!Object.hasOwn(WHISPER_PRESETS, settings.performancePreset)) settings.performancePreset = 'custom';
+  if (settings.performancePreset !== 'custom' && WHISPER_PRESETS[settings.performancePreset].model !== settings.whisperModel) {
+    settings.performancePreset = 'custom';
+  }
 }
 
 function normalizeConsoleArgs(args) {
@@ -454,7 +500,13 @@ function saveSettingsPatch(patch) {
     next.activeMode = 'cloud';
     next.lastCloudProvider = next.chatProvider;
   }
-  const whisperChanged = next.whisperModel !== settings.whisperModel || next.whisperDevice !== settings.whisperDevice;
+  if (next.fallbackProvider === 'none') {
+    next.fallbackEnabled = false;
+  } else if (next.fallbackEnabled && isCloudProvider(next.fallbackProvider) && !secrets[next.fallbackProvider]) {
+    throw new Error(`Save an API key for ${next.fallbackProvider} before enabling the cloud fallback.`);
+  }
+  const whisperModelChanged = next.whisperModel !== settings.whisperModel;
+  const whisperDeviceChanged = next.whisperDevice !== settings.whisperDevice;
   const hotkeysChanged = next.dictationHotkey !== settings.dictationHotkey || next.agentHotkey !== settings.agentHotkey;
   const overlayStyleChanged = next.overlayStyle !== settings.overlayStyle;
   const chatChanged = next.chatProvider !== settings.chatProvider
@@ -480,16 +532,22 @@ function saveSettingsPatch(patch) {
   settings = next;
   applyAutostart();
   if (overlayStyleChanged) overlay?.setStyle(next.overlayStyle);
-  if (whisperChanged) {
+  if (whisperDeviceChanged) {
+    stopWhisperWatch();
     services.stopWhisper();
-    logger.info('whisper server', 'Whisper will restart with the new model settings.');
+    logger.info('whisper server', 'Whisper will restart with the new compute device.');
+  } else if (whisperModelChanged) {
+    logger.info('whisper server', `Whisper model selection changed to ${next.whisperModel}; the active model stays loaded until the switch is requested.`);
   }
   refreshTray();
   broadcast('settings:updated', publicSettings());
   broadcast('hotkey-status', hotkeyStatus());
   broadcast('mode-status', { mode: settings.mode });
   logger.info('settings', `Saved: ${Object.keys(patch).join(', ') || 'settings'}`);
-  if (chatChanged) healthChecks().catch((error) => logger.warn('health', cleanError(error)));
+  if (chatChanged) {
+    clearModelCache();
+    healthChecks().catch((error) => logger.warn('health', cleanError(error)));
+  }
   return publicSettings();
 }
 
@@ -526,13 +584,6 @@ function togglePaused() {
   logger.info('app', settings.paused ? 'Listening paused' : 'Listening resumed');
 }
 
-function checkWhisperModel(health) {
-  if (health?.ok && health.model && health.model !== settings.whisperModel) {
-    throw new Error(`Whisper is already running with ${health.model}, not ${settings.whisperModel}. Stop that service or change the model setting.`);
-  }
-  return health;
-}
-
 function formatBytes(value) {
   const bytes = Number(value);
   if (!Number.isFinite(bytes) || bytes <= 0) return '0 MB';
@@ -540,38 +591,86 @@ function formatBytes(value) {
   return `${Math.max(1, Math.round(bytes / 1024 ** 2))} MB`;
 }
 
+function whisperModelSummary(health = {}) {
+  const source = Array.isArray(health.models) && health.models.length ? health.models : null;
+  if (source) {
+    return source.map((item) => ({
+      id: String(item.id || ''),
+      label: String(item.label || item.id || ''),
+      sizeBytes: Number(item.size_bytes ?? item.sizeBytes) || 0,
+      downloaded: typeof item.downloaded === 'boolean' ? item.downloaded : null,
+      active: Boolean(item.active),
+      status: String(item.status || '')
+    })).filter((item) => item.id);
+  }
+  return WHISPER_MODELS.map((item) => ({
+    ...item,
+    downloaded: null,
+    active: false,
+    status: 'Unknown'
+  }));
+}
+
 function whisperHealthSummary(health = {}) {
-  const model = health.model || settings.whisperModel;
-  const modelMatches = !health.model || health.model === settings.whisperModel;
+  const selectedModel = settings.whisperModel;
+  const activeModel = health.active_model || health.activeModel || (health.ok ? health.model : '') || '';
+  const targetModel = health.target_model || health.targetModel || activeModel || selectedModel;
+  const rawStatus = String(health.status || '');
+  const switching = Boolean(health.switching) || ['downloading', 'loading'].includes(rawStatus);
+  const modelMatches = !activeModel || activeModel === selectedModel;
   const source = health.progress && typeof health.progress === 'object' ? health.progress : null;
   const downloaded = Number(source?.downloaded_bytes);
   const total = Number(source?.total_bytes);
-  const percent = Number(source?.percent);
+  const percent = source?.percent == null ? NaN : Number(source.percent);
+  const speed = Number(source?.speed_bps ?? source?.speedBps);
   const progress = source ? {
+    model: typeof source.model === 'string' ? source.model : '',
     status: typeof source.status === 'string' ? source.status : '',
     downloadedBytes: Number.isFinite(downloaded) ? Math.max(0, downloaded) : 0,
     totalBytes: Number.isFinite(total) ? Math.max(0, total) : 0,
-    percent: Number.isFinite(percent) ? Math.max(0, Math.min(100, Math.round(percent))) : null
+    percent: Number.isFinite(percent) ? Math.max(0, Math.min(100, Math.round(percent))) : null,
+    speedBps: Number.isFinite(speed) ? Math.max(0, speed) : 0,
+    stalled: Boolean(source.stalled),
+    error: typeof source.error === 'string' ? source.error : ''
   } : null;
-  const ok = Boolean(health.ok && modelMatches);
-  const status = health.ok && !modelMatches ? 'mismatch' : (health.status || (ok ? 'ready' : 'unreachable'));
+  let status;
+  if (switching) status = rawStatus === 'downloading' ? 'downloading' : 'loading';
+  else if (!modelMatches) status = 'mismatch';
+  else status = rawStatus || (health.ok ? 'ready' : 'unreachable');
+  const ok = Boolean(health.ok && modelMatches && !switching);
+  const model = activeModel || targetModel || selectedModel;
+  const switchError = String(health.switch_error || health.switchError || '');
   let message;
-  if (ok) {
+  if (switching) {
+    message = health.message || (status === 'downloading'
+      ? (progress?.percent == null
+        ? `Preparing the ${targetModel} model download.`
+        : `Downloading ${targetModel} — ${progress.percent}% (${formatBytes(progress.downloadedBytes)} of ${formatBytes(progress.totalBytes)}).`)
+      : `Loading the ${targetModel} model.`);
+  } else if (ok) {
     message = health.message || `Reachable — ${model}.`;
-  } else if (status === 'downloading') {
-    message = health.message || (progress?.percent == null
-      ? `Preparing the ${model} model download.`
-      : `Downloading ${model} — ${progress.percent}% (${formatBytes(progress.downloadedBytes)} of ${formatBytes(progress.totalBytes)}).`);
-  } else if (status === 'loading') {
-    message = health.message || `Loading the ${model} model.`;
   } else if (status === 'mismatch') {
-    message = `Reachable with ${health.model}, not the configured ${settings.whisperModel}.`;
+    message = `Reachable with ${activeModel}, not the selected ${selectedModel}.`;
   } else if (status === 'error') {
-    message = health.error || 'The Whisper model failed to load.';
+    message = health.error || switchError || 'The Whisper model failed to load.';
   } else {
     message = `Not reachable: ${health.error || 'start the whisper server.'}`;
   }
-  return { ok, model, modelMatches, status, progress, message };
+  return {
+    ok,
+    model,
+    selectedModel,
+    activeModel,
+    targetModel,
+    modelMatches,
+    switching,
+    switchStatus: String(health.switch_status || health.switchStatus || ''),
+    switchError,
+    status,
+    progress,
+    models: whisperModelSummary(health),
+    message
+  };
 }
 
 function publishWhisperHealth(health) {
@@ -584,23 +683,111 @@ function publishWhisperHealth(health) {
 }
 
 async function ensureWhisper() {
-  const existing = await services.whisperHealth(WHISPER_PORT);
-  if (existing.ok) {
-    publishWhisperHealth(existing);
-    return checkWhisperModel(existing);
+  try {
+    const existing = await services.whisperHealth(WHISPER_PORT);
+    if (existing.ok) {
+      publishWhisperHealth(existing);
+      return existing;
+    }
+    if (existing.status === 'error') {
+      publishWhisperHealth(existing);
+      throw new Error(existing.error || 'The Whisper model failed to load.');
+    }
+    const health = await services.startWhisper({
+      port: WHISPER_PORT,
+      model: settings.whisperModel,
+      device: settings.whisperDevice,
+      onHealth: publishWhisperHealth
+    }, logger);
+    publishWhisperHealth(health);
+    return health;
+  } catch (error) {
+    if (services.whisperStatus().running) startWhisperWatch();
+    throw error;
   }
-  if (existing.status === 'error') {
-    publishWhisperHealth(existing);
-    throw new Error(existing.error || 'The Whisper model failed to load.');
-  }
-  const health = await services.startWhisper({
-    port: WHISPER_PORT,
-    model: settings.whisperModel,
-    device: settings.whisperDevice,
-    onHealth: publishWhisperHealth
-  }, logger);
+}
+
+function stopWhisperWatch(token = 0) {
+  if (token && token !== whisperWatchToken) return;
+  whisperWatchToken += 1;
+  clearInterval(whisperWatchTimer);
+  whisperWatchTimer = null;
+}
+
+function startWhisperWatch(expectStart = false) {
+  const token = ++whisperWatchToken;
+  clearInterval(whisperWatchTimer);
+  const deadline = Date.now() + LIMITS.WHISPER_START_TIMEOUT_MS;
+  let polling = false;
+  let waitingForStart = Boolean(expectStart);
+  const tick = async () => {
+    if (token !== whisperWatchToken || polling) return;
+    polling = true;
+    try {
+      const health = await services.whisperHealth(WHISPER_PORT);
+      if (token !== whisperWatchToken) return;
+      if (health.status !== 'unreachable') waitingForStart = false;
+      publishWhisperHealth(health);
+      const processStatus = services.whisperStatus();
+      const starting = health.status === 'unreachable'
+        && (waitingForStart || Boolean(processStatus.running || processStatus.processAlive));
+      const active = Boolean(health.switching)
+        || ['downloading', 'loading'].includes(health.status)
+        || starting;
+      const startExpired = health.status === 'unreachable' && Date.now() > deadline;
+      if (!active || health.status === 'error' || startExpired) stopWhisperWatch(token);
+    } finally {
+      polling = false;
+    }
+  };
+  void tick();
+  whisperWatchTimer = setInterval(() => void tick(), LIMITS.WHISPER_PROGRESS_POLL_MS);
+}
+
+async function cancelWhisperSwitch() {
+  await services.cancelWhisperModel(WHISPER_PORT);
+  const health = await services.whisperHealth(WHISPER_PORT);
   publishWhisperHealth(health);
-  return checkWhisperModel(health);
+  return whisperHealthSummary(health);
+}
+
+async function switchWhisperModel(model) {
+  const target = String(model || '').trim();
+  if (!WHISPER_MODELS.some((item) => item.id === target)) throw new Error('Choose a supported Whisper model.');
+  const currentPreset = settings.performancePreset;
+  const preset = currentPreset
+    && currentPreset !== 'custom'
+    && WHISPER_PRESETS[currentPreset]?.model === target
+    ? currentPreset
+    : 'custom';
+  saveSettingsPatch({ whisperModel: target, performancePreset: preset });
+  const existing = await services.whisperHealth(WHISPER_PORT);
+  if (existing.status !== 'unreachable') {
+    await services.loadWhisperModel(WHISPER_PORT, target);
+    startWhisperWatch();
+  } else {
+    startWhisperWatch(true);
+    ensureWhisper().catch((error) => {
+      if (services.whisperStatus().running) return;
+      stopWhisperWatch();
+      publishWhisperHealth({
+        ok: false,
+        status: 'error',
+        error: cleanError(error),
+        active_model: null,
+        target_model: target,
+        models: WHISPER_MODELS.map((item) => ({
+          ...item,
+          downloaded: null,
+          active: false,
+          status: 'Unknown'
+        }))
+      });
+    });
+  }
+  const health = await services.whisperHealth(WHISPER_PORT);
+  publishWhisperHealth(health);
+  return whisperHealthSummary(health);
 }
 
 async function transcribeAudio(audio, mime, signal) {
@@ -622,7 +809,7 @@ async function healthChecks() {
   const localConfig = settings.providers.local;
   const providerName = settings.chatProvider;
   const providerConfig = settings.providers[providerName] || localConfig;
-  const providerKey = providerName === 'local' ? '' : secrets[providerName] || '';
+  const providerKey = providerNeedsKey(providerName) ? secrets[providerName] || '' : '';
   const ollamaInstalled = Boolean(services.ollamaExecutable());
   const [ollamaResult, whisperResult, remoteChatResult] = await Promise.all([
     (async () => {
@@ -653,7 +840,7 @@ async function healthChecks() {
     (async () => {
       if (providerName === 'local') return null;
       const wanted = providerConfig.model;
-      if (!providerKey) {
+      if (providerNeedsKey(providerName) && !providerKey) {
         return { ok: false, provider: providerName, model: wanted, message: `Add an API key for ${providerName}.` };
       }
       try {
@@ -674,6 +861,7 @@ async function healthChecks() {
       }
     })()
   ]);
+  if (whisperResult.switching || ['downloading', 'loading'].includes(whisperResult.status)) startWhisperWatch();
   const chatResult = providerName === 'local'
     ? { ...ollamaResult, provider: 'local' }
     : remoteChatResult;
@@ -1262,8 +1450,8 @@ async function executeTool(turn, call, providerName = settings.chatProvider) {
 }
 
 async function runConversation(turn, transcript, providerName, target) {
-  const key = providerName === 'local' ? '' : secrets[providerName];
-  if (providerName !== 'local' && !key) throw new Error(`Add an API key for ${providerName} in the dashboard.`);
+  const key = providerNeedsKey(providerName) ? secrets[providerName] : '';
+  if (providerNeedsKey(providerName) && !key) throw new Error(`Add an API key for ${providerName} in the dashboard.`);
   const conversationSettings = providerName === settings.chatProvider ? settings : { ...settings, chatProvider: providerName };
   const messages = [
     { role: 'system', content: systemPrompt(target) },
@@ -1320,8 +1508,9 @@ async function runAgent(turn, transcript) {
       && provider === 'local'
       && settings.fallbackEnabled
       && settings.fallbackProvider
+      && settings.fallbackProvider !== 'none'
       && settings.fallbackProvider !== 'local'
-      && secrets[settings.fallbackProvider];
+      && (!isCloudProvider(settings.fallbackProvider) || Boolean(secrets[settings.fallbackProvider]));
     if (!canFallback) throw error;
     logger.warn('model', `${provider} failed; trying ${settings.fallbackProvider}: ${cleanError(error)}`);
     overlay.setState({ status: 'thinking', message: `Local model unavailable. Trying ${settings.fallbackProvider}…` });
@@ -1509,41 +1698,42 @@ function registerIpc() {
     else delete nextSecrets[provider];
     store.writeSecrets(nextSecrets);
     secrets = nextSecrets;
+    clearModelCache(provider);
+    if (!value && settings.fallbackEnabled && settings.fallbackProvider === provider && isCloudProvider(provider)) {
+      settings.fallbackEnabled = false;
+      persistSettings();
+      broadcast('settings:updated', publicSettings());
+      logger.warn('settings', `Fallback was disabled because the ${provider} API key was removed.`);
+    }
     logger.info('provider', `${provider} key ${value ? 'saved' : 'removed'}`);
     if (settings.chatProvider === provider) healthChecks().catch((error) => logger.warn('health', cleanError(error)));
     return { saved: Boolean(value) };
   });
-  handle('provider:models', async (provider, config = {}) => {
-    if (typeof provider !== 'string' || !Object.hasOwn(settings.providers, provider)) throw new Error('Unknown provider.');
-    const base = { ...settings.providers[provider] };
-    if (config?.url) base.url = store.normalizeUrl(config.url);
-    if (!base.url) throw new Error('Provider URL is invalid.');
-    if (config?.model) base.model = String(config.model).trim().slice(0, 200);
-    const key = provider === 'local' ? '' : secrets[provider];
-    if (provider !== 'local' && !key) throw new Error(`Add an API key for ${provider} first.`);
-    return services.listModels(provider, base, key);
+  handle('provider:models', async (provider, config = {}, options = {}) => {
+    return loadProviderModels(provider, config, Boolean(options?.force));
   });
   handle('provider:test', async (provider, config = {}, apiKey = '') => {
     if (typeof provider !== 'string' || !Object.hasOwn(settings.providers, provider)) return { ok: false, message: 'Unknown provider.' };
     const base = { ...settings.providers[provider] };
-    if (config?.url) {
-      const url = store.normalizeUrl(config.url);
-      if (!url) return { ok: false, message: 'Base URL must be a valid HTTP or HTTPS address.' };
-      base.url = url;
-    }
+    const url = store.normalizeProviderUrl(provider, config?.url || base.url);
+    if (!url) return { ok: false, message: store.BASE_URL_ERROR };
+    base.url = url;
     if (config?.model) base.model = String(config.model).trim().slice(0, 200);
-    const key = provider === 'local' ? '' : String(apiKey || '').trim() || secrets[provider] || '';
-    if (provider !== 'local' && !key) return { ok: false, message: `Add an API key for ${provider} first.` };
+    const key = providerNeedsKey(provider) ? String(apiKey || '').trim() || secrets[provider] || '' : '';
+    if (providerNeedsKey(provider) && !key) return { ok: false, message: `Add an API key for ${provider} first.` };
     try {
       const result = await services.checkHealth(provider, base, key, null, base.model);
+      clearModelCache(provider);
       return {
         ok: Boolean(result.modelAvailable),
+        connected: true,
         message: result.modelAvailable ? `Connection successful · ${result.model}` : `Connected, but ${result.model} is not in the model list.`
       };
     } catch (error) {
       return { ok: false, message: cleanError(error) };
     }
   });
+  handle('provider:detect', () => services.detectFreeLlmApi());
   handle('ollama:pull', async () => {
     if (ollamaPullRunning) throw new Error('An Ollama model download is already running.');
     const base = services.ollamaBase(settings.providers.local.url);
@@ -1561,6 +1751,19 @@ function registerIpc() {
     }
   });
   handle('ollama:open-download', () => openExternalLink('https://ollama.com/download/windows'));
+  handle('whisper:models', async () => {
+    const health = await services.whisperHealth(WHISPER_PORT);
+    if (health.status === 'unreachable') {
+      return {
+        ok: false,
+        error: health.error || 'Whisper is not running.',
+        models: whisperModelSummary(health)
+      };
+    }
+    return services.whisperModels(WHISPER_PORT);
+  });
+  handle('whisper:load', (model) => switchWhisperModel(model));
+  handle('whisper:cancel', () => cancelWhisperSwitch());
   handle('health:check', () => healthChecks());
   handle('microphone:list', () => queueRecorderOperation(() => recorderRequest('enumerate', {}, 20000)));
   handle('microphone:test', async () => {
@@ -1790,6 +1993,11 @@ async function initialize() {
     settings = store.loadSettings(defaults(userName), userName, logger, isValidHotkey);
     normalizeSettings();
     secrets = store.readSecrets(logger);
+    if (settings.fallbackEnabled && isCloudProvider(settings.fallbackProvider) && !secrets[settings.fallbackProvider]) {
+      settings.fallbackEnabled = false;
+      persistSettings();
+      logger.warn('settings load', `Fallback was disabled because no API key is saved for ${settings.fallbackProvider}.`);
+    }
     history = store.loadHistory(logger);
     memory = store.loadMemory(logger);
     Menu.setApplicationMenu(null);

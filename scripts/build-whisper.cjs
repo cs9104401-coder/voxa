@@ -40,7 +40,7 @@ if (!fs.existsSync(python)) {
   ].join('\n'));
 }
 
-if (run(python, ['-c', 'import faster_whisper, uvicorn, fastapi, multipart']) !== 0) {
+if (run(python, ['-c', 'import faster_whisper, uvicorn, fastapi, multipart, huggingface_hub']) !== 0) {
   fail([
     'The Whisper service dependencies are missing from the virtual environment.',
     `Run: "${python}" -m pip install -r whisper-server\\requirements.txt`
