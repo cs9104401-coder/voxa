@@ -1,6 +1,6 @@
 {
   "name": "voxa",
-  "version": "1.1.1",
+  "version": "1.2.0",
   "private": true,
   "description": "Local desktop voice workspace with dictation and approved agent actions.",
   "author": "Voxa",
