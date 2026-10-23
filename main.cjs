@@ -1,0 +1,1789 @@
+'use strict';
+
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
+const {
+  app, BrowserWindow, Menu, Tray, clipboard, dialog, ipcMain, nativeImage, screen, session, shell
+} = require('electron');
+
+const logger = require('./lib/logger.cjs');
+const { createApprovalGate } = require('./lib/approval.cjs');
+const { runAgentLoop } = require('./lib/agent-loop.cjs');
+const permissions = require('./lib/permissions.cjs');
+const { parseToolArguments } = require('./lib/tool-schema.cjs');
+const store = require('./lib/store.cjs');
+const apps = require('./lib/apps.cjs');
+const desktop = require('./lib/desktop.cjs');
+const services = require('./lib/services.cjs');
+const { createRecorderManager } = require('./lib/recorder.cjs');
+const { createOverlay } = require('./lib/overlay.cjs');
+const { createHotkeys, isValidHotkey } = require('./lib/hotkeys.cjs');
+const {
+  APP_NAME, APPROVABLE_TOOLS, LIMITS, MESSAGES, STT_CLOUD_PROVIDERS, TOOL_DEFINITIONS, TOOL_NAMES, defaults
+} = require('./lib/constants.cjs');
+
+const START_HIDDEN = process.argv.includes('--hidden');
+const GALLERY = process.argv.includes('--gallery') || process.argv.includes('--ui-gallery');
+const SELF_TEST = process.argv.includes('--selftest-worker') || Boolean(process.env.VOXA_SELFTEST_OUTPUT);
+const RECORDER_PARTITION = 'persist:voxa-recorder';
+const WHISPER_PORT = 8000;
+
+let userName = 'User';
+try {
+  userName = os.userInfo().username || userName;
+} catch {
+  // Keep the generic fallback if the OS account name is unavailable.
+}
+
+let settings;
+let secrets = {};
+let history = [];
+let memory = [];
+let dashboardWindow = null;
+let recorderWindow = null;
+let recorderReady = null;
+let recorderQueue = Promise.resolve();
+let pendingRecorderRequests = new Map();
+let nextRecorderRequestId = 1;
+let overlay = null;
+let recorderManager = null;
+let hotkeys = null;
+let tray = null;
+let lastHealth = {
+  ollama: { ok: false, message: 'Not checked yet.' },
+  chat: { ok: false, provider: 'local', message: 'Not checked yet.' },
+  whisper: { ok: false, message: 'Not checked yet.' }
+};
+let currentTurn = null;
+let turnRunning = false;
+let nextTurnId = 1;
+const approvalGate = createApprovalGate({
+  timeoutMs: LIMITS.APPROVAL_TIMEOUT_MS,
+  onTimeout: () => {
+    logger.warn('approval', 'The approval request timed out and was denied.');
+    if (currentTurn) overlay?.setState({ status: 'thinking', message: 'Approval timed out. Nothing was run.', approval: null });
+  }
+});
+let micTestRunning = false;
+let ollamaPullRunning = false;
+let tailTimer = null;
+let audioTimer = null;
+let hideTimer = null;
+let speechController = null;
+let quitting = false;
+
+const USER_DATA_DIR = path.join(app.getPath('appData'), 'my-voice-app');
+app.setPath('userData', USER_DATA_DIR);
+app.setPath('sessionData', USER_DATA_DIR);
+app.setName(APP_NAME);
+if (process.platform === 'win32') app.setAppUserModelId('com.voxa.assistant');
+app.commandLine.appendSwitch('autoplay-policy', 'no-user-gesture-required');
+ipcMain.on('brand:name', (event) => {
+  event.returnValue = APP_NAME;
+});
+
+function cleanError(error) {
+  return String(error?.message || error || 'The action failed.').split(/\r?\n/)[0].trim().slice(0, 500);
+}
+
+function toBuffer(payload) {
+  if (Buffer.isBuffer(payload)) return payload;
+  if (payload instanceof ArrayBuffer) return Buffer.from(payload);
+  if (ArrayBuffer.isView(payload)) return Buffer.from(payload.buffer, payload.byteOffset, payload.byteLength);
+  if (payload?.type === 'Buffer' && Array.isArray(payload.data)) return Buffer.from(payload.data);
+  return Buffer.alloc(0);
+}
+
+function publicSettings() {
+  return structuredClone(settings);
+}
+
+function sendToDashboard(channel, payload) {
+  if (!dashboardWindow || dashboardWindow.isDestroyed()) return false;
+  try {
+    dashboardWindow.webContents.send(channel, payload);
+    return true;
+  } catch (error) {
+    logger.warn('dashboard', `Could not send ${channel}: ${cleanError(error)}`);
+    return false;
+  }
+}
+
+function broadcast(channel, payload) {
+  sendToDashboard(channel, payload);
+}
+
+function sendToDashboardWhenReady(channel, payload) {
+  if (!dashboardWindow || dashboardWindow.isDestroyed()) return false;
+  const contents = dashboardWindow.webContents;
+  if (!contents || contents.isDestroyed()) return false;
+  if (contents.isLoadingMainFrame()) {
+    contents.once('did-finish-load', () => sendToDashboard(channel, payload));
+    return true;
+  }
+  return sendToDashboard(channel, payload);
+}
+
+function openExternalLink(url) {
+  try {
+    const parsed = new URL(String(url || ''));
+    if (parsed.protocol !== 'https:') return false;
+    shell.openExternal(parsed.href).catch((error) => logger.warn('link', cleanError(error)));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function hotkeyStatus() {
+  const status = hotkeys?.status?.() || { active: false, error: '' };
+  return {
+    mode: status.active ? 'uiohook' : 'unavailable',
+    error: status.error || '',
+    dictation: settings?.dictationHotkey || '',
+    agent: settings?.agentHotkey || ''
+  };
+}
+
+function buildDashboardState() {
+  return {
+    appName: APP_NAME,
+    userName,
+    gallery: GALLERY,
+    settings: publicSettings(),
+    turns: structuredClone(history),
+    memory: [...memory],
+    health: structuredClone(lastHealth),
+    activationLogs: logger.read(LIMITS.MAX_LOG_LINES),
+    hotkey: hotkeyStatus(),
+    apps: apps.appNames(80),
+    keyStatus: Object.fromEntries(Object.keys(settings.providers).map((provider) => [provider, Boolean(secrets[provider])]))
+  };
+}
+
+function normalizeSettings() {
+  if (!settings.providers || typeof settings.providers !== 'object') settings.providers = structuredClone(defaults(userName).providers);
+  if (!STT_CLOUD_PROVIDERS.includes(settings.sttCloudProvider)) settings.sttCloudProvider = 'openai';
+  if (!settings.fallbackProvider || settings.fallbackProvider === 'local' || !Object.hasOwn(settings.providers, settings.fallbackProvider)) settings.fallbackProvider = 'openai';
+  if (!settings.lastCloudProvider || settings.lastCloudProvider === 'local' || !Object.hasOwn(settings.providers, settings.lastCloudProvider)) settings.lastCloudProvider = 'openai';
+  if (settings.chatProvider === 'local') {
+    settings.activeMode = 'local';
+  } else {
+    settings.activeMode = 'cloud';
+    settings.lastCloudProvider = settings.chatProvider;
+  }
+  settings.permissionMode = permissions.normalizePermissionMode(settings.permissionMode);
+  settings.permissionCustom = permissions.normalizeCustomPermissions(settings.permissionCustom);
+  if (!['agent', 'dictation'].includes(settings.mode)) settings.mode = 'agent';
+}
+
+function normalizeConsoleArgs(args) {
+  if (args[0] && typeof args[0] === 'object' && ('level' in args[0] || 'message' in args[0])) {
+    return { level: args[0].level, message: args[0].message };
+  }
+  return { level: args[0], message: args[1] };
+}
+
+function attachConsoleLogging(window, label) {
+  window.webContents.on('console-message', (_event, ...args) => {
+    const { level, message } = normalizeConsoleArgs(args);
+    const numeric = typeof level === 'number' ? level : ({ verbose: 0, info: 1, warning: 2, error: 3 }[level] ?? 0);
+    if (numeric >= 3) logger.error(`${label} console`, message);
+    else if (numeric === 2) logger.warn(`${label} console`, message);
+  });
+}
+
+function createDashboard(show = false) {
+  if (dashboardWindow && !dashboardWindow.isDestroyed()) {
+    if (show) {
+      if (dashboardWindow.isMinimized()) dashboardWindow.restore();
+      dashboardWindow.show();
+      dashboardWindow.focus();
+    }
+    return dashboardWindow;
+  }
+  dashboardWindow = new BrowserWindow({
+    width: 1080,
+    height: 710,
+    minWidth: 860,
+    minHeight: 580,
+    frame: false,
+    show: false,
+    title: APP_NAME,
+    backgroundColor: '#17181c',
+    webPreferences: {
+      preload: path.join(__dirname, 'preload.cjs'),
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true,
+      spellcheck: false
+    }
+  });
+  dashboardWindow.setMenuBarVisibility(false);
+  dashboardWindow.webContents.setWindowOpenHandler(({ url }) => {
+    openExternalLink(url);
+    return { action: 'deny' };
+  });
+  dashboardWindow.webContents.on('will-navigate', (event, url) => {
+    event.preventDefault();
+    openExternalLink(url);
+  });
+  attachConsoleLogging(dashboardWindow, 'dashboard');
+  dashboardWindow.webContents.on('render-process-gone', (_event, details) => {
+    logger.error('dashboard', `Renderer exited: ${details.reason}`);
+    if (quitting) return;
+    const crashed = dashboardWindow;
+    dashboardWindow = null;
+    if (crashed && !crashed.isDestroyed()) crashed.destroy();
+  });
+  dashboardWindow.loadFile(path.join(__dirname, 'renderer', 'settings.html')).catch((error) => {
+    logger.error('dashboard', `Dashboard failed to load: ${cleanError(error)}`);
+  });
+  dashboardWindow.once('ready-to-show', () => {
+    if (show && dashboardWindow && !dashboardWindow.isDestroyed()) dashboardWindow.show();
+  });
+  dashboardWindow.on('close', (event) => {
+    if (!quitting) {
+      event.preventDefault();
+      dashboardWindow.hide();
+    }
+  });
+  dashboardWindow.on('closed', () => {
+    dashboardWindow = null;
+  });
+  return dashboardWindow;
+}
+
+function showDashboard() {
+  createDashboard(true);
+}
+
+function rejectPendingRecorderRequests(message) {
+  for (const pending of pendingRecorderRequests.values()) {
+    clearTimeout(pending.timer);
+    pending.reject(new Error(message));
+  }
+  pendingRecorderRequests.clear();
+}
+
+function configureRecorderSession() {
+  const recorderSession = session.fromPartition(RECORDER_PARTITION);
+  recorderSession.setPermissionRequestHandler((_webContents, permission, callback) => {
+    callback(permission === 'media');
+  });
+  recorderSession.setPermissionCheckHandler((_webContents, permission) => permission === 'media');
+  session.defaultSession.setPermissionRequestHandler((_webContents, _permission, callback) => callback(false));
+  session.defaultSession.setPermissionCheckHandler(() => false);
+}
+
+function createRecorderWindow() {
+  if (recorderWindow && !recorderWindow.isDestroyed()) return recorderWindow;
+  recorderWindow = new BrowserWindow({
+    width: 480,
+    height: 320,
+    show: false,
+    skipTaskbar: true,
+    title: `${APP_NAME} microphone`,
+    webPreferences: {
+      preload: path.join(__dirname, 'preload.cjs'),
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true,
+      backgroundThrottling: false,
+      partition: RECORDER_PARTITION
+    }
+  });
+  recorderWindow.setMenuBarVisibility(false);
+  recorderWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+  recorderWindow.webContents.on('will-navigate', (event) => event.preventDefault());
+  attachConsoleLogging(recorderWindow, 'recorder');
+  recorderReady = new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error('Microphone window did not load within 15 seconds.')), 15000);
+    const failed = (_event, code, description, _url, isMainFrame) => {
+      if (isMainFrame === false) return;
+      clearTimeout(timer);
+      reject(new Error(`Microphone window failed to load (${code}: ${description}).`));
+    };
+    recorderWindow.webContents.on('did-fail-load', failed);
+    recorderWindow.webContents.once('did-finish-load', () => {
+      clearTimeout(timer);
+      recorderWindow?.webContents.removeListener('did-fail-load', failed);
+      resolve();
+    });
+  });
+  recorderReady.catch((error) => logger.error('recorder', cleanError(error)));
+  recorderWindow.webContents.on('render-process-gone', (_event, details) => {
+    logger.error('recorder', `Renderer exited: ${details.reason}`);
+    if (!quitting) rejectPendingRecorderRequests('The microphone window stopped unexpectedly.');
+    if (!quitting && currentTurn?.recording) {
+      if (currentTurn.recorderId) recorderManager?.cancel(currentTurn.recorderId, 'microphone renderer crash');
+      failTurn(currentTurn, 'The microphone window stopped unexpectedly. Try again.');
+    }
+    const crashed = recorderWindow;
+    recorderWindow = null;
+    recorderReady = null;
+    if (crashed && !crashed.isDestroyed()) crashed.destroy();
+  });
+  recorderWindow.on('closed', () => {
+    if (!quitting) rejectPendingRecorderRequests('The microphone window closed.');
+    if (!quitting && currentTurn?.recording) {
+      if (currentTurn.recorderId) recorderManager?.cancel(currentTurn.recorderId, 'microphone window closed');
+      failTurn(currentTurn, 'The microphone window stopped unexpectedly. Try again.');
+    }
+    recorderWindow = null;
+    recorderReady = null;
+  });
+  recorderWindow.loadFile(path.join(__dirname, 'renderer', 'recorder.html')).catch((error) => {
+    logger.error('recorder', `Recorder failed to load: ${cleanError(error)}`);
+  });
+  return recorderWindow;
+}
+
+async function ensureRecorder() {
+  if (!recorderWindow || recorderWindow.isDestroyed()) createRecorderWindow();
+  try {
+    if (recorderReady) await recorderReady;
+    if (!recorderWindow || recorderWindow.isDestroyed()) throw new Error('Microphone window is unavailable.');
+    return recorderWindow;
+  } catch (error) {
+    if (recorderWindow && !recorderWindow.isDestroyed()) recorderWindow.destroy();
+    recorderWindow = null;
+    recorderReady = null;
+    throw error;
+  }
+}
+
+function recorderRequest(type, payload = {}, timeout = 20000) {
+  return ensureRecorder().then(() => new Promise((resolve, reject) => {
+    if (!recorderWindow || recorderWindow.isDestroyed()) {
+      reject(new Error('Microphone window is unavailable.'));
+      return;
+    }
+    const id = nextRecorderRequestId++;
+    const timer = setTimeout(() => {
+      pendingRecorderRequests.delete(id);
+      reject(new Error('Microphone request timed out.'));
+    }, timeout);
+    pendingRecorderRequests.set(id, { resolve, reject, timer });
+    try {
+      recorderWindow.webContents.send('recorder:request', { id, type, ...payload });
+    } catch (error) {
+      clearTimeout(timer);
+      pendingRecorderRequests.delete(id);
+      reject(error);
+    }
+  }));
+}
+
+function queueRecorderOperation(operation) {
+  const run = recorderQueue.then(operation, operation);
+  recorderQueue = run.catch(() => {});
+  return run;
+}
+
+function createTray() {
+  let image = nativeImage.createFromPath(path.join(__dirname, 'assets', 'tray.png'));
+  if (image.isEmpty()) {
+    logger.warn('tray', 'Tray image is missing; using a minimal fallback.');
+    image = nativeImage.createFromDataURL('data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAAEklEQVQ4jWNgGAWjYBSMglEwCgAsLQAB7c0mNQAAAABJRU5ErkJggg==');
+  }
+  if (process.platform === 'win32') image = image.resize({ width: 16, height: 16 });
+  tray = new Tray(image);
+  tray.setToolTip(APP_NAME);
+  tray.on('click', showDashboard);
+  refreshTray();
+}
+
+function trayTemplate() {
+  const talkLabel = currentTurn?.recording ? 'Stop recording' : currentTurn ? 'Cancel current turn' : 'Talk now';
+  return [
+    { label: 'Open dashboard', click: showDashboard },
+    { label: talkLabel, click: () => { toggleTalk('tray', settings.mode).catch((error) => logger.error('tray', cleanError(error))); } },
+    { type: 'separator' },
+    { label: 'Agent mode', type: 'radio', checked: settings.mode === 'agent', click: () => setMode('agent') },
+    { label: 'Dictation mode', type: 'radio', checked: settings.mode === 'dictation', click: () => setMode('dictation') },
+    { label: settings.paused ? 'Resume listening' : 'Pause listening', click: togglePaused },
+    { label: 'Start with Windows', type: 'checkbox', checked: Boolean(settings.startWithWindows), click: (item) => {
+      try {
+        saveSettingsPatch({ startWithWindows: item.checked });
+      } catch (error) {
+        logger.error('settings', cleanError(error));
+        refreshTray();
+      }
+    } },
+    { type: 'separator' },
+    { label: 'Settings', click: () => { showDashboard(); sendToDashboardWhenReady('settings:refresh', 'settings'); } },
+    { label: 'Quit', click: () => app.quit() }
+  ];
+}
+
+function refreshTray() {
+  if (!tray || tray.isDestroyed()) return;
+  tray.setToolTip(`${APP_NAME} · ${settings.paused ? 'Paused' : settings.mode === 'dictation' ? 'Dictation' : 'Agent'}`);
+  tray.setContextMenu(Menu.buildFromTemplate(trayTemplate()));
+}
+
+function applyAutostart() {
+  if (process.platform !== 'win32') return;
+  try {
+    app.setLoginItemSettings({
+      openAtLogin: Boolean(settings.startWithWindows),
+      path: process.execPath,
+      args: app.isPackaged ? ['--hidden'] : [app.getAppPath(), '--hidden']
+    });
+  } catch (error) {
+    logger.warn('startup', `Could not update Start with Windows: ${cleanError(error)}`);
+  }
+}
+
+function persistSettings() {
+  store.writeJson('settings.json', settings);
+}
+
+function saveSettingsPatch(patch) {
+  const next = { ...settings, ...store.sanitizeSettingsPatch(patch, settings, isValidHotkey) };
+  if (next.chatProvider === 'local') {
+    next.activeMode = 'local';
+  } else {
+    next.activeMode = 'cloud';
+    next.lastCloudProvider = next.chatProvider;
+  }
+  const whisperChanged = next.whisperModel !== settings.whisperModel || next.whisperDevice !== settings.whisperDevice;
+  const hotkeysChanged = next.dictationHotkey !== settings.dictationHotkey || next.agentHotkey !== settings.agentHotkey;
+  const chatChanged = next.chatProvider !== settings.chatProvider
+    || JSON.stringify(next.providers) !== JSON.stringify(settings.providers);
+  if (hotkeysChanged && (turnRunning || currentTurn)) {
+    throw new Error('Finish or cancel the current turn before changing shortcuts.');
+  }
+  if (hotkeys && hotkeysChanged) {
+    try {
+      hotkeys.configure({ dictationHotkey: next.dictationHotkey, agentHotkey: next.agentHotkey });
+    } catch (error) {
+      throw new Error(`Shortcut changes could not be applied: ${cleanError(error)}`);
+    }
+  }
+  try {
+    store.writeJson('settings.json', next);
+  } catch (error) {
+    if (hotkeys && hotkeysChanged) {
+      hotkeys.configure({ dictationHotkey: settings.dictationHotkey, agentHotkey: settings.agentHotkey });
+    }
+    throw error;
+  }
+  settings = next;
+  applyAutostart();
+  if (whisperChanged) {
+    services.stopWhisper();
+    logger.info('whisper server', 'Whisper will restart with the new model settings.');
+  }
+  refreshTray();
+  broadcast('settings:updated', publicSettings());
+  broadcast('hotkey-status', hotkeyStatus());
+  broadcast('mode-status', { mode: settings.mode });
+  logger.info('settings', `Saved: ${Object.keys(patch).join(', ') || 'settings'}`);
+  if (chatChanged) healthChecks().catch((error) => logger.warn('health', cleanError(error)));
+  return publicSettings();
+}
+
+function setMode(mode) {
+  if (!['agent', 'dictation'].includes(mode)) throw new Error('Unknown assistant mode.');
+  if (settings.mode === mode) return;
+  const previous = settings.mode;
+  settings.mode = mode;
+  try {
+    persistSettings();
+  } catch (error) {
+    settings.mode = previous;
+    logger.error('settings', `Could not change mode: ${cleanError(error)}`);
+  }
+  refreshTray();
+  broadcast('mode-status', { mode: settings.mode });
+}
+
+function togglePaused() {
+  const previous = settings.paused;
+  settings.paused = !previous;
+  try {
+    persistSettings();
+  } catch (error) {
+    settings.paused = previous;
+    logger.error('settings', `Could not change listening state: ${cleanError(error)}`);
+    refreshTray();
+    broadcast('settings:updated', publicSettings());
+    return;
+  }
+  if (settings.paused) abortTurn('paused');
+  refreshTray();
+  broadcast('settings:updated', publicSettings());
+  logger.info('app', settings.paused ? 'Listening paused' : 'Listening resumed');
+}
+
+function checkWhisperModel(health) {
+  if (health?.ok && health.model && health.model !== settings.whisperModel) {
+    throw new Error(`Whisper is already running with ${health.model}, not ${settings.whisperModel}. Stop that service or change the model setting.`);
+  }
+  return health;
+}
+
+function formatBytes(value) {
+  const bytes = Number(value);
+  if (!Number.isFinite(bytes) || bytes <= 0) return '0 MB';
+  if (bytes >= 1024 ** 3) return `${(bytes / 1024 ** 3).toFixed(1)} GB`;
+  return `${Math.max(1, Math.round(bytes / 1024 ** 2))} MB`;
+}
+
+function whisperHealthSummary(health = {}) {
+  const model = health.model || settings.whisperModel;
+  const modelMatches = !health.model || health.model === settings.whisperModel;
+  const source = health.progress && typeof health.progress === 'object' ? health.progress : null;
+  const downloaded = Number(source?.downloaded_bytes);
+  const total = Number(source?.total_bytes);
+  const percent = Number(source?.percent);
+  const progress = source ? {
+    status: typeof source.status === 'string' ? source.status : '',
+    downloadedBytes: Number.isFinite(downloaded) ? Math.max(0, downloaded) : 0,
+    totalBytes: Number.isFinite(total) ? Math.max(0, total) : 0,
+    percent: Number.isFinite(percent) ? Math.max(0, Math.min(100, Math.round(percent))) : null
+  } : null;
+  const ok = Boolean(health.ok && modelMatches);
+  const status = health.ok && !modelMatches ? 'mismatch' : (health.status || (ok ? 'ready' : 'unreachable'));
+  let message;
+  if (ok) {
+    message = health.message || `Reachable — ${model}.`;
+  } else if (status === 'downloading') {
+    message = health.message || (progress?.percent == null
+      ? `Preparing the ${model} model download.`
+      : `Downloading ${model} — ${progress.percent}% (${formatBytes(progress.downloadedBytes)} of ${formatBytes(progress.totalBytes)}).`);
+  } else if (status === 'loading') {
+    message = health.message || `Loading the ${model} model.`;
+  } else if (status === 'mismatch') {
+    message = `Reachable with ${health.model}, not the configured ${settings.whisperModel}.`;
+  } else if (status === 'error') {
+    message = health.error || 'The Whisper model failed to load.';
+  } else {
+    message = `Not reachable: ${health.error || 'start the whisper server.'}`;
+  }
+  return { ok, model, modelMatches, status, progress, message };
+}
+
+function publishWhisperHealth(health) {
+  lastHealth = {
+    ...lastHealth,
+    whisper: whisperHealthSummary(health),
+    checkedAt: new Date().toISOString()
+  };
+  sendToDashboard('health:updated', structuredClone(lastHealth));
+}
+
+async function ensureWhisper() {
+  const existing = await services.whisperHealth(WHISPER_PORT);
+  if (existing.ok) {
+    publishWhisperHealth(existing);
+    return checkWhisperModel(existing);
+  }
+  if (existing.status === 'error') {
+    publishWhisperHealth(existing);
+    throw new Error(existing.error || 'The Whisper model failed to load.');
+  }
+  const health = await services.startWhisper({
+    port: WHISPER_PORT,
+    model: settings.whisperModel,
+    device: settings.whisperDevice,
+    onHealth: publishWhisperHealth
+  }, logger);
+  publishWhisperHealth(health);
+  return checkWhisperModel(health);
+}
+
+async function transcribeAudio(audio, mime, signal) {
+  const bytes = toBuffer(audio);
+  if (!bytes.length) throw new Error('No audio was captured.');
+  if (bytes.length > LIMITS.MAX_AUDIO_BYTES) throw new Error('The recording is larger than 25 MB.');
+  if (settings.sttProvider === 'cloud') {
+    const key = secrets[settings.sttCloudProvider];
+    if (!key) throw new Error(`Add an API key for ${settings.sttCloudProvider} in the dashboard.`);
+    const result = await services.cloudTranscribe(settings, key, bytes, mime, signal);
+    return result.text.slice(0, LIMITS.MAX_TRANSCRIPT_CHARS);
+  }
+  await ensureWhisper();
+  const result = await services.transcribe(`http://127.0.0.1:${WHISPER_PORT}`, bytes, mime, settings.whisperModel, signal);
+  return result.text.slice(0, LIMITS.MAX_TRANSCRIPT_CHARS);
+}
+
+async function healthChecks() {
+  const localConfig = settings.providers.local;
+  const providerName = settings.chatProvider;
+  const providerConfig = settings.providers[providerName] || localConfig;
+  const providerKey = providerName === 'local' ? '' : secrets[providerName] || '';
+  const ollamaInstalled = Boolean(services.ollamaExecutable());
+  const [ollamaResult, whisperResult, remoteChatResult] = await Promise.all([
+    (async () => {
+      try {
+        const models = await services.listModels('local', localConfig, '');
+        const wanted = localConfig.model;
+        const available = models.includes(wanted);
+        return {
+          ok: available,
+          installed: ollamaInstalled,
+          model: wanted,
+          modelAvailable: available,
+          models: models.slice(0, 50),
+          message: available ? `Reachable · ${wanted} installed.` : models.length ? `Reachable, but ${wanted} is not installed.` : 'Ollama returned no models.'
+        };
+      } catch (error) {
+        return {
+          ok: false,
+          installed: ollamaInstalled,
+          model: localConfig.model,
+          message: ollamaInstalled
+            ? `Ollama is installed but not running: ${cleanError(error)}`
+            : 'Ollama is not installed. Download it, then pull the model from this page.'
+        };
+      }
+    })(),
+    (async () => whisperHealthSummary(await services.whisperHealth(WHISPER_PORT)))(),
+    (async () => {
+      if (providerName === 'local') return null;
+      const wanted = providerConfig.model;
+      if (!providerKey) {
+        return { ok: false, provider: providerName, model: wanted, message: `Add an API key for ${providerName}.` };
+      }
+      try {
+        const models = await services.listModels(providerName, providerConfig, providerKey);
+        const available = models.length > 0 && models.includes(wanted);
+        return {
+          ok: available,
+          provider: providerName,
+          model: wanted,
+          modelAvailable: available,
+          models: models.slice(0, 50),
+          message: available
+            ? `Reachable — ${wanted} available.`
+            : models.length ? `Reachable, but ${wanted} is not available.` : 'The provider returned no models.'
+        };
+      } catch (error) {
+        return { ok: false, provider: providerName, model: wanted, message: `Not reachable: ${cleanError(error)}` };
+      }
+    })()
+  ]);
+  const chatResult = providerName === 'local'
+    ? { ...ollamaResult, provider: 'local' }
+    : remoteChatResult;
+  lastHealth = {
+    ollama: ollamaResult,
+    chat: chatResult,
+    whisper: whisperResult,
+    checkedAt: new Date().toISOString()
+  };
+  sendToDashboard('health:updated', lastHealth);
+  return structuredClone(lastHealth);
+}
+
+function warmServices() {
+  setTimeout(async () => {
+    await healthChecks().catch((error) => logger.warn('health', cleanError(error)));
+    if (settings.sttProvider === 'local') {
+      try {
+        await ensureWhisper();
+        await healthChecks();
+      } catch (error) {
+        logger.warn('whisper server', cleanError(error));
+      }
+    }
+  }, 1200).unref?.();
+}
+
+function addTurn(said, did) {
+  history = [{ time: new Date().toISOString(), said: said.slice(0, LIMITS.MAX_TRANSCRIPT_CHARS), did: did.slice(0, LIMITS.MAX_TRANSCRIPT_CHARS) }, ...history].slice(0, LIMITS.MAX_TURNS);
+  try {
+    store.writeJson('history.json', history);
+  } catch (error) {
+    logger.error('history', cleanError(error));
+  }
+  broadcast('history:updated', structuredClone(history));
+}
+
+function addMemory(note) {
+  memory = [...memory, note].slice(-LIMITS.MAX_MEMORY_ENTRIES);
+  try {
+    store.writeJson('memory.json', memory);
+  } catch (error) {
+    logger.error('memory', cleanError(error));
+  }
+  broadcast('memory-updated', [...memory]);
+}
+
+function turnAlive(turn) {
+  return currentTurn === turn && !turn.controller.signal.aborted;
+}
+
+async function requireTurnTarget(turn) {
+  const target = await turn.targetPromise;
+  if (!turnAlive(turn)) throw Object.assign(new Error('Cancelled.'), { cancelled: true });
+  if (!target?.id) {
+    throw new Error('Voxa could not tell which app was focused when you started. Click into the target app and try again.');
+  }
+  return target;
+}
+
+function clearTurnTimers(turn) {
+  if (turn?.tailTimer) clearTimeout(turn.tailTimer);
+  if (turn?.audioTimer) clearTimeout(turn.audioTimer);
+  if (turn?.maxHoldTimer) clearTimeout(turn.maxHoldTimer);
+  if (currentTurn === turn) {
+    clearTimeout(tailTimer);
+    clearTimeout(audioTimer);
+  }
+  tailTimer = null;
+  audioTimer = null;
+}
+
+function finishTurn(turn) {
+  if (!turn) return;
+  clearTurnTimers(turn);
+  approvalGate.cancelTurn(turn.id);
+  if (currentTurn === turn) currentTurn = null;
+  turnRunning = false;
+  broadcast('ptt-state', { active: false, cancelled: false, mode: turn.mode });
+  refreshTray();
+}
+
+function scheduleOverlayHide(delay) {
+  clearTimeout(hideTimer);
+  hideTimer = setTimeout(() => {
+    if (!currentTurn) overlay?.hide();
+  }, delay);
+  hideTimer.unref?.();
+}
+
+function showTurnError(turn, message, detail = '') {
+  if (currentTurn !== turn) return;
+  const cancelled = turn.controller.signal.aborted;
+  finishTurn(turn);
+  if (cancelled) {
+    overlay?.hide();
+    return;
+  }
+  logger.error('turn', detail || message);
+  overlay?.show({ status: 'error', message, approval: null, canCopy: false, mode: turn.mode, streaming: false });
+  scheduleOverlayHide(6000);
+}
+
+function failTurn(turn, message, detail = '') {
+  if (!turn || currentTurn !== turn) return;
+  showTurnError(turn, message, detail);
+}
+
+function abortTurn(reason = 'cancelled') {
+  const turn = currentTurn;
+  if (turn) {
+    logger.info('turn', `Cancelled: ${reason}`);
+    turn.controller.abort();
+    if (turn.recorderId) recorderManager?.cancel(turn.recorderId, reason);
+    finishTurn(turn);
+    overlay?.hideNow();
+  } else {
+    speechController?.abort();
+    speechController = null;
+    overlay?.hide();
+  }
+  clearTimeout(tailTimer);
+  clearTimeout(audioTimer);
+  return Boolean(turn);
+}
+
+async function beginTurn(mode, origin = 'hotkey') {
+  if (!['agent', 'dictation'].includes(mode)) return false;
+  if (speechController) {
+    speechController.abort();
+    speechController = null;
+  }
+  if (settings.paused) {
+    logger.info('hotkey', 'Activation ignored while listening is paused.');
+    return false;
+  }
+  if (mode === 'dictation' && settings.dictationEnabled === false) return false;
+  if (mode === 'agent' && settings.agentEnabled === false) return false;
+  if (micTestRunning) {
+    logger.info('hotkey', 'Activation ignored while the microphone test is running.');
+    return false;
+  }
+  if (turnRunning || currentTurn) {
+    logger.warn('hotkey', 'Activation ignored while another turn is active.');
+    return false;
+  }
+  clearTimeout(hideTimer);
+  const turn = {
+    id: nextTurnId++,
+    mode,
+    origin,
+    controller: new AbortController(),
+    holdStartedAt: Date.now(),
+    recording: false,
+    recordingStartedAt: 0,
+    recorderId: null,
+    releaseRequested: false,
+    stopping: false,
+    audioRequested: false,
+    processing: false,
+    target: null,
+    targetPromise: null,
+    transcript: '',
+    toolsExecuted: false,
+    approvalCount: 0,
+    approvalDecisions: new Map(),
+    executedActions: new Set()
+  };
+  currentTurn = turn;
+  turnRunning = true;
+  settings.mode = mode;
+  try {
+    persistSettings();
+  } catch (error) {
+    logger.warn('settings', cleanError(error));
+  }
+  broadcast('mode-status', { mode });
+  refreshTray();
+  turn.targetPromise = desktop.getFocusedTarget({ ignoreProcessId: process.pid })
+    .then((target) => {
+      turn.target = target;
+      if (target) logger.info('focus', `Key-down foreground: ${desktop.describeWindow(target)}`);
+      else logger.info('focus', 'Key-down foreground: no external window was captured (Voxa windows are ignored).');
+      return target;
+    })
+    .catch((error) => {
+      logger.warn('focus', `Could not capture the key-down window: ${cleanError(error)}`);
+      return null;
+    });
+  try {
+    await ensureRecorder();
+    if (!turnAlive(turn)) return false;
+    const recording = recorderManager.start({ deviceId: settings.microphoneId, origin: `${mode}:${origin}` });
+    if (!recording) {
+      recorderManager.cancelAll();
+      throw new Error('The microphone could not start. Try again.');
+    }
+    turn.recorderId = recording.id;
+    turn.recordingStartedAt = Date.now();
+    turn.recording = true;
+    overlay.show({
+      status: 'listening',
+      mode,
+      message: mode === 'dictation' ? 'Dictation · release to type' : 'Listening · release to ask',
+      approval: null,
+      canCopy: false,
+      streaming: false
+    });
+    broadcast('ptt-state', { active: true, mode });
+    turn.maxHoldTimer = setTimeout(() => releaseTurn(mode, 'maximum recording length'), 60000);
+    turn.maxHoldTimer.unref?.();
+    if (turn.releaseRequested) scheduleTurnStop(turn);
+    logger.info('recording', `${mode} recording started from ${origin}`);
+    return true;
+  } catch (error) {
+    if (turn.recorderId) recorderManager?.cancel(turn.recorderId, 'microphone start failed');
+    showTurnError(turn, `Microphone unavailable: ${cleanError(error)}`, `Could not start recording: ${cleanError(error)}`);
+    return false;
+  }
+}
+
+function releaseTurn(mode, reason = 'released') {
+  const turn = currentTurn;
+  if (!turn || turn.mode !== mode) return false;
+  if (turn.releaseRequested) return Boolean(turn.recording);
+  turn.releaseRequested = true;
+  if (turn.recording) scheduleTurnStop(turn);
+  else logger.info('recording', `Release received before microphone start (${reason}).`);
+  return true;
+}
+
+function scheduleTurnStop(turn) {
+  if (currentTurn !== turn || turn.stopping || !turn.recording) return;
+  turn.stopping = true;
+  clearTimeout(turn.maxHoldTimer);
+  const held = Date.now() - turn.holdStartedAt;
+  if (held < LIMITS.MIN_HOLD_MS) {
+    logger.info('recording', `Ignored ${held} ms hold; minimum is ${LIMITS.MIN_HOLD_MS} ms.`);
+    if (turn.recorderId) recorderManager.cancel(turn.recorderId, 'too short');
+    finishTurn(turn);
+    overlay.show({ status: 'error', message: MESSAGES.HOLD_TOO_SHORT, approval: null, canCopy: false, mode: turn.mode });
+    scheduleOverlayHide(3000);
+    return;
+  }
+  overlay.setState({ status: 'listening', message: 'Got it — finishing…' });
+  turn.tailTimer = setTimeout(() => stopTurnRecording(turn), LIMITS.TAIL_MS);
+  tailTimer = turn.tailTimer;
+  turn.tailTimer.unref?.();
+  logger.info('recording', `Release detected after ${held} ms; tail is ${LIMITS.TAIL_MS} ms.`);
+}
+
+function stopTurnRecording(turn) {
+  if (currentTurn !== turn || turn.audioRequested) return;
+  turn.audioRequested = true;
+  turn.recording = false;
+  overlay.setState({ status: 'thinking', message: 'Transcribing…' });
+  const stopped = recorderManager.stop(turn.recorderId);
+  if (!stopped) {
+    showTurnError(turn, 'The recording could not be stopped. Try again.');
+    return;
+  }
+  turn.audioTimer = setTimeout(() => {
+    if (currentTurn === turn) showTurnError(turn, 'Audio capture timed out. Check your microphone and try again.');
+  }, 20000);
+  audioTimer = turn.audioTimer;
+  turn.audioTimer.unref?.();
+}
+
+function cleanReply(value) {
+  const text = String(value || '')
+    .replace(/<think>[\s\S]*?<\/think>/gi, ' ')
+    .replace(/<think>[\s\S]*$/i, '')
+    .replace(/<\/think>/gi, '')
+    .trim();
+  return (text || 'Done.').slice(0, 8000);
+}
+
+function stripForSpeech(value) {
+  return String(value || '')
+    .replace(/```[\s\S]*?```/g, ' ')
+    .replace(/`([^`]+)`/g, '$1')
+    .replace(/!?\[([^\]]+)\]\([^)]*\)/g, '$1')
+    .replace(/^\s{0,3}#{1,6}\s+/gm, '')
+    .replace(/^\s*(?:[-*+]|\d+[.)])\s+/gm, '')
+    .replace(/\*\*|__|~~|\*/g, '')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
+function toolSchemas() {
+  return TOOL_DEFINITIONS.map((tool) => ({
+    type: 'function',
+    function: {
+      name: tool.name,
+      description: tool.description,
+      parameters: {
+        type: 'object',
+        properties: Object.fromEntries(Object.entries(tool.parameters).map(([name]) => [name, { type: 'string' }])),
+        required: Object.keys(tool.parameters),
+        additionalProperties: false
+      }
+    }
+  }));
+}
+
+function systemPrompt(target) {
+  const installed = apps.appNames(80).join('; ') || '(none discovered)';
+  const notes = memory.length ? memory.join(' | ') : '(none)';
+  return [
+    'You are Voxa, a concise desktop voice assistant.',
+    'Answer ordinary questions directly in one to three short sentences.',
+    'Use tools when the user asks you to perform an action on their computer.',
+    'Never claim an action succeeded unless a tool result says it did.',
+    'Routine actions may run without a prompt based on the saved permission mode; sensitive actions still require approval.',
+    'If the user denies approval, accept it and do not retry the same action.',
+    'Do not end with generic questions such as "Anything else?".',
+    `Focused app when the turn began: ${target?.title || 'unknown'}.`,
+    `Installed apps: ${installed}.`,
+    `User notes: ${notes}.`,
+    `Current time: ${new Date().toISOString()}.`
+  ].join(' ');
+}
+
+async function askApproval(turn, request) {
+  if (!turnAlive(turn)) return false;
+  const id = `${turn.id}-${++turn.approvalCount}`;
+  const detail = String(request.detail || '').slice(0, 2000);
+  logger.info('approval', `${request.tool}: ${request.title}`);
+  const decision = approvalGate.request(id, turn.id);
+  try {
+    overlay.show({
+      status: 'approval',
+      mode: turn.mode,
+      message: detail,
+      approval: { id, title: request.title, detail, tool: request.tool },
+      canCopy: false,
+      streaming: false
+    });
+  } catch (error) {
+    approvalGate.respond(id, false);
+    throw error;
+  }
+  return decision;
+}
+
+function respondApproval(id, allowed) {
+  if (!approvalGate.respond(id, allowed)) return false;
+  if (currentTurn) {
+    overlay.setState({ status: 'thinking', message: allowed ? 'Working on it…' : 'Okay, skipped.', approval: null });
+  }
+  logger.info('approval', allowed ? 'Allowed' : 'Denied');
+  return true;
+}
+
+async function prepareTool(turn, name, args, providerName) {
+  if (name === 'type_text') {
+    const text = String(args.text || '').trim();
+    if (!text) throw new Error('There is no text to type.');
+    if (text.length > LIMITS.MAX_TOOL_TEXT_CHARS) throw new Error('The text is too long to type.');
+    return {
+      title: 'Type this text into the focused app?',
+      detail: `App: ${turn.target?.title || 'the app that was focused when you started'}\n\n${text.slice(0, 1000)}`,
+      run: async () => {
+        const target = await requireTurnTarget(turn);
+        const result = await desktop.typeText(text, target, turn.controller.signal);
+        const title = result?.foreground?.title || target.title || 'the target app';
+        return `Typed ${text.length} character${text.length === 1 ? '' : 's'} into ${title}.`;
+      }
+    };
+  }
+  if (name === 'open_url') {
+    const url = desktop.validUrl(args.url);
+    return {
+      title: 'Open this website?',
+      detail: url,
+      run: async () => {
+        await desktop.openUrl(url);
+        return `Opened ${url}.`;
+      }
+    };
+  }
+  if (name === 'open_app') {
+    const query = String(args.app || '').trim();
+    if (!query) throw new Error('No app name was provided.');
+    const entry = apps.findApp(query);
+    if (!entry) throw new Error(`I could not find an installed app matching "${query}".`);
+    return {
+      title: `Open ${entry.name}?`,
+      detail: entry.launch,
+      run: async () => {
+        await apps.openApp(entry);
+        return `Opened ${entry.name}.`;
+      }
+    };
+  }
+  if (name === 'web_search') {
+    const query = String(args.query || '').trim();
+    if (!query) throw new Error('No search query was provided.');
+    if (query.length > 500) throw new Error('The search query is too long.');
+    return {
+      title: 'Search Google?',
+      detail: query,
+      run: async () => {
+        await desktop.webSearch(query);
+        return `Searched Google for "${query}".`;
+      }
+    };
+  }
+  if (name === 'open_folder') {
+    const folder = String(args.folder || '').trim();
+    const target = desktop.resolveUserDirectory(folder);
+    return {
+      title: `Open ${target.name}?`,
+      detail: target.path,
+      permissionContext: { sensitiveKind: target.sensitiveKind },
+      run: async () => {
+        await desktop.openFolder(folder);
+        return `Opened ${target.name}.`;
+      }
+    };
+  }
+  if (name === 'open_file' || name === 'read_file') {
+    const file = desktop.resolveUserFile(args.path);
+    const verb = name === 'open_file' ? 'Open' : 'Read';
+    const cloudRead = name === 'read_file' && providerName !== 'local';
+    const cloudNote = cloudRead ? `\n\nThis file's text will be sent to ${providerName}.` : '';
+    return {
+      title: `${verb} ${file.name}?`,
+      detail: `${file.path}${file.sensitiveKind ? '\n\nThis file needs an explicit security check.' : ''}${cloudNote}`,
+      permissionContext: { sensitiveKind: file.sensitiveKind, cloudRead },
+      run: () => (name === 'open_file' ? desktop.openFile(file.path) : desktop.readFile(file.path))
+    };
+  }
+  if (name === 'press_keys') {
+    const shortcut = String(args.shortcut || '').trim();
+    desktop.parseShortcut(shortcut);
+    return {
+      title: 'Send this keyboard shortcut?',
+      detail: shortcut,
+      run: async () => {
+        const target = await requireTurnTarget(turn);
+        await desktop.pressKeys(shortcut, target, turn.controller.signal);
+        return `Sent ${shortcut} to ${target.title || 'the target app'}.`;
+      }
+    };
+  }
+  if (name === 'remember_note') {
+    const note = String(args.note || '').trim();
+    if (!note) throw new Error('The note is empty.');
+    if (note.length > LIMITS.MAX_MEMORY_CHARS) throw new Error('The note is too long.');
+    return {
+      title: 'Save this memory note?',
+      detail: note,
+      run: () => {
+        addMemory(note);
+        return 'Saved the note.';
+      }
+    };
+  }
+  throw new Error(`Unknown action: ${name}`);
+}
+
+async function executeTool(turn, call, providerName = settings.chatProvider) {
+  const name = call?.function?.name;
+  if (!TOOL_NAMES.includes(name)) return { ok: false, error: 'That action is unavailable.' };
+  if (!turnAlive(turn)) return { ok: false, error: 'Turn cancelled.' };
+  let args;
+  try {
+    args = parseToolArguments(name, call?.function?.arguments);
+  } catch (error) {
+    return { ok: false, error: cleanError(error) };
+  }
+  if (name === 'refresh_apps') {
+    const list = apps.refreshApps(logger);
+    return { ok: true, message: `Refreshed ${list.length} installed apps.` };
+  }
+  let prepared;
+  try {
+    prepared = await prepareTool(turn, name, args, providerName);
+  } catch (error) {
+    return { ok: false, error: cleanError(error) };
+  }
+  if (!turnAlive(turn)) return { ok: false, error: 'Turn cancelled.' };
+  const fingerprint = permissions.actionFingerprint(name, JSON.stringify(args));
+  const executed = turn.executedActions || (turn.executedActions = new Set());
+  if (executed.has(fingerprint)) {
+    return { ok: false, duplicate: true, error: 'That action already ran in this turn, so it was not repeated.' };
+  }
+  const permission = permissions.resolvePermission(settings, name, prepared.permissionContext);
+  if (permission.requiresApproval) {
+    const decisions = turn.approvalDecisions || (turn.approvalDecisions = new Map());
+    if (decisions.has(fingerprint)) {
+      if (!decisions.get(fingerprint)) {
+        return { ok: false, denied: true, error: 'The user denied this action.' };
+      }
+    } else {
+      const pending = turn.pendingApprovals || (turn.pendingApprovals = new Map());
+      let allowed;
+      if (pending.has(fingerprint)) {
+        allowed = await pending.get(fingerprint);
+      } else {
+        const decision = askApproval(turn, { tool: name, title: prepared.title, detail: prepared.detail });
+        pending.set(fingerprint, decision);
+        try {
+          allowed = await decision;
+        } finally {
+          pending.delete(fingerprint);
+        }
+        if (!turnAlive(turn)) return { ok: false, error: 'Turn cancelled.' };
+        decisions.set(fingerprint, allowed);
+      }
+      if (!allowed) return { ok: false, denied: true, error: 'The user denied this action.' };
+    }
+  } else {
+    logger.info('permission', `${name} allowed by ${permission.mode} permission mode (${permission.category}).`);
+  }
+  if (!turnAlive(turn)) return { ok: false, error: 'Turn cancelled.' };
+  overlay.setState({ status: 'executing', message: 'Doing that now…', approval: null });
+  try {
+    const message = await prepared.run();
+    executed.add(fingerprint);
+    if (turnAlive(turn)) overlay.setState({ status: 'thinking', message: 'Checking the result…', approval: null });
+    logger.info('tool', `${name} completed`);
+    return { ok: true, message: message || `Completed ${name.replaceAll('_', ' ')}.` };
+  } catch (error) {
+    if (error.cancelled) return { ok: false, cancelled: true, error: 'Turn cancelled.' };
+    logger.warn('tool', `${name} failed: ${cleanError(error)}`);
+    return { ok: false, error: cleanError(error) };
+  }
+}
+
+async function runConversation(turn, transcript, providerName, target) {
+  const key = providerName === 'local' ? '' : secrets[providerName];
+  if (providerName !== 'local' && !key) throw new Error(`Add an API key for ${providerName} in the dashboard.`);
+  const conversationSettings = providerName === settings.chatProvider ? settings : { ...settings, chatProvider: providerName };
+  const messages = [
+    { role: 'system', content: systemPrompt(target) },
+    { role: 'user', content: transcript }
+  ];
+  const tools = toolSchemas();
+  const result = await runAgentLoop({
+    messages,
+    isAlive: () => turnAlive(turn),
+    signal: turn.controller.signal,
+    onTimeout: () => {
+      turn.controller.abort();
+      if (currentTurn !== turn) return;
+      logger.error('turn', `The agent timed out after ${Math.round(LIMITS.AGENT_TIMEOUT_MS / 1000)} seconds.`);
+      finishTurn(turn);
+      overlay.show({
+        status: 'error',
+        mode: turn.mode,
+        message: 'The assistant took too long and was stopped. Try a shorter request.',
+        approval: null,
+        canCopy: false,
+        streaming: false
+      });
+      scheduleOverlayHide(6000);
+    },
+    maxRounds: LIMITS.MAX_TOOL_ROUNDS,
+    maxToolCalls: LIMITS.MAX_TOOL_CALLS,
+    maxConsecutiveFailures: LIMITS.MAX_CONSECUTIVE_TOOL_FAILURES,
+    timeoutMs: LIMITS.AGENT_TIMEOUT_MS,
+    maxToolResultChars: LIMITS.MAX_TOOL_TEXT_CHARS,
+    messageToText: (message) => {
+      const raw = services.messageText(message?.content);
+      return raw ? cleanReply(raw) : '';
+    },
+    callModel: (conversation) => services.chat(conversationSettings, key, conversation, tools, turn.controller.signal),
+    executeTool: async (call) => {
+      turn.toolsExecuted = true;
+      const toolResult = await executeTool(turn, call, providerName);
+      logger.info('tool result', `${call.function?.name || 'unknown'}: ${toolResult.ok ? 'ok' : cleanError(toolResult.error)}`);
+      return toolResult;
+    }
+  });
+  return result.content;
+}
+
+async function runAgent(turn, transcript) {
+  const target = await turn.targetPromise;
+  const provider = settings.chatProvider;
+  try {
+    return await runConversation(turn, transcript, provider, target);
+  } catch (error) {
+    if (error.cancelled || !turnAlive(turn)) throw error;
+    const canFallback = !turn.toolsExecuted
+      && provider === 'local'
+      && settings.fallbackEnabled
+      && settings.fallbackProvider
+      && settings.fallbackProvider !== 'local'
+      && secrets[settings.fallbackProvider];
+    if (!canFallback) throw error;
+    logger.warn('model', `${provider} failed; trying ${settings.fallbackProvider}: ${cleanError(error)}`);
+    overlay.setState({ status: 'thinking', message: `Local model unavailable. Trying ${settings.fallbackProvider}…` });
+    return runConversation(turn, transcript, settings.fallbackProvider, target);
+  }
+}
+
+async function speakReply(turn, text) {
+  if (!settings.spokenReplies) return;
+  const speech = stripForSpeech(text);
+  if (!speech) return;
+  speechController?.abort();
+  speechController = new AbortController();
+  const controller = speechController;
+  try {
+    await services.speak(speech, controller.signal, logger);
+  } catch (error) {
+    logger.warn('speech', cleanError(error));
+  } finally {
+    if (speechController === controller) speechController = null;
+  }
+}
+
+async function processTurn(turn, audio, mime) {
+  if (!turnAlive(turn) || turn.processing) return;
+  turn.processing = true;
+  try {
+    overlay.setState({ status: 'thinking', message: 'Transcribing…' });
+    const transcript = await transcribeAudio(audio, mime, turn.controller.signal);
+    if (!turnAlive(turn)) return;
+    turn.transcript = transcript;
+    if (!transcript) {
+      showTurnError(turn, MESSAGES.HEARD_NOTHING, 'Transcription returned no text.');
+      return;
+    }
+    logger.info('transcript', transcript.slice(0, 1000));
+    if (turn.mode === 'dictation') {
+      if (!turnAlive(turn)) return;
+      overlay.setState({ status: 'thinking', message: 'Typing into your app…' });
+      const target = await requireTurnTarget(turn);
+      await desktop.typeText(transcript, target, turn.controller.signal);
+      if (!turnAlive(turn)) return;
+      addTurn(transcript, 'Dictated into the focused app.');
+      finishTurn(turn);
+      overlay.show({ status: 'answer', mode: 'dictation', message: transcript, canCopy: true, approval: null, streaming: false });
+      scheduleOverlayHide(3500);
+      return;
+    }
+    overlay.setState({ status: 'thinking', message: 'Thinking…' });
+    const answer = await runAgent(turn, transcript);
+    if (!turnAlive(turn)) return;
+    finishTurn(turn);
+    addTurn(transcript, answer);
+    overlay.show({ status: 'answer', mode: 'agent', message: answer, canCopy: true, approval: null, streaming: false });
+    scheduleOverlayHide(12000);
+    void speakReply(turn, answer);
+  } catch (error) {
+    if (error.cancelled || turn.controller.signal.aborted) return;
+    showTurnError(turn, cleanError(error), `Turn failed: ${cleanError(error)}`);
+  }
+}
+
+async function toggleTalk(source = 'button', mode = settings.mode) {
+  if (currentTurn?.recording && !currentTurn.stopping) {
+    releaseTurn(currentTurn.mode, source);
+    return false;
+  }
+  if (currentTurn) {
+    abortTurn(source === 'tray' ? 'tray stop' : 'button stop');
+    return false;
+  }
+  return beginTurn(mode, source);
+}
+
+async function runMicTest() {
+  if (currentTurn) throw new Error('Finish the current turn before testing the microphone.');
+  if (micTestRunning) throw new Error('A microphone test is already running.');
+  speechController?.abort();
+  speechController = null;
+  micTestRunning = true;
+  try {
+    sendToDashboard('microphone:test-progress', 'Recording 3 seconds…');
+    const result = await queueRecorderOperation(() => recorderRequest('test', {
+      deviceId: settings.microphoneId,
+      durationMs: LIMITS.MIC_TEST_DURATION_MS
+    }, 30000));
+    const audio = toBuffer(result?.audio);
+    if (!audio.length) throw new Error('The microphone returned no audio.');
+    if (Number(result.durationMs) < LIMITS.MIN_AUDIO_MS || Number(result.rms) < LIMITS.SILENCE_RMS) {
+      throw new Error(MESSAGES.HEARD_NOTHING);
+    }
+    sendToDashboard('microphone:test-progress', 'Transcribing…');
+    const transcript = await transcribeAudio(audio, result.mime, null);
+    if (!transcript) throw new Error(MESSAGES.HEARD_NOTHING);
+    sendToDashboard('microphone:test-result', { transcript });
+    logger.info('microphone test', transcript.slice(0, 500));
+    return { transcript };
+  } finally {
+    micTestRunning = false;
+  }
+}
+
+function previewOverlay(status, message) {
+  if (currentTurn) throw new Error('Finish the current turn before previewing the notch.');
+  const allowed = ['idle', 'listening', 'thinking', 'answer', 'approval', 'error'];
+  const next = allowed.includes(String(status).toLowerCase()) ? String(status).toLowerCase() : 'listening';
+  if (next === 'idle') {
+    overlay.hideNow();
+    return true;
+  }
+  const approval = next === 'approval'
+    ? { id: 'preview', title: 'Allow this sample action?', detail: message || 'This is a preview; no action will run.', tool: 'preview' }
+    : null;
+  overlay.show({
+    status: next,
+    mode: settings.mode,
+    message: message || `Notch preview · ${next}`,
+    approval,
+    canCopy: next === 'answer'
+  });
+  scheduleOverlayHide(next === 'approval' ? 8000 : 6000);
+  return true;
+}
+
+function senderRole(event) {
+  const owner = BrowserWindow.fromWebContents(event.sender);
+  if (!owner || owner.isDestroyed()) return null;
+  const role = owner === dashboardWindow
+    ? 'dashboard'
+    : owner === recorderWindow
+      ? 'recorder'
+      : owner === overlay?.getWindow()
+        ? 'overlay'
+        : null;
+  if (!role) return null;
+  const url = event.senderFrame?.url || event.sender.getURL();
+  return typeof url === 'string' && url.startsWith('file://') ? role : null;
+}
+
+function trustedSender(event) {
+  return Boolean(senderRole(event));
+}
+
+function assertTrusted(event, expectedRole = '') {
+  const role = senderRole(event);
+  if (role && (!expectedRole || role === expectedRole)) return role;
+  logger.warn('ipc', `Blocked a message from ${role || 'an untrusted'} renderer.`);
+  throw new Error('Untrusted IPC sender.');
+}
+
+function handle(channel, handler) {
+  ipcMain.handle(channel, async (event, ...args) => {
+    assertTrusted(event, 'dashboard');
+    return handler(...args);
+  });
+}
+
+function listen(channel, handler, roles = ['dashboard']) {
+  ipcMain.on(channel, (event, ...args) => {
+    const role = senderRole(event);
+    if (!role || !roles.includes(role)) {
+      logger.warn('ipc', `Blocked ${role || 'untrusted'} ${channel} message.`);
+      return;
+    }
+    try {
+      const result = handler(...args);
+      if (result && typeof result.catch === 'function') result.catch((error) => logger.error('ipc', `${channel}: ${cleanError(error)}`));
+    } catch (error) {
+      logger.error('ipc', `${channel}: ${cleanError(error)}`);
+    }
+  });
+}
+
+function registerIpc() {
+  handle('app:state', () => buildDashboardState());
+  handle('settings:save', (patch) => saveSettingsPatch(patch));
+  handle('provider:save-key', (provider, key) => {
+    if (typeof provider !== 'string' || !Object.hasOwn(settings.providers, provider) || provider === 'local') throw new Error('Unknown provider.');
+    const value = String(key || '').trim();
+    if (value.includes('\n') || value.includes('\r') || value.length > 10000) throw new Error('That API key is not valid.');
+    const nextSecrets = { ...secrets };
+    if (value) nextSecrets[provider] = value;
+    else delete nextSecrets[provider];
+    store.writeSecrets(nextSecrets);
+    secrets = nextSecrets;
+    logger.info('provider', `${provider} key ${value ? 'saved' : 'removed'}`);
+    if (settings.chatProvider === provider) healthChecks().catch((error) => logger.warn('health', cleanError(error)));
+    return { saved: Boolean(value) };
+  });
+  handle('provider:models', async (provider, config = {}) => {
+    if (typeof provider !== 'string' || !Object.hasOwn(settings.providers, provider)) throw new Error('Unknown provider.');
+    const base = { ...settings.providers[provider] };
+    if (config?.url) base.url = store.normalizeUrl(config.url);
+    if (!base.url) throw new Error('Provider URL is invalid.');
+    if (config?.model) base.model = String(config.model).trim().slice(0, 200);
+    const key = provider === 'local' ? '' : secrets[provider];
+    if (provider !== 'local' && !key) throw new Error(`Add an API key for ${provider} first.`);
+    return services.listModels(provider, base, key);
+  });
+  handle('provider:test', async (provider, config = {}, apiKey = '') => {
+    if (typeof provider !== 'string' || !Object.hasOwn(settings.providers, provider)) return { ok: false, message: 'Unknown provider.' };
+    const base = { ...settings.providers[provider] };
+    if (config?.url) {
+      const url = store.normalizeUrl(config.url);
+      if (!url) return { ok: false, message: 'Base URL must be a valid HTTP or HTTPS address.' };
+      base.url = url;
+    }
+    if (config?.model) base.model = String(config.model).trim().slice(0, 200);
+    const key = provider === 'local' ? '' : String(apiKey || '').trim() || secrets[provider] || '';
+    if (provider !== 'local' && !key) return { ok: false, message: `Add an API key for ${provider} first.` };
+    try {
+      const result = await services.checkHealth(provider, base, key, null, base.model);
+      return {
+        ok: Boolean(result.modelAvailable),
+        message: result.modelAvailable ? `Connection successful · ${result.model}` : `Connected, but ${result.model} is not in the model list.`
+      };
+    } catch (error) {
+      return { ok: false, message: cleanError(error) };
+    }
+  });
+  handle('ollama:pull', async () => {
+    if (ollamaPullRunning) throw new Error('An Ollama model download is already running.');
+    const base = services.ollamaBase(settings.providers.local.url);
+    const model = settings.providers.local.model;
+    ollamaPullRunning = true;
+    try {
+      await services.ensureOllamaRunning(base, logger);
+      const result = await services.pullOllamaModel(base, model, (progress) => {
+        sendToDashboard('ollama:pull-progress', progress);
+      }, logger);
+      await healthChecks().catch((error) => logger.warn('health', cleanError(error)));
+      return result;
+    } finally {
+      ollamaPullRunning = false;
+    }
+  });
+  handle('ollama:open-download', () => openExternalLink('https://ollama.com/download/windows'));
+  handle('health:check', () => healthChecks());
+  handle('microphone:list', () => queueRecorderOperation(() => recorderRequest('enumerate', {}, 20000)));
+  handle('microphone:test', async () => {
+    try {
+      return await runMicTest();
+    } catch (error) {
+      sendToDashboard('microphone:test-error', cleanError(error));
+      throw error;
+    }
+  });
+  handle('microphone:monitor', (enabled, deviceId = settings.microphoneId) => queueRecorderOperation(() => recorderRequest(
+    enabled ? 'monitor-start' : 'monitor-stop',
+    enabled ? { deviceId } : {},
+    15000
+  )));
+  handle('assistant:toggle', async () => ({ active: await toggleTalk('button', settings.mode) }));
+  handle('assistant:stop', () => ({ stopped: abortTurn('stop button') }));
+  handle('assistant:set-mode', (payload = {}) => {
+    const patch = {};
+    if (payload.mode !== undefined) {
+      if (!['agent', 'dictation'].includes(payload.mode)) throw new Error('Unknown assistant mode.');
+      patch.mode = payload.mode;
+    }
+    if (payload.provider !== undefined) {
+      if (!Object.hasOwn(settings.providers, payload.provider)) throw new Error('Unknown provider.');
+      patch.chatProvider = payload.provider;
+      patch.activeMode = payload.provider === 'local' ? 'local' : 'cloud';
+      if (payload.provider !== 'local') patch.lastCloudProvider = payload.provider;
+    }
+    const saved = saveSettingsPatch(patch);
+    broadcast('provider-mode', { mode: saved.activeMode, provider: saved.chatProvider });
+    return saved;
+  });
+  handle('history:clear', () => {
+    history = [];
+    store.writeJson('history.json', history);
+    broadcast('history:updated', []);
+    return true;
+  });
+  handle('apps:refresh', () => apps.refreshApps(logger).map((item) => item.name));
+  handle('logs:read', () => logger.read(LIMITS.MAX_LOG_LINES));
+  handle('overlay:preview', (status, message) => previewOverlay(status, message));
+  handle('overlay:test', () => previewOverlay('listening', 'Overlay test from the dashboard.'));
+  handle('voice:test', async () => {
+    if (currentTurn) throw new Error('Finish the current turn before testing voice.');
+    if (micTestRunning) throw new Error('Wait for the microphone test to finish before testing voice.');
+    speechController?.abort();
+    const controller = new AbortController();
+    speechController = controller;
+    try {
+      await services.speak(`This is a voice test from ${APP_NAME}.`, controller.signal, logger);
+      if (controller.signal.aborted) return { ok: false, message: 'Voice test stopped.' };
+      return { ok: true, message: 'Windows voice test finished.' };
+    } finally {
+      if (speechController === controller) speechController = null;
+    }
+  });
+  handle('window:action', (action) => {
+    if (String(action).startsWith('zoom:')) {
+      const zoom = Math.max(0.75, Math.min(2, Number(String(action).slice(5)) || 1));
+      if (dashboardWindow && !dashboardWindow.isDestroyed()) dashboardWindow.webContents.setZoomFactor(zoom);
+      return true;
+    }
+    if (!dashboardWindow || dashboardWindow.isDestroyed()) return false;
+    if (action === 'minimize') dashboardWindow.minimize();
+    else if (action === 'maximize') dashboardWindow.isMaximized() ? dashboardWindow.unmaximize() : dashboardWindow.maximize();
+    else if (action === 'close') dashboardWindow.hide();
+    else if (action === 'quit') app.quit();
+    return true;
+  });
+
+  listen('approval:respond', (payload) => {
+    if (payload && typeof payload === 'object') return respondApproval(payload.id, payload.allowed);
+    return false;
+  }, ['overlay', 'dashboard']);
+  listen('overlay:resize', (size) => {
+    if (!size || typeof size !== 'object') return;
+    overlay.resize(Number(size.width) || 0, Number(size.height) || 0);
+  }, ['overlay']);
+  listen('overlay:stop', () => {
+    abortTurn('notch stop button');
+  }, ['overlay']);
+  listen('overlay:copy', (text) => {
+    clipboard.writeText(String(text || '').slice(0, 20000));
+  }, ['overlay']);
+  listen('recorder:response', (message) => {
+    if (!message || typeof message.id !== 'number') return;
+    const pending = pendingRecorderRequests.get(message.id);
+    if (!pending) return;
+    clearTimeout(pending.timer);
+    pendingRecorderRequests.delete(message.id);
+    if (message.ok) pending.resolve(message.data);
+    else pending.reject(new Error(message.error || 'Microphone request failed.'));
+  }, ['recorder']);
+  listen('recorder:audio-level', (payload) => {
+    const peak = Math.max(0, Math.min(1, Number(payload?.peak) || 0));
+    sendToDashboard('audio-level', { peak });
+    overlay?.audioLevel(peak);
+  }, ['recorder']);
+  listen('recorder:test-progress', (text) => sendToDashboard('microphone:test-progress', String(text || '')), ['recorder']);
+  listen('recorder:audio', (payload) => {
+    const turn = currentTurn;
+    if (!turn || !payload || payload.sessionId !== turn.recorderId) {
+      logger.warn('recording', 'Ignored audio from a stale recording session.');
+      return;
+    }
+    if (!turn.audioRequested) return;
+    clearTimeout(turn.audioTimer);
+    const audio = toBuffer(payload.audio);
+    const durationMs = Number(payload.durationMs) || 0;
+    const rms = Number(payload.rms) || 0;
+    if (!audio.length) {
+      showTurnError(turn, MESSAGES.HEARD_NOTHING, 'The recorder returned no audio bytes.');
+      return;
+    }
+    if (durationMs < LIMITS.MIN_AUDIO_MS || rms < LIMITS.SILENCE_RMS) {
+      logger.info('recording', `Rejected quiet audio: duration=${durationMs}ms rms=${rms}`);
+      showTurnError(turn, MESSAGES.HEARD_NOTHING, 'Audio was below the silence threshold.');
+      return;
+    }
+    logger.info('recording', `Audio received: ${audio.length} bytes, ${durationMs} ms, rms=${rms.toFixed(4)}`);
+    void processTurn(turn, audio, payload.mime || 'audio/webm');
+  }, ['recorder']);
+  listen('recorder:error', (payload) => {
+    const message = String(payload?.message || payload || 'Microphone error.');
+    logger.error('recorder', message);
+    const turn = currentTurn;
+    if (turn && (!payload?.sessionId || payload.sessionId === turn.recorderId)) {
+      if (turn.recorderId) recorderManager?.cancel(turn.recorderId, 'microphone error');
+      showTurnError(turn, `Microphone error: ${message}`);
+    } else {
+      sendToDashboard('microphone:test-error', message);
+    }
+  }, ['recorder']);
+  listen('recorder:ready', () => logger.info('recorder', 'Microphone renderer ready'), ['recorder']);
+}
+
+app.on('second-instance', (_event, argv) => {
+  showDashboard();
+  if (argv.includes('--gallery') || argv.includes('--ui-gallery')) {
+    sendToDashboardWhenReady('settings:refresh');
+  }
+});
+
+app.on('activate', () => {
+  showDashboard();
+});
+
+app.on('window-all-closed', () => {
+  if (quitting) app.quit();
+});
+
+app.on('before-quit', () => {
+  quitting = true;
+  currentTurn?.controller.abort();
+  approvalGate.cancelAll();
+  if (currentTurn?.recorderId) recorderManager?.cancel(currentTurn.recorderId, 'app quit');
+  speechController?.abort();
+  speechController = null;
+  hotkeys?.stop();
+  desktop.disposeFocusHelper();
+  services.stopWhisper();
+  overlay?.destroy();
+  if (recorderWindow && !recorderWindow.isDestroyed()) recorderWindow.destroy();
+});
+
+process.on('uncaughtException', (error) => {
+  console.error('[voxa] Uncaught exception:', error);
+  try {
+    logger.error('app', `Uncaught exception: ${error.message}`);
+  } catch {
+    // The process is already in a bad state; keep the console trace.
+  }
+});
+process.on('unhandledRejection', (error) => {
+  console.error('[voxa] Unhandled rejection:', error);
+  try {
+    logger.error('app', `Unhandled rejection: ${error?.message || error}`);
+  } catch {
+    // Ignore logger failure during shutdown.
+  }
+});
+
+function prepareLogFile() {
+  const file = path.join(app.getPath('userData'), 'activation.log');
+  try {
+    const stat = fs.statSync(file);
+    if (stat.size > 0) {
+      const descriptor = fs.openSync(file, 'r');
+      const first = Buffer.alloc(1);
+      fs.readSync(descriptor, first, 0, 1, 0);
+      fs.closeSync(descriptor);
+      if (first[0] !== 0x7b) {
+        const archived = `${file}.legacy-${Date.now()}`;
+        fs.renameSync(file, archived);
+        console.warn(`[voxa] Archived the previous plain-text log at ${archived}. It may contain old keystrokes and can be deleted.`);
+      }
+    }
+  } catch (error) {
+    if (error.code !== 'ENOENT') console.error(`[voxa] Could not inspect the old log: ${error.message}`);
+  }
+  return file;
+}
+
+async function initialize() {
+  try {
+    const logPath = prepareLogFile();
+    logger.setLogFile(logPath);
+    logger.subscribe((entry) => sendToDashboard('log:entry', entry));
+    logger.info('app', `${APP_NAME} ${app.getVersion()} starting on Electron ${process.versions.electron}`);
+    settings = store.loadSettings(defaults(userName), userName, logger, isValidHotkey);
+    normalizeSettings();
+    secrets = store.readSecrets(logger);
+    history = store.loadHistory(logger);
+    memory = store.loadMemory(logger);
+    Menu.setApplicationMenu(null);
+    desktop.warmFocusHelper();
+    configureRecorderSession();
+    registerIpc();
+    overlay = createOverlay({ log: logger });
+    overlay.create();
+    attachConsoleLogging(overlay.getWindow(), 'overlay');
+    recorderManager = createRecorderManager({ getWindow: () => recorderWindow, log: logger });
+    hotkeys = createHotkeys({
+      log: logger,
+      onDictation: () => { beginTurn('dictation', 'hotkey').catch((error) => logger.error('hotkey', cleanError(error))); },
+      onAgent: () => { beginTurn('agent', 'hotkey').catch((error) => logger.error('hotkey', cleanError(error))); },
+      onDictationEnd: () => releaseTurn('dictation', 'hotkey released'),
+      onAgentEnd: () => releaseTurn('agent', 'hotkey released')
+    });
+    screen.on('display-metrics-changed', () => overlay.reposition());
+    screen.on('display-added', () => overlay.reposition());
+    screen.on('display-removed', () => overlay.reposition());
+    await ensureRecorder();
+    createTray();
+    if (!GALLERY) {
+      hotkeys.configure({ dictationHotkey: settings.dictationHotkey, agentHotkey: settings.agentHotkey });
+      const hook = hotkeys.start();
+      if (!hook.ok) {
+        logger.warn('hotkeys', hook.error || 'Global shortcut listener unavailable.');
+        overlay.show({ status: 'error', message: `Global shortcuts unavailable. ${hook.error || 'Use the dashboard Talk now button.'}`, approval: null, canCopy: false });
+        scheduleOverlayHide(8000);
+      }
+    }
+    if (SELF_TEST) {
+      const { runRuntimeSelfTest } = require('./lib/selftest-runtime.cjs');
+      createDashboard(false);
+      await runRuntimeSelfTest({
+        app,
+        logger,
+        settings,
+        store,
+        services,
+        apps,
+        overlay,
+        recorder: recorderManager,
+        screen,
+        getDashboard: () => dashboardWindow,
+        ensureRecorder,
+        recorderRequest,
+        queueRecorderOperation,
+        transcribeAudio,
+        healthChecks,
+        ensureWhisper,
+        WHISPER_PORT,
+        hotkeys
+      });
+      return;
+    }
+    if (GALLERY || !START_HIDDEN) showDashboard();
+    applyAutostart();
+    if (!GALLERY) warmServices();
+    logger.info('app', 'Startup complete');
+  } catch (error) {
+    const message = cleanError(error);
+    console.error('[voxa] Startup failed:', error);
+    try {
+      logger.error('startup', message);
+    } catch {
+      // Logger may not be configured yet.
+    }
+    dialog.showErrorBox(`${APP_NAME} could not start`, message);
+    app.quit();
+  }
+}
+
+if (SELF_TEST || app.requestSingleInstanceLock()) {
+  app.whenReady().then(initialize);
+} else {
+  app.quit();
+}

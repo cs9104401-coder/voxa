@@ -1,0 +1,369 @@
+'use strict';
+
+const fs = require('node:fs');
+const path = require('node:path');
+const { spawnSync } = require('node:child_process');
+const permissions = require('./lib/permissions.cjs');
+
+const root = __dirname;
+const reportPath = path.join(root, 'selftest-report.txt');
+const runtimePath = path.join(root, '.selftest-runtime.json');
+const results = [];
+const generatedDirectories = new Set(['node_modules', '.git', 'dist', 'build', '.venv', '__pycache__']);
+
+function record(name, ok, detail = '') {
+  results.push({ name, ok: Boolean(ok), detail: String(detail || '').replace(/\0/g, '').slice(0, 5000) });
+}
+
+function relative(file) {
+  return path.relative(root, file).replaceAll('\\', '/');
+}
+
+function collectJavaScript(dir, found = []) {
+  for (const item of fs.readdirSync(dir, { withFileTypes: true })) {
+    if (generatedDirectories.has(item.name)) continue;
+    const fullPath = path.join(dir, item.name);
+    if (item.isDirectory()) collectJavaScript(fullPath, found);
+    else if (/\.(?:js|cjs|mjs)$/.test(item.name)) found.push(fullPath);
+  }
+  return found;
+}
+
+function checkJavaScript() {
+  const files = collectJavaScript(root);
+  const failures = [];
+  for (const file of files) {
+    const result = spawnSync(process.execPath, ['--check', file], { encoding: 'utf8' });
+    if (result.status !== 0) {
+      failures.push(`${relative(file)}: ${(result.stderr || result.stdout).trim().split('\n').slice(0, 3).join(' ')}`);
+    }
+  }
+  record(
+    'JavaScript syntax',
+    failures.length === 0,
+    failures.length ? failures.join('\n') : `${files.length} project files parsed; generated dependency trees were skipped.`
+  );
+}
+
+function quotedValues(block) {
+  return new Set([...block.matchAll(/['"]([^'"]+)['"]/g)].map((match) => match[1]));
+}
+
+function setFromPreload(source, name) {
+  const block = source.match(new RegExp(`const ${name} = new Set\\(\\[([\\s\\S]*?)\\]\\);`));
+  if (!block) throw new Error(`preload.cjs is missing ${name}.`);
+  return quotedValues(block[1]);
+}
+
+function checkMarkup() {
+  const dashboard = fs.readFileSync(path.join(root, 'renderer', 'settings.html'), 'utf8');
+  const overlay = fs.readFileSync(path.join(root, 'renderer', 'overlay.html'), 'utf8');
+  const dashboardIds = [
+    'page-dashboard', 'page-insights', 'page-history', 'page-dictation', 'page-agent',
+    'page-apps', 'page-logs', 'page-settings', 'page-about', 'sideName', 'sideAvatar',
+    'brandName', 'tierBadge', 'talkNow', 'userMenu', 'userDropdown', 'appStatus', 'appStatusText', 'toast', 'community'
+  ];
+  const overlayIds = ['notch', 'notchCard', 'cardText', 'notchState', 'levelMeter', 'approvalActions', 'stopButton', 'allowButton', 'denyButton', 'copyButton'];
+  const missing = [
+    ...dashboardIds.filter((id) => !dashboard.includes(`id="${id}"`)).map((id) => `settings.html:${id}`),
+    ...overlayIds.filter((id) => !overlay.includes(`id="${id}"`)).map((id) => `overlay.html:${id}`)
+  ];
+  record(
+    'Renderer markup',
+    missing.length === 0,
+    missing.length ? `Missing required elements: ${missing.join(', ')}` : `${dashboardIds.length + overlayIds.length} required page, shell, and notch elements are present.`
+  );
+}
+
+function checkContentSecurityPolicy() {
+  const files = ['settings.html', 'overlay.html', 'recorder.html'];
+  const missing = [];
+  for (const file of files) {
+    const source = fs.readFileSync(path.join(root, 'renderer', file), 'utf8');
+    if (!/http-equiv="Content-Security-Policy"/.test(source) || !/script-src 'self'/.test(source)) missing.push(file);
+  }
+  record(
+    'Renderer content security policy',
+    missing.length === 0,
+    missing.length ? `Missing a restrictive CSP: ${missing.join(', ')}` : 'All three renderer documents restrict scripts to local files.'
+  );
+}
+
+function checkToolSchema() {
+  try {
+    const { parseToolArguments } = require('./lib/tool-schema.cjs');
+    const throws = (callback) => {
+      try {
+        callback();
+        return false;
+      } catch {
+        return true;
+      }
+    };
+    const cases = [
+      ['valid text argument', parseToolArguments('type_text', '{"text":"hello"}').text === 'hello'],
+      ['object argument accepted', parseToolArguments('remember_note', { note: 'Remember this' }).note === 'Remember this'],
+      ['unknown argument rejected', throws(() => parseToolArguments('type_text', '{"text":"hi","extra":"no"}'))],
+      ['missing argument rejected', throws(() => parseToolArguments('type_text', '{}'))],
+      ['non-text argument rejected', throws(() => parseToolArguments('type_text', '{"text":42}'))],
+      ['invalid JSON rejected', throws(() => parseToolArguments('type_text', '{not-json'))],
+      ['oversized argument rejected', throws(() => parseToolArguments('type_text', JSON.stringify({
+        text: 'x'.repeat(LIMITS.MAX_TOOL_ARGUMENT_CHARS + 1)
+      })))],
+      ['unknown action rejected', throws(() => parseToolArguments('run_anything', '{}'))],
+      ['safe refresh accepts empty arguments', Object.keys(parseToolArguments('refresh_apps', '{}')).length === 0],
+      ['safe refresh rejects extra arguments', throws(() => parseToolArguments('refresh_apps', '{"reason":"because"}'))]
+    ];
+    const failures = cases.filter(([, ok]) => !ok).map(([name]) => name);
+    record(
+      'Tool argument schema',
+      failures.length === 0,
+      failures.length ? `Failed: ${failures.join('; ')}` : `${cases.length} strict parsing cases passed.`
+    );
+  } catch (error) {
+    record('Tool argument schema', false, error.stack || error.message);
+  }
+}
+
+function checkLogRedaction() {
+  try {
+    const logger = require('./lib/logger.cjs');
+    const source = 'Authorization: Bearer sk-abcdefgh12345678 api_key=mysecretvalue password=hunter2 oauth_token=abcd1234';
+    const redacted = logger.redact(source);
+    const leaked = ['sk-abcdefgh12345678', 'mysecretvalue', 'hunter2', 'abcd1234'].filter((value) => redacted.includes(value));
+    record(
+      'Log secret redaction',
+      leaked.length === 0 && redacted.includes('[redacted'),
+      leaked.length ? `Leaked: ${leaked.join(', ')}` : 'Bearer tokens, API keys, passwords, and auth tokens were redacted.'
+    );
+  } catch (error) {
+    record('Log secret redaction', false, error.stack || error.message);
+  }
+}
+
+function checkIpcPairs() {
+  const main = fs.readFileSync(path.join(root, 'main.cjs'), 'utf8');
+  const preload = fs.readFileSync(path.join(root, 'preload.cjs'), 'utf8');
+  const modules = ['lib/overlay.cjs', 'lib/recorder.cjs']
+    .map((file) => fs.readFileSync(path.join(root, file), 'utf8'))
+    .join('\n');
+
+  const invokeChannels = setFromPreload(preload, 'INVOKE_CHANNELS');
+  const sendChannels = setFromPreload(preload, 'SEND_CHANNELS');
+  const eventChannels = setFromPreload(preload, 'EVENT_CHANNELS');
+  const syncChannels = new Set([...preload.matchAll(/ipcRenderer\.sendSync\(\s*['"]([^'"]+)['"]/g)].map((match) => match[1]));
+  const handled = new Set([...main.matchAll(/\bhandle\(\s*['"]([^'"]+)['"]/g)].map((match) => match[1]));
+  const listened = new Set([
+    ...[...main.matchAll(/\blisten\(\s*['"]([^'"]+)['"]/g)].map((match) => match[1]),
+    ...[...main.matchAll(/ipcMain\.on\(\s*['"]([^'"]+)['"]/g)].map((match) => match[1])
+  ]);
+  const emitted = new Set([
+    ...[...main.matchAll(/\b(?:sendToDashboard|sendToDashboardWhenReady|broadcast)\(\s*['"]([^'"]+)['"]/g)].map((match) => match[1]),
+    ...[...`${main}\n${modules}`.matchAll(/\.webContents\.send\(\s*['"]([^'"]+)['"]/g)].map((match) => match[1]),
+    ...[...modules.matchAll(/\bsend\(\s*['"]([^'"]+)['"]/g)].map((match) => match[1])
+  ]);
+
+  const problems = [];
+  for (const channel of invokeChannels) {
+    if (!handled.has(channel)) problems.push(`invoke:${channel} has no main handler`);
+  }
+  for (const channel of handled) {
+    if (!invokeChannels.has(channel)) problems.push(`main handler ${channel} is not exposed by preload`);
+  }
+  for (const channel of sendChannels) {
+    if (!listened.has(channel)) problems.push(`send:${channel} has no main listener`);
+  }
+  for (const channel of syncChannels) {
+    if (!listened.has(channel)) problems.push(`sendSync:${channel} has no main listener`);
+  }
+  for (const channel of listened) {
+    if (!sendChannels.has(channel) && !syncChannels.has(channel)) problems.push(`main listener ${channel} is not exposed by preload`);
+  }
+  for (const channel of emitted) {
+    if (!eventChannels.has(channel)) problems.push(`event:${channel} is emitted by main but absent from preload EVENT_CHANNELS`);
+  }
+  for (const channel of eventChannels) {
+    if (!emitted.has(channel)) problems.push(`preload event ${channel} is never emitted by main`);
+  }
+
+  record(
+    'IPC channel pairing',
+    problems.length === 0,
+    problems.length
+      ? problems.join('\n')
+      : `${invokeChannels.size} invoke, ${sendChannels.size + syncChannels.size} send, and ${eventChannels.size} event channels are paired.`
+  );
+
+  const roleScoped = /function senderRole\(event\)/.test(main)
+    && /assertTrusted\(event, 'dashboard'\)/.test(main)
+    && /\}, \['recorder'\]\)/.test(main)
+    && /\['overlay', 'dashboard'\]/.test(main);
+  record(
+    'IPC renderer roles',
+    roleScoped,
+    roleScoped
+      ? 'Dashboard invokes, overlay events, and recorder audio are scoped to their owning windows.'
+      : 'One or more IPC paths are not restricted to the expected renderer window.'
+  );
+
+  const recorderNames = [
+    ...fs.readFileSync(path.join(root, 'lib/recorder.cjs'), 'utf8')
+      .matchAll(/send\(\s*['"]([^'"]+)['"]/g)
+  ].map((match) => match[1]);
+  record(
+    'Recorder event names',
+    recorderNames.length === 3 && recorderNames.every((name) => name.startsWith('recorder:')),
+    recorderNames.join(', ')
+  );
+
+  const recorderPolicy = /setPermissionRequestHandler/.test(main)
+    && /setPermissionCheckHandler/.test(main)
+    && /backgroundThrottling\s*:\s*false/.test(main)
+    && /persist:voxa-recorder/.test(main);
+  record(
+    'Recorder permission and throttling policy',
+    recorderPolicy,
+    recorderPolicy
+      ? 'Media permissions are scoped to the recorder partition and background throttling is disabled.'
+      : 'Recorder permission handlers, partition, or backgroundThrottling:false are missing.'
+  );
+
+  const trustworthy = /function trustedSender/.test(main)
+    && /assertTrusted/.test(main)
+    && /startsWith\('file:\/\/'\)/.test(main);
+  record(
+    'IPC sender validation',
+    trustworthy,
+    trustworthy ? 'Privileged handlers require a known local renderer.' : 'IPC sender allowlisting is missing.'
+  );
+}
+
+function checkPermissionPolicy() {
+  try {
+    const custom = permissions.defaultCustomPermissions();
+    custom.open_folders = true;
+    const ask = { permissionMode: 'ask', permissionCustom: permissions.defaultCustomPermissions() };
+    const routine = { permissionMode: 'routine', permissionCustom: permissions.defaultCustomPermissions() };
+    const selected = { permissionMode: 'custom', permissionCustom: custom };
+    const cases = [
+      ['ask prompts for open_app', permissions.resolvePermission(ask, 'open_app').requiresApproval === true],
+      ['routine allows open_app', permissions.resolvePermission(routine, 'open_app').requiresApproval === false],
+      ['routine allows open_folder', permissions.resolvePermission(routine, 'open_folder').requiresApproval === false],
+      ['routine allows open_file', permissions.resolvePermission(routine, 'open_file', { sensitiveKind: '' }).requiresApproval === false],
+      ['routine allows read_file', permissions.resolvePermission(routine, 'read_file', { sensitiveKind: '' }).requiresApproval === false],
+      ['routine allows browsing', permissions.resolvePermission(routine, 'open_url').requiresApproval === false],
+      ['routine still asks for type_text', permissions.resolvePermission(routine, 'type_text').requiresApproval === true],
+      ['routine still asks for press_keys', permissions.resolvePermission(routine, 'press_keys').requiresApproval === true],
+      ['routine still asks for executables', permissions.resolvePermission(routine, 'open_file', { sensitiveKind: 'executable' }).requiresApproval === true],
+      ['routine still asks for credentials', permissions.resolvePermission(routine, 'read_file', { sensitiveKind: 'credentials' }).requiresApproval === true],
+      ['cloud file reads need approval', permissions.resolvePermission(routine, 'read_file', { sensitiveKind: '', cloudRead: true }).requiresApproval === true],
+      ['unknown tools fail closed', permissions.resolvePermission(routine, 'unexpected_tool').requiresApproval === true
+        && permissions.resolvePermission(routine, 'unexpected_tool').autoAllowed === false],
+      ['safe app refresh never prompts', permissions.resolvePermission(ask, 'refresh_apps').requiresApproval === false],
+      ['custom allows only selected categories', permissions.resolvePermission(selected, 'open_folder').requiresApproval === false
+        && permissions.resolvePermission(selected, 'open_app').requiresApproval === true],
+      ['custom cannot bypass sensitive actions', permissions.resolvePermission(selected, 'type_text').requiresApproval === true],
+      ['legacy approval rules migrate to custom', (() => {
+        const migrated = permissions.legacyPermissionSettings({ open_app: false, type_text: false });
+        return migrated?.permissionMode === 'custom'
+          && migrated.permissionCustom.launch_apps === true
+          && migrated.permissionCustom.type_text === undefined;
+      })()],
+      ['executables and credentials are recognized', permissions.isExecutableFile('setup.exe')
+        && permissions.isExecutableFile('script.ps1')
+        && permissions.isSensitiveFileName('.env')
+        && permissions.isSensitiveFileName('id_rsa')
+        && permissions.isSensitiveFileName('private.pem')],
+      ['duplicate actions share an approval key', permissions.actionFingerprint('open_app', '{"app":"Notepad"}')
+        === permissions.actionFingerprint('open_app', ' { "app" : " notepad " } ')]
+    ];
+    const failures = cases.filter(([, ok]) => !ok).map(([name]) => name);
+    record(
+      'Permission policy',
+      failures.length === 0,
+      failures.length ? `Failed: ${failures.join('; ')}` : `${cases.length} mode, category, and sensitive-action cases passed.`
+    );
+  } catch (error) {
+    record('Permission policy', false, error.stack || error.message);
+  }
+}
+
+function formatReport(title) {
+  const failed = results.filter((result) => !result.ok);
+  const lines = [
+    title,
+    `Run at: ${new Date().toISOString()}`,
+    '',
+    'STATIC AND RUNTIME RESULTS',
+    ...results.map((result) => {
+      const detail = result.detail ? `\n    ${result.detail.replace(/\r?\n/g, '\n    ')}` : '';
+      return `${result.ok ? 'PASS' : 'FAIL'}  ${result.name}${detail}`;
+    }),
+    '',
+    failed.length ? `${failed.length} of ${results.length} checks failed.` : `All ${results.length} checks passed.`
+  ];
+  const text = `${lines.join('\n')}\n`;
+  fs.writeFileSync(reportPath, text, 'utf8');
+  process.stdout.write(text);
+  process.exitCode = failed.length ? 1 : 0;
+  return failed.length;
+}
+
+function runRuntime() {
+  let child = null;
+  try {
+    fs.rmSync(runtimePath, { force: true });
+    const electronPath = require('electron');
+    child = spawnSync(electronPath, ['.', '--selftest-worker'], {
+      cwd: root,
+      encoding: 'utf8',
+      timeout: 600000,
+      env: { ...process.env, VOXA_SELFTEST_OUTPUT: runtimePath },
+      windowsHide: false
+    });
+    if (!fs.existsSync(runtimePath)) {
+      const output = `${child.error?.message || ''}\n${child.stdout || ''}\n${child.stderr || ''}`.trim();
+      record(
+        'Electron runtime checks',
+        false,
+        (output || `Electron exited with code ${child.status} without writing a report.`).slice(-5000)
+      );
+      return;
+    }
+    const runtime = JSON.parse(fs.readFileSync(runtimePath, 'utf8'));
+    if (!Array.isArray(runtime)) throw new Error('The runtime report is not an array.');
+    for (const result of runtime) {
+      if (!result || typeof result.name !== 'string') continue;
+      record(result.name, result.ok, result.detail);
+    }
+    if (!runtime.length) record('Electron runtime checks', false, 'The runtime report was empty.');
+  } catch (error) {
+    record('Electron runtime checks', false, error.message);
+  } finally {
+    fs.rmSync(runtimePath, { force: true });
+  }
+}
+
+function run() {
+  checkJavaScript();
+  checkMarkup();
+  checkContentSecurityPolicy();
+  checkIpcPairs();
+  checkPermissionPolicy();
+  checkToolSchema();
+  checkLogRedaction();
+  if (process.argv.includes('--static-only')) {
+    record('Runtime checks', true, 'Skipped because --static-only was requested.');
+    formatReport('Voxa static self-test report');
+    return;
+  }
+  runRuntime();
+  formatReport('Voxa self-test report');
+}
+
+try {
+  run();
+} catch (error) {
+  record('Self-test harness', false, error.stack || error.message);
+  formatReport('Voxa self-test report');
+}

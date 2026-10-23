@@ -1,0 +1,86 @@
+{
+  "name": "voxa",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Local desktop voice workspace with dictation and approved agent actions.",
+  "author": "Voxa",
+  "main": "main.cjs",
+  "scripts": {
+    "start": "electron .",
+    "ui-gallery": "electron . --ui-gallery",
+    "selftest": "node selftest.cjs",
+    "postinstall": "electron-rebuild -f -w uiohook-napi",
+    "build:icon": "node scripts/generate-icon.cjs",
+    "build:whisper": "node scripts/build-whisper.cjs",
+    "dist": "npm run build:icon && npm run build:whisper && electron-builder --win nsis",
+    "dist:dir": "npm run build:icon && npm run build:whisper && electron-builder --win --dir"
+  },
+  "dependencies": {
+    "uiohook-napi": "^1.5.0"
+  },
+  "devDependencies": {
+    "@electron/rebuild": "^4.2.1",
+    "electron": "^45.0.0",
+    "electron-builder": "^26.15.3"
+  },
+  "build": {
+    "appId": "com.voxa.assistant",
+    "productName": "Voxa",
+    "artifactName": "Voxa-Setup-${version}.${ext}",
+    "asar": true,
+    "asarUnpack": [
+      "node_modules/uiohook-napi/**/*",
+      "node_modules/node-gyp-build/**/*"
+    ],
+    "directories": {
+      "output": "dist",
+      "buildResources": "assets"
+    },
+    "files": [
+      "main.cjs",
+      "preload.cjs",
+      "brand.cjs",
+      "lib/**/*",
+      "renderer/**/*",
+      "assets/**/*",
+      "!**/*.map",
+      "!**/__pycache__/**/*",
+      "!whisper-server/**/*",
+      "!scripts/**/*",
+      "!dist/**/*"
+    ],
+    "extraResources": [
+      {
+        "from": "whisper-server/dist/voxa-whisper.exe",
+        "to": "whisper-server/voxa-whisper.exe"
+      }
+    ],
+    "win": {
+      "icon": "assets/icon.ico",
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowElevation": true,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Voxa",
+      "uninstallDisplayName": "Voxa",
+      "installerIcon": "assets/icon.ico",
+      "uninstallerIcon": "assets/icon.ico",
+      "installerHeaderIcon": "assets/icon.ico",
+      "deleteAppDataOnUninstall": false,
+      "runAfterFinish": true
+    },
+    "npmRebuild": false
+  }
+}
