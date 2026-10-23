@@ -2,6 +2,10 @@
 
 Voxa is a local-first Windows voice assistant with two push-to-talk modes, a top-center notch, a tray menu, and a frameless dashboard. Hold a shortcut (or use **Talk now**) to record; release to transcribe. Dictation types the transcript into the app that was focused when the hold began. Agent mode answers questions and can request approved desktop actions.
 
+![Dashboard](docs/dashboard.png)
+
+![Notch](docs/notch.png)
+
 ## Interface
 
 The dashboard contains Dashboard, Insights, History, Dictation, Agent, Logs, Apps, Settings, and About pages. Change either mode shortcut from its card using the press-to-record editor. The defaults are **Ctrl+Q** for Dictation and **Alt+Q** for Agent; the editor also offers **F9** and **Ctrl+Space** presets. Ctrl+Space may conflict with the Windows input-language switch, and Alt shortcuts may still reach the focused application's menu because the native hook observes keys rather than suppressing them. A hold shorter than 250 ms is ignored; recognized audio includes a 300 ms release tail. Recordings under 500 ms or with near-zero RMS are not sent to a transcription service.
@@ -23,6 +27,15 @@ The dashboard shows local service health. Agent replies stay visible in the notc
 Sensitive actions always ask: typing text or submitting forms, keyboard shortcuts, scripts and downloaded executables, deleting or overwriting files, administrator-level commands, and credentials or security settings. The same action is never prompted twice in one turn, and an identical action is not repeated after it has already run. Use **Reset saved permissions** on the Agent page to switch back to Ask Every Time.
 
 Agent tool calls are parsed against a strict per-tool schema. Unknown tools, missing or extra arguments, and oversized arguments are rejected before approval. File actions are limited to your Home, Desktop, Documents, Downloads, Pictures, Music, and Videos folders; a file read is always approved again when its text would go to a cloud provider. URLs must be HTTPS. Voxa captures the target window when the hold starts and re-checks it before typing or sending keys, so focus changes abort the insertion instead of going to the wrong app. Agent turns stop after 180 seconds, and an unanswered approval is denied after 120 seconds.
+
+## Install
+
+1. Install Ollama from ollama.com, then run `ollama pull qwen3:8b` (or `qwen3:14b` if you have a strong GPU).
+2. Download `Voxa-Setup-x.x.x.exe` from the Releases page and run it.
+3. Windows may show an "unknown publisher" warning because the installer is not code-signed. Click More info, then Run anyway.
+4. Start Voxa from the Start Menu. The first launch downloads the speech model, so wait until both health badges say Ready.
+
+Voxa is an independent project.
 
 ## Setup
 
