@@ -158,7 +158,7 @@ function checkIpcPairs() {
     ...[...main.matchAll(/ipcMain\.on\(\s*['"]([^'"]+)['"]/g)].map((match) => match[1])
   ]);
   const emitted = new Set([
-    ...[...main.matchAll(/\b(?:sendToDashboard|sendToDashboardWhenReady|broadcast)\(\s*['"]([^'"]+)['"]/g)].map((match) => match[1]),
+    ...[...main.matchAll(/\b(?:sendToDashboard|sendToDashboardWhenReady|sendToPlayer|broadcast)\(\s*['"]([^'"]+)['"]/g)].map((match) => match[1]),
     ...[...`${main}\n${modules}`.matchAll(/\.webContents\.send\(\s*['"]([^'"]+)['"]/g)].map((match) => match[1]),
     ...[...modules.matchAll(/\bsend\(\s*['"]([^'"]+)['"]/g)].map((match) => match[1])
   ]);
