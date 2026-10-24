@@ -33,3 +33,5 @@ Voxa is a Windows Electron app. The owner tests on a real desktop and sends scre
 
 ## When the owner reports a bug
 Ask for the Logs page lines or terminal error if missing. State the root cause in one sentence before fixing. Add a verify check or selftest case that would have caught it when feasible.
+## Override
+If the owner's prompt names exact files and says to only run node --check, follow the prompt exactly: do not stop for a dirty tree, do not run npm run verify, and do not touch other files.
