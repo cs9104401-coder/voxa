@@ -16,19 +16,25 @@ const zipPath = path.join(runtimeDir, 'python.zip');
 const PATCH_VERSIONS = {
   '3.11.9': 'f5ed70a4904e49f12b81aa0b7c8d5a81dc0f9e8e6e8f2e2d5e44b0c36f8c7c6a',
 };
-const MATCHING_KEY = Object.keys(PATCH_VERSIONS).find(
-  (ver) => path.basename(path.dirname(require('child_process').execSync(null, []) || '').trim() === ver
-);
+const pythonExe = path.join(root, 'whisper-server', '.venv', 'Scripts', 'python.exe');
+if (!fs.existsSync(pythonExe)) {
+  throw new Error(`Python executable not found at ${pythonExe}`);
+}
+
+const versionOutput = require('node:child_process').execFileSync(pythonExe, ['-c', 'import sys; print(sys.version.split()[0])'], { encoding: 'utf8' }).trim();
+
+const MATCHING_KEY = Object.keys(PATCH_VERSIONS).find((ver) => versionOutput === ver);
+
 const PYTHON_VERSION = MATCHING_KEY || '3.11.9';
 const expectedChecksum = PATCH_VERSIONS[PYTHON_VERSION];
 
 async function build() {
   console.log('[build:kokoro-runtime] Starting build...');
 
-  // Verify Python version match
-  const venvPython = require('child_process').spawnSync(
-    pythonDir.replace(/.*Scripts$/, '.') && process.platform === 'win32' ? path.join(pythonDir, 'python.exe') : null
-  );
+  // Verify Python version match (this block was using invalid spawnSync arguments)
+  if (!fs.existsSync(pythonExe)) {
+    throw new Error(`Python executable not found at ${pythonExe}`);
+  }
 
   if (!expectedChecksum) {
     throw new Error('No matching Python version for checksum verification.');
