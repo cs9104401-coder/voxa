@@ -272,7 +272,9 @@ function createDashboard(show = false) {
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
-      spellcheck: false
+      spellcheck: false,
+      backgroundThrottling: false,
+      autoplayPolicy: 'no-user-gesture-required'
     }
   });
   dashboardWindow.setMenuBarVisibility(false);

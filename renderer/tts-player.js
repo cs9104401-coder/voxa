@@ -13,6 +13,7 @@ class TtsPlayer {
 
     // Buffer is a Uint8Array from IPC. Need to copy to ArrayBuffer.
     const audioData = buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength);
+    if (this.context.state === 'suspended') await this.context.resume().catch(() => {});
     const audioBuffer = await this.context.decodeAudioData(audioData);
     this.queue.push(audioBuffer);
 
