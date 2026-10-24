@@ -58,8 +58,12 @@
         "to": "whisper-server/voxa-whisper.exe"
       },
       {
-        "from": "whisper-server/dist/voxa-kokoro.exe",
-        "to": "whisper-server/voxa-kokoro.exe"
+        "from": "whisper-server/runtime-kokoro",
+        "to": "whisper-server/runtime-kokoro"
+      },
+      {
+        "from": "whisper-server/kokoro_server.py",
+        "to": "whisper-server/kokoro_server.py"
       }
     ],
     "publish": [
