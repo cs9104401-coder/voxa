@@ -437,7 +437,7 @@ function checkTtsSettings() {
     const validEngine = base.ttsEngine === 'kokoro' || base.ttsEngine === 'windows';
     const validSpeed = typeof base.ttsSpeed === 'number' && base.ttsSpeed >= 0.7 && base.ttsSpeed <= 1.4;
     const validVolume = typeof base.ttsVolume === 'number' && base.ttsVolume >= 0 && base.ttsVolume <= 1;
-    const validVariant = base.ttsModelVariant === 'int8' || base.ttsModelVariant === 'fp32';
+    const validVariant = base.ttsModelVariant === 'quantized';
     const failures = [
       ...missing.map((k) => `missing default: ${k}`),
       ...(!validEngine ? ['ttsEngine must be kokoro or windows'] : []),

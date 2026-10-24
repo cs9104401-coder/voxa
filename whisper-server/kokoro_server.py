@@ -104,8 +104,29 @@ async def _ensure_model() -> Any:
 
 def _synthesize_sync(model: Any, text: str, voice: str, speed: float) -> bytes:
     """Run Kokoro synthesis and encode result as WAV.  Runs in a thread pool."""
-    # Extract language code from voice ID (e.g., 'af_heart' → 'a' for American English)
-    lang = voice.split('_')[0][0] if '_' in voice else 'a'
+    # Extract language code from voice ID and map to espeak codes
+    # Kokoro uses one-letter codes: a=American English, b=British English, etc.
+    # kokoro-onnx expects espeak codes: en-us, en-gb, etc.
+    lang_code = voice.split('_')[0][0] if '_' in voice else 'a'
+
+    # Map Kokoro language codes to espeak codes
+    # Based on known mappings from testing:
+    # a → en-us, b → en-gb, h → hi
+    # Other mappings are not confirmed, default to 'en-us'
+    lang_map = {
+        'a': 'en-us',  # American English
+        'b': 'en-gb',  # British English
+        'h': 'hi',     # Hindi
+        # Not confirmed mappings - use defaults based on likely espeak codes
+        'e': 'es-es',  # Spanish (Spain) - NOT CONFIRMED
+        'f': 'fr-fr',  # French (France) - NOT CONFIRMED
+        'i': 'it-it',  # Italian - NOT CONFIRMED
+        'j': 'ja',     # Japanese - NOT CONFIRMED
+        'p': 'pt-br',  # Brazilian Portuguese - NOT CONFIRMED
+        'z': 'zh-cn',  # Mandarin Chinese - NOT CONFIRMED
+    }
+
+    lang = lang_map.get(lang_code, 'en-us')
     samples, sample_rate = model.create(text, voice=voice, speed=speed, lang=lang)
     buf = io.BytesIO()
     sf.write(buf, samples, sample_rate, format="WAV", subtype="PCM_16")

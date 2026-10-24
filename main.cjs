@@ -1848,8 +1848,8 @@ function registerIpc() {
   });
   handle('tts:health', () => {
     const kokoro = require('./lib/tts-kokoro.cjs');
-    const variant = settings.ttsModelVariant || 'int8';
-    const spec = kokoro.MODEL_VARIANTS[variant] || kokoro.MODEL_VARIANTS.int8;
+    const variant = settings.ttsModelVariant || 'quantized';
+    const spec = kokoro.MODEL_VARIANTS[variant] || kokoro.MODEL_VARIANTS.quantized;
     const modelReady = kokoro.isModelReady(variant);
     const hasConsent = kokoro.hasConsent();
     const running = kokoro.kokoroStatus().running;
@@ -1867,8 +1867,8 @@ function registerIpc() {
   handle('tts:download', async () => {
     if (kokoroDownloadController) throw new Error('A Kokoro download is already running.');
     const kokoro = require('./lib/tts-kokoro.cjs');
-    const variant = settings.ttsModelVariant || 'int8';
-    const spec = kokoro.MODEL_VARIANTS[variant] || kokoro.MODEL_VARIANTS.int8;
+    const variant = settings.ttsModelVariant || 'quantized';
+    const spec = kokoro.MODEL_VARIANTS[variant] || kokoro.MODEL_VARIANTS.quantized;
     const sizeMb = Math.round(spec.sizeBytes / 1_048_576);
     // Show consent dialog (no-op if already granted).
     const granted = await kokoro.requestConsent(sizeMb);

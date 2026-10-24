@@ -19,3 +19,5 @@ find_bad_out.txt
 reference/
 SPEC.md
 AUDIT.md
+
+.claude/settings.local.json
