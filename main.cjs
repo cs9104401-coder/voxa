@@ -1051,7 +1051,7 @@ function abortTurn(reason = 'cancelled') {
     finishTurn(turn);
     overlay?.hide();
   } else {
-    speechController?.abort();
+    speechController?.abort(); sendToPlayer('tts:stop-audio', {});
     speechController = null;
     overlay?.hide();
   }
@@ -1062,6 +1062,7 @@ function abortTurn(reason = 'cancelled') {
 
 async function beginTurn(mode, origin = 'hotkey') {
   if (!['agent', 'dictation'].includes(mode)) return false;
+  sendToPlayer('tts:stop-audio', {});
   if (speechController) {
     speechController.abort();
     speechController = null;
@@ -1535,6 +1536,7 @@ async function runAgent(turn, transcript) {
 }
 
 function sendToPlayer(channel, payload) {
+  logger.info('speech', 'player <- ' + channel);
   if (recorderWindow && !recorderWindow.isDestroyed() && !recorderWindow.webContents.isDestroyed()) {
     try {
       recorderWindow.webContents.send(channel, payload);
@@ -1549,7 +1551,7 @@ async function speakReply(turn, text) {
   if (!settings.spokenReplies) return;
   const speech = stripForSpeech(text);
   if (!speech) return;
-  speechController?.abort();
+  speechController?.abort(); sendToPlayer('tts:stop-audio', {});
   speechController = new AbortController();
   const controller = speechController;
   try {
@@ -1626,7 +1628,7 @@ async function toggleTalk(source = 'button', mode = settings.mode) {
 async function runMicTest() {
   if (currentTurn) throw new Error('Finish the current turn before testing the microphone.');
   if (micTestRunning) throw new Error('A microphone test is already running.');
-  speechController?.abort();
+  speechController?.abort(); sendToPlayer('tts:stop-audio', {});
   speechController = null;
   micTestRunning = true;
   try {
@@ -1824,10 +1826,10 @@ function registerIpc() {
   handle('assistant:toggle', async () => ({ active: await toggleTalk('button', settings.mode) }));
   handle('assistant:stop', () => {
     // If we have an active speech controller, abort it to stop speech output immediately.
-    speechController?.abort();
+    speechController?.abort(); sendToPlayer('tts:stop-audio', {});
     speechController = null;
     // Stop renderer playback.
-    sendToDashboard('tts:stop-audio', {});
+    sendToPlayer('tts:stop-audio', {});
     return { stopped: abortTurn('stop button') };
   });
   handle('assistant:set-mode', (payload = {}) => {
@@ -1948,7 +1950,7 @@ function registerIpc() {
   handle('voice:test', async () => {
     if (currentTurn) throw new Error('Finish the current turn before testing voice.');
     if (micTestRunning) throw new Error('Wait for the microphone test to finish before testing voice.');
-    speechController?.abort();
+    speechController?.abort(); sendToPlayer('tts:stop-audio', {});
     const controller = new AbortController();
     speechController = controller;
     try {
@@ -2082,7 +2084,7 @@ app.on('before-quit', () => {
   currentTurn?.controller.abort();
   approvalGate.cancelAll();
   if (currentTurn?.recorderId) recorderManager?.cancel(currentTurn.recorderId, 'app quit');
-  speechController?.abort();
+  speechController?.abort(); sendToPlayer('tts:stop-audio', {});
   speechController = null;
   hotkeys?.stop();
   desktop.disposeFocusHelper();

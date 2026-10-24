@@ -10,11 +10,13 @@ class TtsPlayer {
 
   async play(buffer) {
     if (!buffer || buffer.length === 0) return;
+    const gen = this.gen || 0;
 
     // Buffer is a Uint8Array from IPC. Need to copy to ArrayBuffer.
     const audioData = buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength);
     if (this.context.state === 'suspended') await this.context.resume().catch(() => {});
     const audioBuffer = await this.context.decodeAudioData(audioData);
+    if (gen !== (this.gen || 0)) return;
     this.queue.push(audioBuffer);
 
     if (!this.playing) {
@@ -47,6 +49,7 @@ class TtsPlayer {
   }
 
   stop() {
+    this.gen = (this.gen || 0) + 1;
     this.queue = [];
     if (this.currentSource) {
       try {
