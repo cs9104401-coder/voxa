@@ -285,7 +285,7 @@ function createDashboard(show = false) {
     frame: false,
     show: false,
     title: APP_NAME,
-    backgroundColor: '#17181c',
+    backgroundColor: '#0e0d0b',
     webPreferences: {
       preload: path.join(__dirname, 'preload.cjs'),
       contextIsolation: true,

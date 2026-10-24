@@ -720,6 +720,8 @@ function dashboard() {
   const hour = new Date().getHours();
   const greeting = hour < 12 ? 'Good morning' : hour < 18 ? 'Good afternoon' : 'Good evening';
   const name = settings.displayName || data.userName || 'there';
+  const turns = data.turns || [];
+  const recentTurns = [...turns].slice(-4).reverse();
   const tips = [
     ['Dictation', 'Hold your dictation shortcut, speak, and release to type.'],
     ['Agent', 'Ask for help, then approve any desktop action in the notch.'],
@@ -727,17 +729,37 @@ function dashboard() {
     ['Privacy', 'Transcripts and history stay in your local Voxa data folder.']
   ];
   return `${gallery()}${heading(`${greeting}, ${name}`, 'Your voice workspace is ready when you are.', true)}
+  <section class="hero-card">
+    <div class="hero-copy">
+      <div class="hero-chips">
+        ${healthChip('healthOllama', serviceStatus(health.ollama, 'Ollama'))}
+        ${healthChip('healthWhisper', serviceStatus(health.whisper, 'Whisper'))}
+        <span class="chip"><b>${esc(providerLabel(provider))}</b>${esc(config.model || 'No model selected')}</span>
+      </div>
+      <h1 class="hero-title">${esc(greeting)}, ${esc(name)}.</h1>
+      <p class="hero-sub">Hold a shortcut, speak, and the island transcribes. Dictation types into any focused field, Agent answers with approved desktop actions, and voice and history stay local.</p>
+      <div class="hero-actions">
+        <button class="button primary" data-page-link="agent">Set up Agent</button>
+        <button class="button" data-page-link="dictation">Set up dictation</button>
+        <button class="button ghost" data-action="health">Check services</button>
+      </div>
+    </div>
+    <span class="hero-art" aria-hidden="true"><span class="hero-mark"><svg viewBox="0 0 32 32"><path d="M5 17h5l3-8 6 15 3-7h5"/></svg></span></span>
+  </section>
+  <div class="section-head"><h2>Voice modes</h2><p>Two ways to wake Voxa up.</p></div>
   <div class="mode-grid">
     ${modeCard('dictation', 'Dictation Mode', 'Speak and type into the focused field.', settings.dictationHotkey || 'Ctrl+Q', settings.dictationEnabled !== false)}
     ${modeCard('agent', 'Agent Mode', 'Ask for help and approve desktop actions.', settings.agentHotkey || 'Alt+Q', settings.agentEnabled !== false)}
   </div>
-  <div class="section-head"><h2>Quick stats</h2></div>
+  <div class="section-head"><h2>Quick actions</h2><p>Shortcuts to the setups you use.</p></div>
   <div class="card rows-card">
-    <div class="row"><span class="row-icon">${icon('M4 5h16v14H4zM8 9h8M8 13h5')}</span><div class="row-main"><b>Health</b><small>Speech and answer services</small></div><div class="row-side">${healthChip('healthOllama', serviceStatus(health.ollama, 'Ollama'))}${healthChip('healthWhisper', serviceStatus(health.whisper, 'Whisper'))}<button class="button" data-action="health">Check</button></div></div>
+    <div class="row"><span class="row-icon">${icon('M4 5h16v14H4zM8 9h8M8 13h5')}</span><div class="row-main"><b>Switch conversation model</b><small>Provider and fallback live in Agent.</small></div><div class="row-side"><button class="button" data-page-link="agent">Open</button></div></div>
+    <div class="row"><span class="row-icon">${icon('M4 5h16v14H4zM8 9h8M8 13h5')}</span><div class="row-main"><b>Speech model</b><small>Whisper model size, download, compute.</small></div><div class="row-side"><button class="button" data-page-link="dictation">Open</button></div></div>
     ${whisperProgressRow()}
-    <div class="row"><span class="row-icon">${icon('M4 5h16v14H4zM8 9h8M8 13h5')}</span><div class="row-main"><b>Model</b><small>${esc(provider)} · ${esc(config.model || 'No model selected')}</small></div><div class="row-side"><button class="button" data-page-link="agent">Switch</button></div></div>
-    <div class="row"><span class="row-icon">${icon('M9 3h6v12H9zM5 11a7 7 0 0 0 14 0')}</span><div class="row-main"><b>Voice replies</b><small>Read agent answers aloud</small></div><div class="row-side">${toggle('spokenReplies', settings.spokenReplies !== false, 'Spoken replies', 'spokenReplies')}</div></div>
+    <div class="row"><span class="row-icon">${icon('M9 3h6v12H9zM5 11a7 7 0 0 0 14 0')}</span><div class="row-main"><b>Voice replies</b><small>Read agent answers aloud</small></div><div class="row-side">${toggle('spokenReplies', settings.spokenReplies !== false, 'Voice replies', 'spokenReplies')}</div></div>
   </div>
+  <div class="section-head"><h2>Recent turns</h2><button class="button" data-page-link="insights">Open Insights</button></div>
+  <div class="card rows-card">${recentTurns.length ? recentTurns.map((turn) => `<div class="row"><span class="row-icon">${icon('M12 7v5l3 2m9-2A9 9 0 1 1 3 12a9 9 0 0 1 18 0Z')}</span><div class="row-main"><b>${esc(turn.said)}</b><small>${esc(turn.did)}</small></div><small>${new Date(turn.time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</small></div>`).join('') : '<div class="empty">No saved turns yet. Dictate or ask with the island and they will appear here.</div>'}</div>
   <div class="section-head tips-head"><div><h2>Tips</h2><p>Small ideas to get started.</p></div><div class="carousel-controls"><button class="icon-button" data-carousel="-1" aria-label="Previous tips">‹</button><button class="icon-button" data-carousel="1" aria-label="Next tips">›</button></div></div>
   <div class="carousel" id="tips">${tips.map(([title, copy], index) => `<article class="tip-card"><span class="badge">${index + 1} / ${tips.length}</span><h3>${esc(title)}</h3><p>${esc(copy)}</p></article>`).join('')}</div>`;
 }
@@ -751,10 +773,10 @@ function insights() {
   });
   const max = Math.max(1, ...bars);
   const points = bars.map((count, index) => `${35 + index * 125},${170 - (count / max) * 125}`).join(' ');
-  return `${heading('Insights', 'A quiet view of recent voice activity.')}
+  return `${heading('Insights', 'How much you have been leaning on Voxa.')}
   <div class="stats"><article class="stat-card"><b>${turns.length}</b><small>Saved turns</small></article><article class="stat-card"><b>${turns.filter((turn) => /dictat/i.test(turn.did)).length}</b><small>Dictation turns</small></article><article class="stat-card"><b>${esc(settings.mode || 'agent')}</b><small>Current mode</small></article></div>
   <div class="section-head"><h2>Last seven days</h2></div>
-  <div class="chart-card"><svg viewBox="0 0 850 205" role="img" aria-label="Voice turns by day"><path d="M30 178H835M30 110H835M30 42H835" stroke="#30323a"/><polyline points="${points}" fill="none" stroke="#8bbcff" stroke-width="3"/>${bars.map((count, index) => `<circle cx="${35 + index * 125}" cy="${170 - (count / max) * 125}" r="4" fill="#a8ceff"/>`).join('')}<text x="35" y="200" class="chart-label">6 days ago</text><text x="770" y="200" class="chart-label">Today</text></svg></div>`;
+  <div class="chart-card"><svg viewBox="0 0 850 205" role="img" aria-label="Voice turns by day"><path class="chart-grid" d="M30 178H835M30 110H835M30 42H835"/><polyline class="chart-line" points="${points}"/>${bars.map((count, index) => `<circle class="chart-dot" cx="${35 + index * 125}" cy="${170 - (count / max) * 125}" r="4"/>`).join('')}<text x="35" y="200" class="chart-label">6 days ago</text><text x="770" y="200" class="chart-label">Today</text></svg></div>`;
 }
 
 function historyResults() {
@@ -1373,6 +1395,7 @@ function updateShell() {
   $('#brandName').textContent = api.appName;
   document.title = api.appName;
   $('#tierBadge').textContent = isCloudProvider(settings.chatProvider) ? 'CLOUD' : 'LOCAL';
+  updateDockHint();
   const community = $('#community');
   if (community) {
     community.hidden = !settings.communityUrl;
@@ -1393,6 +1416,7 @@ function updateShell() {
       ? whisperPercent == null ? 'Downloading speech model' : `Downloading speech model ${whisperPercent}%`
       : 'Loading speech model'
     : chatOk ? `${providerName} and ready` : needsKey ? `${providerName} key required` : provider === 'local' ? 'Check local services' : `${providerName} unavailable`;
+  updateDockHint();
   updateHealthBadges();
   updateWhisperModelControls();
   updateWhisperProgress();
@@ -1406,6 +1430,13 @@ function startMicMonitor() {
     monitorActive = false;
     if (activePage === 'dictation') note(`Microphone monitor: ${error.message}`);
   });
+}
+
+function updateDockHint() {
+  const hint = $('#dockHint');
+  if (!hint) return;
+  const keys = (value, fallback) => String(value || fallback).split('+').map((key) => keycap(key)).join(' + ');
+  hint.innerHTML = `<span>Hold ${keys(settings.dictationHotkey, 'Ctrl+Q')} to dictate</span><span>·</span><span>Hold ${keys(settings.agentHotkey, 'Alt+Q')} to ask</span>`;
 }
 
 function stopMicMonitor() {
@@ -1434,7 +1465,11 @@ function nav(page, force = false) {
   if (!renderers[page]) page = 'dashboard';
   const previous = activePage;
   activePage = page;
-  $$('.nav-item').forEach((button) => button.classList.toggle('active', button.dataset.page === page));
+  $$('.nav-item').forEach((button) => {
+    button.classList.toggle('active', button.dataset.page === page);
+    if (button.dataset.page === page) button.setAttribute('aria-current', 'page');
+    else button.removeAttribute('aria-current');
+  });
   $$('.page').forEach((section) => section.classList.toggle('active', section.id === `page-${page}`));
   $('.page-scroll').scrollTop = 0;
   try {
