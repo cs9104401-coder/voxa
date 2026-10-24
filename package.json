@@ -12,8 +12,9 @@
     "postinstall": "electron-rebuild -f -w uiohook-napi",
     "build:icon": "node scripts/generate-icon.cjs",
     "build:whisper": "node scripts/build-whisper.cjs",
-    "dist": "npm run build:icon && npm run build:whisper && electron-builder --win nsis",
-    "dist:dir": "npm run build:icon && npm run build:whisper && electron-builder --win --dir",
+    "build:tts": "node scripts/build-tts.cjs",
+    "dist": "npm run build:icon && npm run build:whisper && npm run build:tts && electron-builder --win nsis",
+    "dist:dir": "npm run build:icon && npm run build:whisper && npm run build:tts && electron-builder --win --dir",
     "verify": "node scripts/verify.cjs"
   },
   "dependencies": {
@@ -55,6 +56,10 @@
       {
         "from": "whisper-server/dist/voxa-whisper.exe",
         "to": "whisper-server/voxa-whisper.exe"
+      },
+      {
+        "from": "whisper-server/dist/voxa-kokoro.exe",
+        "to": "whisper-server/voxa-kokoro.exe"
       }
     ],
     "publish": [
