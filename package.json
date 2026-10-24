@@ -13,7 +13,8 @@
     "build:icon": "node scripts/generate-icon.cjs",
     "build:whisper": "node scripts/build-whisper.cjs",
     "dist": "npm run build:icon && npm run build:whisper && electron-builder --win nsis",
-    "dist:dir": "npm run build:icon && npm run build:whisper && electron-builder --win --dir"
+    "dist:dir": "npm run build:icon && npm run build:whisper && electron-builder --win --dir",
+    "verify": "node scripts/verify.cjs"
   },
   "dependencies": {
     "electron-updater": "^6.8.9",
