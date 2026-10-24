@@ -348,6 +348,7 @@ function createRecorderWindow() {
       nodeIntegration: false,
       sandbox: true,
       backgroundThrottling: false,
+      autoplayPolicy: 'no-user-gesture-required',
       partition: RECORDER_PARTITION
     }
   });
@@ -1533,6 +1534,17 @@ async function runAgent(turn, transcript) {
   }
 }
 
+function sendToPlayer(channel, payload) {
+  if (recorderWindow && !recorderWindow.isDestroyed() && !recorderWindow.webContents.isDestroyed()) {
+    try {
+      recorderWindow.webContents.send(channel, payload);
+      return true;
+    } catch (error) {
+      logger.warn('speech', `Could not send ${channel} to player: ${cleanError(error)}`);
+    }
+  }
+  return sendToDashboard(channel, payload);
+}
 async function speakReply(turn, text) {
   if (!settings.spokenReplies) return;
   const speech = stripForSpeech(text);
@@ -1551,7 +1563,7 @@ async function speakReply(turn, text) {
       ttsModelVariant: settings.ttsModelVariant
     };
     await services.speakStreaming(speech, tts, controller.signal, logger, (buffer) => {
-      sendToDashboard('tts:play-audio', buffer);
+      sendToPlayer('tts:play-audio', buffer);
     });
   } catch (error) {
     logger.warn('speech', cleanError(error));
