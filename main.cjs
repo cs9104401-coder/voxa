@@ -2228,7 +2228,16 @@ async function initialize() {
 }
 
 if (SELF_TEST || app.requestSingleInstanceLock()) {
-  app.whenReady().then(initialize);
+  app.whenReady().then(initialize).then(() => {
+  setTimeout(() => {
+    if (settings && settings.ttsEngine === 'kokoro') {
+      const started = Date.now();
+      require('./lib/kokoro-tts.cjs').warmup()
+        .then(() => logger.info('speech', 'kokoro warmup done in ' + (Date.now() - started) + ' ms'))
+        .catch((e) => logger.warn('speech', 'kokoro warmup failed: ' + e.message));
+    }
+  }, 5000);
+});
 } else {
   app.quit();
 }
