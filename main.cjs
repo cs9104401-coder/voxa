@@ -1913,11 +1913,9 @@ function registerIpc() {
       ttsModelVariant: settings?.ttsModelVariant
     };
     try {
-      const buffer = await services.speak(String(text || ''), tts, signal, logger);
-      if (buffer) {
+      await services.speakStreaming(String(text || ''), tts, signal, logger, (buffer) => {
         sendToDashboard('tts:play-audio', buffer);
-        return { ok: true };
-      }
+      });
       return { ok: true };
     } catch (error) {
       logger.warn('speech', cleanError(error));
