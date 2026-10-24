@@ -24,3 +24,5 @@ AUDIT.md
 
 whisper-server/runtime-kokoro/
 whisper-server/runtime-kokoro.bak/
+
+test-kokoro.wav
