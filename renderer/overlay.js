@@ -192,7 +192,7 @@ function setCardText(text, streamWords) {
   if (cardText.childNodes.length && lastText !== null) {
     const ghost = document.createElement('div');
     ghost.className = 'card-ghost';
-    ghost.innerHTML = cardText.innerHTML;
+    ghost.replaceChildren(...Array.from(cardText.childNodes, (n) => n.cloneNode(true)));
     card.append(ghost);
     ghost.addEventListener('animationend', () => ghost.remove(), { once: true });
   }
