@@ -16,6 +16,18 @@ const progressFill = progressLine?.querySelector('i');
 const stopButton = $('#stopButton');
 const allowButton = $('#allowButton');
 const denyButton = $('#denyButton');
+const chatButton = $('#chatButton');
+const chatCloseButton = $('#chatCloseButton');
+const chatPanel = $('#chatPanel');
+const chatLog = $('#chatLog');
+const chatEmpty = $('#chatEmpty');
+const chatForm = $('#chatForm');
+const chatInput = $('#chatInput');
+const chatHint = $('#chatHint');
+const chatStopButton = $('#chatStopButton');
+const chatSendButton = $('#chatSendButton');
+const chatError = $('#chatError');
+const chatPreviewLabel = $('#chatPreviewLabel');
 const waveBars = [...(levelMeter?.querySelectorAll('i') || [])];
 const motionQuery = window.matchMedia('(prefers-reduced-motion: reduce)');
 
@@ -28,8 +40,12 @@ const ISLAND_SIZES = {
 };
 const NOTCH_WIDTH = 440;
 const MEDIUM_STATES = new Set(['thinking', 'executing', 'verifying', 'done']);
-const EXPANDED_STATES = new Set(['answer', 'approval', 'error']);
+const EXPANDED_STATES = new Set(['answer', 'approval', 'error', 'chat']);
 const SUPPORTED_STATES = new Set(['idle', 'listening', ...MEDIUM_STATES, ...EXPANDED_STATES]);
+const CHAT_PREVIEW_MESSAGES = [
+  { role: 'user', content: 'Give me a quick summary of my day.' },
+  { role: 'assistant', content: 'You have three tasks left. The next one is a 2 pm review, then two short follow-ups.' }
+];
 
 let state = {
   visible: false,
@@ -41,7 +57,16 @@ let state = {
   streaming: false,
   style: 'island',
   slowMotion: false,
-  dismiss: null
+  dismiss: null,
+  chatOpen: false,
+  chatStreaming: false,
+  chatPreview: false
+};
+let chat = {
+  requestId: 0,
+  messages: [],
+  streaming: false,
+  error: ''
 };
 let lastText = null;
 let lastStatus = '';
@@ -54,6 +79,10 @@ let lastFrame = 0;
 let levelTarget = 0;
 let level = 0;
 let wavePhase = 0;
+let chatOpenedFor = false;
+let wasChatVisible = false;
+let chatFocusFrame = 0;
+let chatRenderFrame = 0;
 
 function reducedMotion() {
   return motionQuery.matches;
@@ -207,6 +236,263 @@ function setCardText(text, streamWords) {
   lastText = text;
 }
 
+function chatVisible() {
+  return Boolean(state.visible && state.chatOpen && notch.dataset.state === 'chat');
+}
+
+function voiceBusy() {
+  return ['listening', 'thinking', 'executing', 'verifying', 'approval'].includes(state.status);
+}
+
+function updateChatComposer() {
+  if (!chatInput) return;
+  const preview = Boolean(state.chatPreview);
+  chatInput.disabled = preview;
+  chatSendButton.disabled = preview || chat.streaming || !chatInput.value.trim();
+  chatStopButton.hidden = !chat.streaming || preview;
+  chatStopButton.disabled = !chat.streaming;
+  chatHint.textContent = preview
+    ? 'Preview only'
+    : chat.streaming ? 'Reply in progress…' : 'Enter to send · Shift+Enter for a new line';
+  chatError.hidden = !chat.error;
+  chatError.textContent = chat.error || '';
+  chatPreviewLabel.hidden = !preview;
+  chatPanel.dataset.preview = preview ? 'true' : 'false';
+  chatInput.style.height = 'auto';
+  const maxHeight = 96;
+  const nextHeight = Math.min(maxHeight, Math.max(24, chatInput.scrollHeight || 24));
+  chatInput.style.height = `${nextHeight}px`;
+  chatInput.style.overflowY = (chatInput.scrollHeight || 0) > maxHeight ? 'auto' : 'hidden';
+}
+
+function renderChatLog() {
+  if (!chatLog) return;
+  chatLog.querySelectorAll('.chat-message').forEach((node) => node.remove());
+  const messages = state.chatPreview ? CHAT_PREVIEW_MESSAGES : chat.messages;
+  chatEmpty.hidden = messages.length > 0;
+  for (const message of messages) {
+    const item = document.createElement('div');
+    const isUser = message.role === 'user';
+    item.className = `chat-message ${isUser ? 'is-user' : 'is-assistant'}`;
+    if (message.streaming) item.classList.add('is-streaming');
+    if (message.cancelled) item.classList.add('is-cancelled');
+    if (message.error) item.classList.add('is-error');
+    const who = document.createElement('span');
+    who.className = 'chat-who';
+    who.textContent = isUser ? 'You' : (api.appName || 'Voxa');
+    const bubble = document.createElement('div');
+    bubble.className = 'chat-bubble';
+    if (!isUser && !message.streaming && message.content) bubble.append(markdown(message.content));
+    else bubble.textContent = message.content || '';
+    if (message.streaming) {
+      const caret = document.createElement('span');
+      caret.className = 'chat-caret';
+      caret.setAttribute('aria-hidden', 'true');
+      bubble.append(caret);
+    }
+    item.append(who, bubble);
+    if (message.cancelled) {
+      const note = document.createElement('div');
+      note.className = 'chat-note';
+      note.textContent = 'Stopped';
+      item.append(note);
+    } else if (message.error) {
+      const note = document.createElement('div');
+      note.className = 'chat-note is-error';
+      note.textContent = message.error;
+      item.append(note);
+    }
+    chatLog.append(item);
+  }
+  chatLog.scrollTop = chatLog.scrollHeight;
+}
+
+function updateChatDeltaView() {
+  const last = chat.messages[chat.messages.length - 1];
+  const items = chatLog?.querySelectorAll('.chat-message') || [];
+  const item = items[items.length - 1];
+  const bubble = item?.querySelector('.chat-bubble');
+  if (!last || last.role !== 'assistant' || !item?.classList.contains('is-assistant') || !bubble
+    || item.classList.contains('is-error') || item.classList.contains('is-cancelled')) {
+    renderChatLog();
+    return;
+  }
+  bubble.textContent = last.content || '';
+  if (last.streaming) {
+    const caret = document.createElement('span');
+    caret.className = 'chat-caret';
+    caret.setAttribute('aria-hidden', 'true');
+    bubble.append(caret);
+  }
+  chatEmpty.hidden = true;
+  chatLog.scrollTop = chatLog.scrollHeight;
+}
+
+function scheduleChatDeltaRender() {
+  if (chatRenderFrame) return;
+  chatRenderFrame = requestAnimationFrame(() => {
+    chatRenderFrame = 0;
+    updateChatDeltaView();
+    if (chatVisible()) retarget();
+  });
+}
+
+function updateChatHeader() {
+  const open = notch.dataset.state === 'chat' && state.chatOpen;
+  const preview = Boolean(state.chatPreview);
+  chatButton.hidden = !state.visible || open || preview || voiceBusy();
+  chatCloseButton.hidden = !state.visible || !open || preview;
+  stopButton.hidden = open;
+  if (open) setLabel(statusLabel('chat'));
+}
+
+function focusChatInput() {
+  if (!chatVisible() || state.chatPreview) return;
+  cancelAnimationFrame(chatFocusFrame);
+  chatFocusFrame = requestAnimationFrame(() => {
+    chatFocusFrame = 0;
+    if (!chatVisible() || state.chatPreview) return;
+    chatInput.focus({ preventScroll: true });
+    const end = chatInput.value.length;
+    try {
+      chatInput.setSelectionRange(end, end);
+    } catch {
+      // The textarea may not support selection while disabled.
+    }
+  });
+}
+
+function sendChatMessage() {
+  if (!chatVisible() || state.chatPreview || chat.streaming) return;
+  const text = chatInput.value.trim();
+  if (!text) return;
+  chat.error = '';
+  chat.messages.push({ role: 'user', content: text });
+  chat.streaming = true;
+  chatInput.value = '';
+  updateChatComposer();
+  renderChatLog();
+  updateChatHeader();
+  retarget();
+  try {
+    api.chat.send(text);
+  } catch {
+    applyChatError({ message: 'The message could not be sent.' });
+  }
+}
+
+function applyChatHistory(payload) {
+  if (!payload || !Array.isArray(payload.messages)) return;
+  chat.messages = payload.messages
+    .filter((message) => message && (message.role === 'user' || message.role === 'assistant'))
+    .map((message) => ({
+      role: message.role,
+      content: String(message.content || ''),
+      streaming: Boolean(message.streaming),
+      cancelled: Boolean(message.cancelled),
+      error: message.error ? String(message.error) : ''
+    }));
+  chat.streaming = Boolean(payload.streaming);
+  chat.requestId = Number(payload.requestId) || chat.requestId;
+  chat.error = '';
+  updateChatComposer();
+  renderChatLog();
+  updateChatHeader();
+  retarget();
+}
+
+function applyChatStarted(payload) {
+  const id = Number(payload?.id) || 0;
+  if (!id) return;
+  chat.requestId = id;
+  chat.streaming = true;
+  chat.error = '';
+  const last = chat.messages[chat.messages.length - 1];
+  if (!last || last.role !== 'assistant' || !last.streaming) {
+    const text = typeof payload.text === 'string' ? payload.text : '';
+    const lastUser = [...chat.messages].reverse().find((message) => message.role === 'user');
+    if (text && (!lastUser || lastUser.content !== text)) chat.messages.push({ role: 'user', content: text });
+    chat.messages.push({ role: 'assistant', content: '', streaming: true });
+  }
+  updateChatComposer();
+  renderChatLog();
+  updateChatHeader();
+  retarget();
+}
+
+function applyChatDelta(payload) {
+  if (!payload || Number(payload.id) !== chat.requestId) return;
+  const text = typeof payload.text === 'string' ? payload.text : '';
+  const last = chat.messages[chat.messages.length - 1];
+  if (!last || last.role !== 'assistant') {
+    chat.messages.push({ role: 'assistant', content: text, streaming: true });
+  } else {
+    last.content = text;
+    last.streaming = true;
+    last.cancelled = false;
+    last.error = '';
+  }
+  chat.streaming = true;
+  chat.error = '';
+  updateChatComposer();
+  updateChatHeader();
+  scheduleChatDeltaRender();
+}
+
+function applyChatDone(payload) {
+  if (!payload) return;
+  const id = Number(payload.id) || 0;
+  if (id && id !== chat.requestId) return;
+  const text = typeof payload.text === 'string' ? payload.text : '';
+  const last = chat.messages[chat.messages.length - 1];
+  if (!last || last.role !== 'assistant') {
+    chat.messages.push({ role: 'assistant', content: text, cancelled: Boolean(payload.cancelled) });
+  } else {
+    last.content = text;
+    last.streaming = false;
+    last.cancelled = Boolean(payload.cancelled);
+    last.error = '';
+  }
+  chat.streaming = false;
+  chat.error = '';
+  updateChatComposer();
+  renderChatLog();
+  updateChatHeader();
+  retarget();
+}
+
+function applyChatError(payload) {
+  if (!payload) return;
+  const id = Number(payload.id) || 0;
+  if (id && id !== chat.requestId) return;
+  const message = String(payload.message || 'The reply failed.');
+  if (id) {
+    const last = chat.messages[chat.messages.length - 1];
+    if (!last || last.role !== 'assistant') {
+      chat.messages.push({ role: 'assistant', content: '', error: message });
+    } else {
+      last.streaming = false;
+      last.error = message;
+    }
+    chat.streaming = false;
+  } else {
+    const last = chat.messages[chat.messages.length - 1];
+    chat.error = message;
+    if (!(chat.streaming && last?.role === 'assistant' && last.streaming)) {
+      chat.streaming = false;
+      if (last?.role === 'assistant' && last.streaming && !last.content) chat.messages.pop();
+      if (last?.role === 'user' && !chatInput.value.trim()) {
+        chat.messages.pop();
+        chatInput.value = last.content;
+      }
+    }
+  }
+  updateChatComposer();
+  renderChatLog();
+  updateChatHeader();
+  retarget();
+}
+
 function statusLabel(status) {
   const mapping = {
     idle: 'Idle',
@@ -217,7 +503,8 @@ function statusLabel(status) {
     answer: `${api.appName} replied`,
     approval: 'Approval needed',
     error: 'Needs attention',
-    done: 'Done'
+    done: 'Done',
+    chat: state.chatPreview ? 'Chat preview' : chat.streaming ? 'Replying…' : 'Ask Voxa'
   };
   return mapping[status] || status;
 }
@@ -247,26 +534,51 @@ function measureCard(contentWidth) {
   return height;
 }
 
+function measureChat(contentWidth) {
+  const clone = chatPanel.cloneNode(true);
+  clone.removeAttribute('id');
+  clone.querySelectorAll('[id]').forEach((element) => element.removeAttribute('id'));
+  clone.classList.add('measure-chat');
+  clone.hidden = false;
+  clone.style.width = `${contentWidth}px`;
+  const textarea = clone.querySelector('textarea');
+  if (textarea) {
+    textarea.value = chatInput.value;
+    textarea.style.height = chatInput.style.height || 'auto';
+  }
+  document.body.append(clone);
+  const height = clone.getBoundingClientRect().height;
+  clone.remove();
+  return height;
+}
+
 function targetGeometry() {
-  const size = sizeFor(notch.dataset.state);
+  const status = notch.dataset.state;
+  const size = sizeFor(status);
   const expanded = size === 'expanded';
+  const chatMode = status === 'chat' && Boolean(state.chatOpen);
   const contentWidth = contentWidthFor(size);
   notch.style.setProperty('--content-width', `${contentWidth}px`);
-  const cardHeight = expanded ? Math.min(MAX_CARD_HEIGHT, measureCard(contentWidth)) : 0;
+  const cardHeight = expanded && !chatMode ? Math.min(MAX_CARD_HEIGHT, measureCard(contentWidth)) : 0;
+  const chatHeight = chatMode ? Math.min(MAX_CARD_HEIGHT, measureChat(contentWidth)) : 0;
   let width;
   let height;
   let radius;
   if (state.style === 'notch') {
     width = NOTCH_WIDTH;
-    height = expanded
-      ? Math.max(86, Math.round((head.offsetHeight || 48) + cardHeight + 2))
-      : size === 'medium' ? 60 : 48;
+    height = chatMode
+      ? Math.max(150, Math.round((head.offsetHeight || 48) + chatHeight + 2))
+      : expanded
+        ? Math.max(86, Math.round((head.offsetHeight || 48) + cardHeight + 2))
+        : size === 'medium' ? 60 : 48;
     radius = 22;
   } else {
     width = contentWidth;
-    height = expanded
-      ? Math.max(84, Math.round((head.offsetHeight || 48) + cardHeight + 2))
-      : ISLAND_SIZES[size].height;
+    height = chatMode
+      ? Math.max(150, Math.min(MAX_CARD_HEIGHT, Math.round((head.offsetHeight || 48) + chatHeight + 2)))
+      : expanded
+        ? Math.max(84, Math.round((head.offsetHeight || 48) + cardHeight + 2))
+        : ISLAND_SIZES[size].height;
     radius = expanded ? 28 : size === 'medium' ? 24 : height / 2;
   }
   return { width, height, radius };
@@ -416,9 +728,10 @@ function startLoop() {
 }
 
 function requestInteractive(next) {
-  if (interactive === next) return;
-  interactive = next;
-  api.overlay.interactive(next);
+  const wanted = Boolean(next) || (chatVisible() && !state.chatPreview);
+  if (interactive === wanted) return;
+  interactive = wanted;
+  api.overlay.interactive(wanted);
 }
 
 function updateScrollFade() {
@@ -434,6 +747,8 @@ function render() {
   const status = SUPPORTED_STATES.has(state.status) ? state.status : 'thinking';
   const size = sizeFor(status);
   const style = state.style === 'notch' ? 'notch' : 'island';
+  const openChat = status === 'chat' && state.chatOpen;
+  const interactiveChat = openChat && !state.chatPreview;
   notch.dataset.state = status;
   notch.dataset.size = size;
   notch.dataset.style = style;
@@ -457,20 +772,39 @@ function render() {
     copyTimer = null;
     copyButton.textContent = 'Copy';
   }
+  card.hidden = openChat;
+  chatPanel.hidden = !openChat;
+  updateChatHeader();
+  updateChatComposer();
+  if (openChat) renderChatLog();
   let text = '';
   if (state.approval) text = `${state.approval.title}\n\n${state.approval.detail || ''}`;
   else if (state.message) text = state.message;
   else if (status === 'listening') text = 'Speak naturally. Release to send.';
   else if (status === 'done') text = 'Done.';
-  if (text !== lastText || lastStatus !== status) {
+  if (!openChat && (text !== lastText || lastStatus !== status)) {
     setCardText(text, status === 'answer' && !state.approval);
     lastStatus = status;
   }
+  if (interactiveChat && !chatOpenedFor) {
+    chatOpenedFor = true;
+    api.chat.requestHistory();
+  } else if (!interactiveChat) {
+    chatOpenedFor = false;
+  }
+  if (interactiveChat && !wasChatVisible) focusChatInput();
+  if (!interactiveChat && wasChatVisible) {
+    cancelAnimationFrame(chatFocusFrame);
+    chatInput.blur();
+    requestInteractive(false);
+  }
+  wasChatVisible = interactiveChat;
   if (!state.visible) {
     requestInteractive(false);
     hideAckSent = false;
   } else {
     hideAckSent = false;
+    if (interactiveChat) requestInteractive(true);
   }
   updateScrollFade();
   retarget();
@@ -485,6 +819,36 @@ function applyAudioLevel(peak) {
 
 stopButton.addEventListener('click', () => {
   api.overlay.stop();
+});
+
+chatButton.addEventListener('click', () => {
+  api.chat.open();
+});
+
+chatCloseButton.addEventListener('click', () => {
+  api.chat.close();
+});
+
+chatForm.addEventListener('submit', (event) => {
+  event.preventDefault();
+  sendChatMessage();
+});
+
+chatInput.addEventListener('input', () => {
+  updateChatComposer();
+  if (chatVisible()) retarget();
+});
+
+chatInput.addEventListener('keydown', (event) => {
+  if (event.key !== 'Enter' || event.shiftKey || event.isComposing) return;
+  if (chat.streaming || state.chatPreview) return;
+  event.preventDefault();
+  sendChatMessage();
+});
+
+chatStopButton.addEventListener('click', () => {
+  chatStopButton.disabled = true;
+  api.chat.cancel();
 });
 
 copyButton.addEventListener('click', () => {
@@ -543,13 +907,19 @@ document.addEventListener('mouseleave', () => {
 });
 
 window.addEventListener('keydown', (event) => {
-  if (!state.approval || notch.dataset.state !== 'approval') return;
-  if (event.key === 'Enter') {
+  if (state.approval && notch.dataset.state === 'approval') {
+    if (event.key === 'Enter') {
+      event.preventDefault();
+      respond(state.approval.id, true, allowButton);
+    } else if (event.key === 'Escape') {
+      event.preventDefault();
+      respond(state.approval.id, false, denyButton);
+    }
+    return;
+  }
+  if (event.key === 'Escape' && chatVisible() && !state.chatPreview) {
     event.preventDefault();
-    respond(state.approval.id, true, allowButton);
-  } else if (event.key === 'Escape') {
-    event.preventDefault();
-    respond(state.approval.id, false, denyButton);
+    api.chat.close();
   }
 });
 
@@ -568,11 +938,18 @@ const resizeObserver = new ResizeObserver(() => {
 resizeObserver.observe(cardText);
 resizeObserver.observe(card);
 resizeObserver.observe(head);
+resizeObserver.observe(chatInput);
 
 motionQuery.addEventListener?.('change', () => {
   document.body.dataset.reducedMotion = reducedMotion() ? 'true' : 'false';
   retarget();
 });
+
+api.chat.onStarted(applyChatStarted);
+api.chat.onDelta(applyChatDelta);
+api.chat.onDone(applyChatDone);
+api.chat.onError(applyChatError);
+api.chat.onHistory(applyChatHistory);
 
 api.overlay.onState((next) => {
   const appearing = !state.visible && next.visible !== false;

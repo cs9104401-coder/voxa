@@ -63,7 +63,10 @@ function checkMarkup() {
     'page-apps', 'page-logs', 'page-settings', 'page-about', 'sideName', 'sideAvatar',
     'brandName', 'tierBadge', 'talkNow', 'userMenu', 'userDropdown', 'appStatus', 'appStatusText', 'toast', 'community'
   ];
-  const overlayIds = ['notch', 'notchCard', 'cardText', 'notchState', 'levelMeter', 'approvalActions', 'stopButton', 'allowButton', 'denyButton', 'copyButton'];
+  const overlayIds = [
+    'notch', 'notchCard', 'cardText', 'notchState', 'levelMeter', 'approvalActions', 'stopButton', 'allowButton', 'denyButton', 'copyButton',
+    'chatButton', 'chatCloseButton', 'chatPanel', 'chatLog', 'chatEmpty', 'chatForm', 'chatInput', 'chatHint', 'chatStopButton', 'chatSendButton', 'chatError', 'chatPreviewLabel'
+  ];
   const missing = [
     ...dashboardIds.filter((id) => !dashboard.includes(`id="${id}"`)).map((id) => `settings.html:${id}`),
     ...overlayIds.filter((id) => !overlay.includes(`id="${id}"`)).map((id) => `overlay.html:${id}`)
@@ -158,7 +161,7 @@ function checkIpcPairs() {
     ...[...main.matchAll(/ipcMain\.on\(\s*['"]([^'"]+)['"]/g)].map((match) => match[1])
   ]);
   const emitted = new Set([
-    ...[...main.matchAll(/\b(?:sendToDashboard|sendToDashboardWhenReady|sendToPlayer|broadcast)\(\s*['"]([^'"]+)['"]/g)].map((match) => match[1]),
+    ...[...main.matchAll(/\b(?:sendToDashboard|sendToDashboardWhenReady|sendToPlayer|sendToOverlay|broadcast)\(\s*['"]([^'"]+)['"]/g)].map((match) => match[1]),
     ...[...`${main}\n${modules}`.matchAll(/\.webContents\.send\(\s*['"]([^'"]+)['"]/g)].map((match) => match[1]),
     ...[...modules.matchAll(/\bsend\(\s*['"]([^'"]+)['"]/g)].map((match) => match[1])
   ]);

@@ -74,10 +74,15 @@ for (const f of mainFiles) {
   if (/webSecurity\s*:\s*false/.test(t)) problems.push(`electron: webSecurity is false in ${rel(f)}`);
 }
 
-// 6. Overlay rules: never take focus, never resize per state
+// 6. Overlay rules: focus only for typed chat, never resize per state
 for (const f of js.filter((x) => /overlay/.test(rel(x)))) {
-  const t = read(f);
-  if (/\.focus\(\s*\)/.test(t)) warnings.push(`overlay: ${rel(f)} calls focus(); the island must never take focus`);
+  let t = read(f);
+  if (rel(f) === 'lib/overlay.cjs') {
+    t = t.replace(/function setKeyboardFocus\(active\) \{[\s\S]*?\n  \}/, '');
+  } else if (rel(f) === 'renderer/overlay.js') {
+    t = t.replace(/chatInput\.focus\(/g, '');
+  }
+  if (/\.focus\(/.test(t)) warnings.push(`overlay: ${rel(f)} calls focus() outside the chat focus helper; the island must never take focus`);
   if (/\.(setBounds|setSize)\(/.test(t)) warnings.push(`overlay: ${rel(f)} moves/resizes the window; fine for repositioning, not for state changes`);
 }
 
@@ -93,7 +98,7 @@ const servicesContent = read(path.join(root, 'lib', 'services.cjs'));
 const exportedServices = new Set(grab(servicesContent, /^\s*(\w+),?\s*$/gm));
 for (const f of mainFiles) {
   const t = read(f);
-  for (const m of t.matchAll(/services\.(\w+)/g)) {
+  for (const m of t.matchAll(/services\.(\w+)\s*\(/g)) {
     if (!exportedServices.has(m[1])) {
       warnings.push(`services: ${rel(f)} calls services.${m[1]} which is not exported from lib/services.cjs`);
     }

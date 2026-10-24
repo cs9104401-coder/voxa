@@ -27,9 +27,17 @@
               <span id="levelMeter" class="level-meter" aria-label="Microphone level"><i></i><i></i><i></i><i></i><i></i></span>
               <span id="notchState" class="state-label">Idle</span>
             </div>
-            <button id="stopButton" class="stop-button" type="button" aria-label="Stop recording or close">
-              <span class="stop-glyph" aria-hidden="true"></span>
-            </button>
+            <div class="head-actions">
+              <button id="chatButton" class="head-button chat-button" type="button" aria-label="Open chat" title="Ask Voxa">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 6.5h14v9H9.5L5 19v-12.5z"/><path d="M8.5 10h7M8.5 12.8h4.5"/></svg>
+              </button>
+              <button id="chatCloseButton" class="head-button chat-close-button" type="button" aria-label="Collapse chat" title="Collapse chat" hidden>
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 14.5 6-5 6 5"/></svg>
+              </button>
+              <button id="stopButton" class="stop-button" type="button" aria-label="Stop recording or close">
+                <span class="stop-glyph" aria-hidden="true"></span>
+              </button>
+            </div>
           </header>
           <div class="pill-body">
             <section id="notchCard" class="pill-card" aria-live="polite">
@@ -41,6 +49,24 @@
                 </div>
                 <button id="copyButton" class="copy-button" type="button" hidden>Copy</button>
               </div>
+            </section>
+            <section id="chatPanel" class="chat-panel" aria-label="Voxa chat" hidden>
+              <div id="chatPreviewLabel" class="chat-preview-label" hidden>Preview only · messages are not sent</div>
+              <div id="chatLog" class="chat-log" role="log" aria-live="polite" aria-relevant="additions text">
+                <div id="chatEmpty" class="chat-empty">Ask Voxa anything. Typed chat can't perform desktop actions.</div>
+              </div>
+              <form id="chatForm" class="chat-composer" autocomplete="off">
+                <label class="chat-label" for="chatInput">Message Voxa</label>
+                <textarea id="chatInput" class="chat-input" rows="1" maxlength="8000" placeholder="Ask Voxa…" aria-label="Message Voxa"></textarea>
+                <div class="chat-actions">
+                  <span id="chatHint" class="chat-hint">Enter to send · Shift+Enter for a new line</span>
+                  <button id="chatStopButton" class="chat-stop" type="button" hidden>Stop</button>
+                  <button id="chatSendButton" class="chat-send" type="submit" aria-label="Send message" title="Send">
+                    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 19V5m0 0-5.5 5.5M12 5l5.5 5.5"/></svg>
+                  </button>
+                </div>
+              </form>
+              <div id="chatError" class="chat-error" role="alert" hidden></div>
             </section>
           </div>
         </div>

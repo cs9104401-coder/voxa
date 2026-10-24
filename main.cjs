@@ -62,6 +62,13 @@ let kokoroDownloadController = null;
 let currentTurn = null;
 let turnRunning = false;
 let nextTurnId = 1;
+let nextChatId = 1;
+const chatSession = {
+  open: false,
+  requestId: 0,
+  controller: null,
+  messages: []
+};
 const MODEL_CACHE_TTL_MS = 5 * 60 * 1000;
 const modelListCache = new Map();
 const approvalGate = createApprovalGate({
@@ -160,6 +167,18 @@ function sendToDashboard(channel, payload) {
 
 function broadcast(channel, payload) {
   sendToDashboard(channel, payload);
+}
+
+function sendToOverlay(channel, payload) {
+  const window = overlay?.getWindow();
+  if (!window || window.isDestroyed() || window.webContents.isDestroyed()) return false;
+  try {
+    window.webContents.send(channel, payload);
+    return true;
+  } catch (error) {
+    logger.warn('overlay', `Could not send ${channel}: ${cleanError(error)}`);
+    return false;
+  }
 }
 
 function sendToDashboardWhenReady(channel, payload) {
@@ -457,6 +476,7 @@ function trayTemplate() {
   const talkLabel = currentTurn?.recording ? 'Stop recording' : currentTurn ? 'Cancel current turn' : 'Talk now';
   return [
     { label: 'Open dashboard', click: showDashboard },
+    { label: 'Ask Voxa', click: () => openChat() },
     { label: talkLabel, click: () => { toggleTalk('tray', settings.mode).catch((error) => logger.error('tray', cleanError(error))); } },
     { type: 'separator' },
     { label: 'Agent mode', type: 'radio', checked: settings.mode === 'agent', click: () => setMode('agent') },
@@ -971,6 +991,7 @@ function clearOverlayHideTimer() {
 }
 
 function scheduleOverlayHide(delay) {
+  if (chatSession.open) return;
   clearTimeout(hideTimer);
   hidePaused = false;
   hideDuration = Math.max(0, Number(delay) || 0);
@@ -980,7 +1001,7 @@ function scheduleOverlayHide(delay) {
     hideTimer = null;
     hidePaused = false;
     hideRemaining = 0;
-    if (!currentTurn) overlay?.hide();
+    if (!currentTurn && !chatSession.open) overlay?.hide();
   }, hideRemaining);
   hideTimer.unref?.();
   overlay?.setDismiss({
@@ -992,7 +1013,7 @@ function scheduleOverlayHide(delay) {
 }
 
 function pauseOverlayHide() {
-  if (hidePaused || (!hideTimer && !hideRemaining)) return;
+  if (chatSession.open || hidePaused || (!hideTimer && !hideRemaining)) return;
   clearTimeout(hideTimer);
   hideTimer = null;
   hideRemaining = Math.max(0, hideDeadline - Date.now());
@@ -1006,13 +1027,13 @@ function pauseOverlayHide() {
 }
 
 function resumeOverlayHide() {
-  if (!hidePaused) return;
+  if (chatSession.open || !hidePaused) return;
   hidePaused = false;
   hideDeadline = Date.now() + hideRemaining;
   hideTimer = setTimeout(() => {
     hideTimer = null;
     hideRemaining = 0;
-    if (!currentTurn) overlay?.hide();
+    if (!currentTurn && !chatSession.open) overlay?.hide();
   }, hideRemaining);
   hideTimer.unref?.();
   overlay?.setDismiss({
@@ -1081,6 +1102,8 @@ async function beginTurn(mode, origin = 'hotkey') {
     logger.warn('hotkey', 'Activation ignored while another turn is active.');
     return false;
   }
+  if (chatSession.open) collapseChat({ hide: false });
+  else overlay?.setState({ chatOpen: false, chatPreview: false });
   clearOverlayHideTimer();
   const turn = {
     id: nextTurnId++,
@@ -1210,6 +1233,198 @@ function cleanReply(value) {
     .replace(/<\/think>/gi, '')
     .trim();
   return (text || 'Done.').slice(0, 8000);
+}
+
+function chatDisplayText(value) {
+  return String(value || '')
+    .replace(/<think\b[^>]*>[\s\S]*?<\/think>/gi, ' ')
+    .replace(/<think\b[^>]*>[\s\S]*$/i, '')
+    .replace(/<\/think>/gi, '')
+    .slice(0, LIMITS.MAX_CHAT_CHARS);
+}
+
+function cleanChatReply(value) {
+  return chatDisplayText(value).trim();
+}
+
+function chatSystemPrompt() {
+  const notes = memory.length ? memory.join(' | ') : '(none)';
+  return [
+    'You are Voxa, a concise desktop assistant.',
+    'This is a typed chat inside a small overlay. Answer directly and keep replies short unless the user asks for detail.',
+    'Typed chat cannot use desktop tools or perform actions. Never claim you opened, typed, clicked, or changed anything.',
+    'If the user asks for a desktop action, tell them to use voice or agent mode.',
+    `User notes: ${notes}.`,
+    `Current time: ${new Date().toISOString()}.`
+  ].join(' ');
+}
+
+function chatMessagesFor(text) {
+  const recent = history
+    .filter((turn) => turn && turn.said && turn.did && turn.did !== 'Dictated into the focused app.')
+    .slice(0, 6)
+    .reverse();
+  const messages = [{ role: 'system', content: chatSystemPrompt() }];
+  for (const turn of recent) {
+    messages.push({ role: 'user', content: String(turn.said).slice(0, LIMITS.MAX_CHAT_CHARS) });
+    messages.push({ role: 'assistant', content: String(turn.did).slice(0, LIMITS.MAX_CHAT_CHARS) });
+  }
+  messages.push({ role: 'user', content: text });
+  return messages;
+}
+
+function sendChatHistory() {
+  sendToOverlay('chat:history', {
+    messages: structuredClone(chatSession.messages),
+    requestId: chatSession.requestId,
+    streaming: Boolean(chatSession.controller)
+  });
+}
+
+function openChat() {
+  if (currentTurn) {
+    logger.warn('chat', 'Chat was ignored while a voice turn is active.');
+    return false;
+  }
+  clearOverlayHideTimer();
+  chatSession.open = true;
+  overlay?.show({
+    status: 'chat',
+    mode: 'agent',
+    message: '',
+    approval: null,
+    canCopy: false,
+    streaming: false,
+    chatOpen: true,
+    chatPreview: false,
+    chatStreaming: Boolean(chatSession.controller)
+  });
+  overlay?.setInteractive(true);
+  overlay?.setKeyboardFocus(true);
+  logger.info('chat', 'Chat opened');
+  return true;
+}
+
+function collapseChat({ hide = true } = {}) {
+  if (!chatSession.open) return false;
+  chatSession.open = false;
+  overlay?.setState({ chatOpen: false, chatPreview: false });
+  overlay?.setKeyboardFocus(false);
+  if (hide) overlay?.hide();
+  return true;
+}
+
+function closeChat() {
+  if (!collapseChat({ hide: true })) return false;
+  logger.info('chat', 'Chat collapsed');
+  return true;
+}
+
+function cancelChat() {
+  if (!chatSession.controller) {
+    if (chatSession.open) sendChatHistory();
+    return false;
+  }
+  logger.info('chat', 'Stopping reply');
+  chatSession.controller.abort();
+  return true;
+}
+
+async function sendChat(payload) {
+  if (!chatSession.open) {
+    logger.warn('chat', 'A typed message was ignored because chat is closed.');
+    sendToOverlay('chat:error', { message: 'Chat was closed before the message could be sent.' });
+    return;
+  }
+  if (currentTurn) {
+    sendToOverlay('chat:error', { message: 'Finish the voice turn before typing.' });
+    return;
+  }
+  if (chatSession.controller) {
+    sendToOverlay('chat:error', { message: 'Please wait for the current reply to finish.' });
+    return;
+  }
+  const text = typeof payload?.text === 'string' ? payload.text.trim() : '';
+  if (!text) {
+    sendToOverlay('chat:error', { message: 'Type a message first.' });
+    return;
+  }
+  if (text.length > LIMITS.MAX_CHAT_CHARS) {
+    sendToOverlay('chat:error', { message: `Messages are limited to ${LIMITS.MAX_CHAT_CHARS} characters.` });
+    return;
+  }
+  const providerName = settings.chatProvider;
+  const config = settings.providers?.[providerName];
+  if (!config) {
+    sendToOverlay('chat:error', { message: `Unknown chat provider: ${providerName}` });
+    return;
+  }
+  const key = providerNeedsKey(providerName) ? secrets[providerName] : '';
+  if (providerNeedsKey(providerName) && !key) {
+    sendToOverlay('chat:error', { message: `Add an API key for ${providerName} in the dashboard.` });
+    return;
+  }
+
+  const id = nextChatId++;
+  const controller = new AbortController();
+  chatSession.controller = controller;
+  chatSession.requestId = id;
+  chatSession.messages.push({ role: 'user', content: text }, { role: 'assistant', content: '', streaming: true });
+  if (chatSession.messages.length > 40) chatSession.messages.splice(0, chatSession.messages.length - 40);
+  overlay?.setState({ chatStreaming: true });
+  sendToOverlay('chat:started', { id, text });
+  logger.info('chat', `Sending ${text.length} characters to ${providerName}/${config.model || 'default'}`);
+
+  try {
+    const chatSettings = structuredClone(settings);
+    const reply = await services.chatStream(
+      chatSettings,
+      key,
+      chatMessagesFor(text),
+      controller.signal,
+      (partial) => {
+        const display = chatDisplayText(partial);
+        const last = chatSession.messages[chatSession.messages.length - 1];
+        if (last?.role === 'assistant') last.content = display;
+        sendToOverlay('chat:delta', { id, text: display });
+      }
+    );
+    const clean = cleanChatReply(reply);
+    if (!clean) throw new Error('The model returned an empty reply.');
+    const last = chatSession.messages[chatSession.messages.length - 1];
+    if (last?.role === 'assistant') {
+      last.content = clean;
+      last.streaming = false;
+    } else {
+      chatSession.messages.push({ role: 'assistant', content: clean });
+    }
+    addTurn(text, clean);
+    sendToOverlay('chat:done', { id, text: clean });
+    logger.info('chat', `Reply received from ${providerName}`);
+  } catch (error) {
+    const last = chatSession.messages[chatSession.messages.length - 1];
+    if (controller.signal.aborted) {
+      if (last?.role === 'assistant') {
+        last.streaming = false;
+        last.cancelled = true;
+      }
+      sendToOverlay('chat:done', { id, text: last?.content || '', cancelled: true });
+      logger.info('chat', 'Reply stopped');
+    } else {
+      const message = cleanError(error);
+      if (last?.role === 'assistant') {
+        last.streaming = false;
+        last.error = message;
+      } else {
+        chatSession.messages.push({ role: 'assistant', content: '', error: message });
+      }
+      sendToOverlay('chat:error', { id, message });
+      logger.warn('chat', message);
+    }
+  } finally {
+    if (chatSession.controller === controller) chatSession.controller = null;
+    overlay?.setState({ chatStreaming: false });
+  }
 }
 
 function stripForSpeech(value) {
@@ -1655,22 +1870,27 @@ async function runMicTest() {
 
 function previewOverlay(status, message) {
   if (currentTurn) throw new Error('Finish the current turn before previewing the overlay.');
-  const allowed = ['idle', 'listening', 'thinking', 'executing', 'verifying', 'answer', 'approval', 'error', 'done'];
+  if (chatSession.open) throw new Error('Close chat before previewing the overlay.');
+  const allowed = ['idle', 'listening', 'thinking', 'executing', 'verifying', 'answer', 'approval', 'error', 'done', 'chat'];
   const next = allowed.includes(String(status).toLowerCase()) ? String(status).toLowerCase() : 'listening';
   if (next === 'idle') {
     clearOverlayHideTimer();
     overlay.hide();
     return true;
   }
+  const isChat = next === 'chat';
   const approval = next === 'approval'
     ? { id: 'preview', title: 'Allow this sample action?', detail: message || 'This is a preview; no action will run.', tool: 'preview' }
     : null;
   overlay.show({
     status: next,
     mode: settings.mode,
-    message: message || `Overlay preview · ${next}`,
+    message: isChat ? '' : message || `Overlay preview · ${next}`,
     approval,
-    canCopy: next === 'answer'
+    canCopy: next === 'answer',
+    chatOpen: isChat,
+    chatPreview: isChat,
+    chatStreaming: false
   });
   const motionScale = overlay.state().slowMotion ? 4 : 1;
   scheduleOverlayHide((next === 'approval' ? 8000 : next === 'done' ? 3200 : 6000) * motionScale);
@@ -1852,6 +2072,10 @@ function registerIpc() {
     history = [];
     store.writeJson('history.json', history);
     broadcast('history:updated', []);
+    if (!chatSession.controller) {
+      chatSession.messages = [];
+      if (chatSession.open) sendChatHistory();
+    }
     return true;
   });
   handle('apps:refresh', () => apps.refreshApps(logger).map((item) => item.name));
@@ -2012,6 +2236,11 @@ function registerIpc() {
   listen('overlay:copy', (text) => {
     clipboard.writeText(String(text || '').slice(0, 20000));
   }, ['overlay']);
+  listen('chat:open', () => openChat(), ['overlay']);
+  listen('chat:close', () => closeChat(), ['overlay']);
+  listen('chat:request-history', () => sendChatHistory(), ['overlay']);
+  listen('chat:send', (payload) => sendChat(payload), ['overlay']);
+  listen('chat:cancel', () => cancelChat(), ['overlay']);
   listen('recorder:response', (message) => {
     if (!message || typeof message.id !== 'number') return;
     const pending = pendingRecorderRequests.get(message.id);
@@ -2082,6 +2311,7 @@ app.on('window-all-closed', () => {
 app.on('before-quit', () => {
   quitting = true;
   currentTurn?.controller.abort();
+  chatSession.controller?.abort();
   approvalGate.cancelAll();
   if (currentTurn?.recorderId) recorderManager?.cancel(currentTurn.recorderId, 'app quit');
   speechController?.abort(); sendToPlayer('tts:stop-audio', {});
