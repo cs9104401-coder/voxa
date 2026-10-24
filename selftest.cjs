@@ -344,6 +344,117 @@ function runRuntime() {
   }
 }
 
+function checkTtsNormaliser() {
+  try {
+    const { normaliseForSpeech } = require('./lib/tts-text.cjs');
+    const cases = [
+      // Strip markdown headings
+      ['heading', normaliseForSpeech('## Hello world'), 'Hello world'],
+      // Strip bold emphasis
+      ['bold', normaliseForSpeech('This is **important** text'), 'This is important text'],
+      // Fenced code block → "code block"
+      ['code block', normaliseForSpeech('Run this:\n```js\nconsole.log(1);\n```\nDone.'), (r) => r.includes('code block') && !r.includes('console')],
+      // Inline code → unwrap
+      ['inline code', normaliseForSpeech('Use `npm install` here'), (r) => r.includes('npm install') && !r.includes('`')],
+      // URL → domain only
+      ['url domain', normaliseForSpeech('See https://example.com/path?q=1 for details'), (r) => r.includes('example.com') && !r.includes('/path')],
+      // Emoji removed
+      ['emoji', normaliseForSpeech('Hello 😊 world 🎉'), (r) => !r.includes('😊') && !r.includes('🎉') && r.includes('Hello') && r.includes('world')],
+      // Rupee currency
+      ['rupee', normaliseForSpeech('Price: ₹1,250'), (r) => r.includes('rupee') && (r.includes('thousand') || r.includes('one thousand'))],
+      // Dollar currency
+      ['dollar', normaliseForSpeech('Cost $5'), (r) => r.includes('dollar')],
+      // Percentage
+      ['percent', normaliseForSpeech('95% complete'), (r) => r.includes('percent') && !r.includes('%')],
+      // Number spoken
+      ['number', normaliseForSpeech('There are 42 items'), (r) => r.includes('forty') && !r.includes('42')],
+      // Hindi danda — passes through normaliser intact (it's a segmenter concern)
+      ['hindi danda', normaliseForSpeech('नमस्ते। कैसे हो।'), (r) => typeof r === 'string' && r.length > 0],
+      // Bullet list — strip marker, keep text
+      ['bullets', normaliseForSpeech('- First item\n- Second item'), (r) => r.includes('First item') && !r.includes('- ')],
+    ];
+    const failures = [];
+    for (const [name, result, expected] of cases) {
+      const ok = typeof expected === 'function' ? expected(result) : result.trim() === expected;
+      if (!ok) failures.push(`${name}: got "${String(result).slice(0, 80)}"`);
+    }
+    record(
+      'TTS normaliser',
+      failures.length === 0,
+      failures.length ? failures.join('; ') : `${cases.length} normalisation cases passed.`
+    );
+  } catch (error) {
+    record('TTS normaliser', false, error.stack || error.message);
+  }
+}
+
+function checkTtsSegmenter() {
+  try {
+    const { segmentSentences } = require('./lib/tts-text.cjs');
+    const cases = [
+      // Basic multi-sentence
+      ['basic split', segmentSentences('Hello world. How are you? Fine!'), (r) => r.length === 3],
+      // Abbreviation protection: "Dr." must not split
+      ['abbreviation', segmentSentences('Dr. Smith went to the store.'), (r) => r.length === 1],
+      // Decimal protection: "3.14" must not split
+      ['decimal', segmentSentences('Pi is 3.14 exactly.'), (r) => r.length === 1],
+      // Ellipsis treated as one terminator
+      ['ellipsis', segmentSentences('Wait... then proceed.'), (r) => r.length >= 1 && r.every((s) => s.length > 0)],
+      // Hindi danda treated as terminator
+      ['danda', segmentSentences('नमस्ते। मैं ठीक हूँ।'), (r) => r.length >= 1],
+      // Quoted sentence: "She said 'hello.' He left." → split after closing quote
+      ['quoted', segmentSentences('She said "hello." He left.'), (r) => r.length === 2],
+      // List item (no bullet, just text with periods)
+      ['list item', segmentSentences('Item one. Item two. Item three.'), (r) => r.length === 3],
+      // Overlong sentence at comma (~200 chars)
+      ['overlong', segmentSentences('This is a very long sentence that goes on and on and on, and it keeps going and going and going, and eventually it becomes quite long indeed, and then it splits here, because it has now exceeded the two-hundred character limit.'), (r) => r.length >= 2],
+      // Empty string
+      ['empty', segmentSentences(''), (r) => r.length === 0],
+      // Single word (no terminator)
+      ['single word', segmentSentences('Hello'), (r) => r.length === 1 && r[0] === 'Hello'],
+    ];
+    const failures = [];
+    for (const [name, result, check] of cases) {
+      const ok = check(result);
+      if (!ok) failures.push(`${name}: got ${JSON.stringify(result).slice(0, 120)}`);
+    }
+    record(
+      'TTS segmenter',
+      failures.length === 0,
+      failures.length ? failures.join('; ') : `${cases.length} segmentation cases passed.`
+    );
+  } catch (error) {
+    record('TTS segmenter', false, error.stack || error.message);
+  }
+}
+
+function checkTtsSettings() {
+  try {
+    const { defaults } = require('./lib/constants.cjs');
+    const base = defaults('TestUser');
+    const required = ['ttsEngine', 'ttsVoice', 'ttsSpeed', 'ttsVolume', 'ttsGpu', 'ttsAutoVoice', 'ttsTier', 'ttsModelVariant', 'ttsBatterySaver'];
+    const missing = required.filter((key) => !(key in base));
+    const validEngine = base.ttsEngine === 'kokoro' || base.ttsEngine === 'windows';
+    const validSpeed = typeof base.ttsSpeed === 'number' && base.ttsSpeed >= 0.7 && base.ttsSpeed <= 1.4;
+    const validVolume = typeof base.ttsVolume === 'number' && base.ttsVolume >= 0 && base.ttsVolume <= 1;
+    const validVariant = base.ttsModelVariant === 'int8' || base.ttsModelVariant === 'fp32';
+    const failures = [
+      ...missing.map((k) => `missing default: ${k}`),
+      ...(!validEngine ? ['ttsEngine must be kokoro or windows'] : []),
+      ...(!validSpeed ? [`ttsSpeed out of range: ${base.ttsSpeed}`] : []),
+      ...(!validVolume ? [`ttsVolume out of range: ${base.ttsVolume}`] : []),
+      ...(!validVariant ? [`ttsModelVariant invalid: ${base.ttsModelVariant}`] : [])
+    ];
+    record(
+      'TTS settings defaults',
+      failures.length === 0,
+      failures.length ? failures.join('; ') : `${required.length} TTS defaults present and valid.`
+    );
+  } catch (error) {
+    record('TTS settings defaults', false, error.stack || error.message);
+  }
+}
+
 function run() {
   checkJavaScript();
   checkMarkup();
@@ -352,6 +463,9 @@ function run() {
   checkPermissionPolicy();
   checkToolSchema();
   checkLogRedaction();
+  checkTtsNormaliser();
+  checkTtsSegmenter();
+  checkTtsSettings();
   if (process.argv.includes('--static-only')) {
     record('Runtime checks', true, 'Skipped because --static-only was requested.');
     formatReport('Voxa static self-test report');

@@ -55,8 +55,10 @@ let tray = null;
 let lastHealth = {
   ollama: { ok: false, message: 'Not checked yet.' },
   chat: { ok: false, provider: 'local', message: 'Not checked yet.' },
-  whisper: { ok: false, message: 'Not checked yet.' }
+  whisper: { ok: false, message: 'Not checked yet.' },
+  kokoro: { status: 'unknown' }
 };
+let kokoroDownloadController = null;
 let currentTurn = null;
 let turnRunning = false;
 let nextTurnId = 1;
@@ -677,6 +679,11 @@ function whisperHealthSummary(health = {}) {
     models: whisperModelSummary(health),
     message
   };
+}
+
+function publishKokoroHealth(status) {
+  lastHealth.kokoro = { ...status, checkedAt: new Date().toISOString() };
+  sendToDashboard('tts:health-updated', lastHealth.kokoro);
 }
 
 function publishWhisperHealth(health) {
@@ -1532,7 +1539,16 @@ async function speakReply(turn, text) {
   speechController = new AbortController();
   const controller = speechController;
   try {
-    await services.speak(speech, controller.signal, logger);
+    // Extract TTS settings with safe defaults
+    const tts = {
+      ttsEngine: settings.ttsEngine,
+      ttsVoice: settings.ttsVoice,
+      ttsSpeed: settings.ttsSpeed,
+      ttsVolume: settings.ttsVolume,
+      ttsGpu: settings.ttsGpu,
+      ttsModelVariant: settings.ttsModelVariant
+    };
+    await services.speak(speech, tts, controller.signal, logger);
   } catch (error) {
     logger.warn('speech', cleanError(error));
   } finally {
@@ -1821,6 +1837,93 @@ function registerIpc() {
     overlay?.setPreviewOptions({ slowMotion: Boolean(options?.slowMotion) });
     return true;
   });
+  handle('tts:health', () => {
+    const kokoro = require('./lib/tts-kokoro.cjs');
+    const variant = settings.ttsModelVariant || 'int8';
+    const spec = kokoro.MODEL_VARIANTS[variant] || kokoro.MODEL_VARIANTS.int8;
+    const modelReady = kokoro.isModelReady(variant);
+    const hasConsent = kokoro.hasConsent();
+    const running = kokoro.kokoroStatus().running;
+    return {
+      status: modelReady ? (running ? 'ready' : 'downloaded') : (hasConsent ? 'not-downloaded' : 'needs-consent'),
+      modelReady,
+      hasConsent,
+      running,
+      variant,
+      sizeBytes: spec.sizeBytes,
+      filename: spec.filename,
+      error: kokoro.kokoroStatus().error || ''
+    };
+  });
+  handle('tts:download', async () => {
+    if (kokoroDownloadController) throw new Error('A Kokoro download is already running.');
+    const kokoro = require('./lib/tts-kokoro.cjs');
+    const variant = settings.ttsModelVariant || 'int8';
+    const spec = kokoro.MODEL_VARIANTS[variant] || kokoro.MODEL_VARIANTS.int8;
+    const sizeMb = Math.round(spec.sizeBytes / 1_048_576);
+    // Show consent dialog (no-op if already granted).
+    const granted = await kokoro.requestConsent(sizeMb);
+    if (!granted) {
+      publishKokoroHealth({ status: 'needs-consent', modelReady: false, hasConsent: false, variant });
+      return { ok: false, message: 'Download cancelled.' };
+    }
+    const controller = new AbortController();
+    kokoroDownloadController = controller;
+    publishKokoroHealth({ status: 'downloading', modelReady: false, hasConsent: true, variant, progress: { percent: 0, totalBytes: spec.sizeBytes, downloadedBytes: 0 } });
+    try {
+      await kokoro.ensureModelFile(variant, controller.signal, {
+        info: (_tag, msg) => {
+          logger.info('kokoro download', msg);
+          const match = msg.match(/(\d+)%/);
+          const pct = match ? parseInt(match[1], 10) : null;
+          publishKokoroHealth({ status: 'downloading', modelReady: false, hasConsent: true, variant,
+            progress: { percent: pct, totalBytes: spec.sizeBytes, downloadedBytes: pct != null ? Math.round(pct / 100 * spec.sizeBytes) : 0 }
+          });
+        }
+      });
+      if (controller.signal.aborted) {
+        publishKokoroHealth({ status: 'not-downloaded', modelReady: false, hasConsent: true, variant });
+        return { ok: false, message: 'Download cancelled.' };
+      }
+      publishKokoroHealth({ status: 'downloaded', modelReady: true, hasConsent: true, variant });
+      logger.info('kokoro', `Model ${spec.filename} ready.`);
+      return { ok: true, message: 'Kokoro model downloaded.' };
+    } catch (err) {
+      if (!err.cancelled) logger.warn('kokoro', `Download failed: ${cleanError(err)}`);
+      publishKokoroHealth({ status: err.cancelled ? 'not-downloaded' : 'error', modelReady: false, hasConsent: true, variant, error: cleanError(err) });
+      if (err.cancelled) return { ok: false, message: 'Download cancelled.' };
+      throw new Error(cleanError(err));
+    } finally {
+      if (kokoroDownloadController === controller) kokoroDownloadController = null;
+    }
+  });
+  handle('tts:cancel-download', () => {
+    if (!kokoroDownloadController) return { ok: false };
+    kokoroDownloadController.abort();
+    kokoroDownloadController = null;
+    return { ok: true };
+  });
+  handle('tts:speak', async (text, settings, signal) => {
+    const tts = {
+      ttsEngine: settings?.ttsEngine || 'windows',
+      ttsVoice: settings?.ttsVoice,
+      ttsSpeed: settings?.ttsSpeed,
+      ttsVolume: settings?.ttsVolume,
+      ttsGpu: settings?.ttsGpu,
+      ttsModelVariant: settings?.ttsModelVariant
+    };
+    try {
+      const buffer = await services.speak(String(text || ''), tts, signal, logger);
+      if (buffer) {
+        sendToDashboard('tts:play-audio', buffer);
+        return { ok: true };
+      }
+      return { ok: true };
+    } catch (error) {
+      logger.warn('speech', cleanError(error));
+      return { ok: false, error: cleanError(error) };
+    }
+  });
   handle('voice:test', async () => {
     if (currentTurn) throw new Error('Finish the current turn before testing voice.');
     if (micTestRunning) throw new Error('Wait for the microphone test to finish before testing voice.');
@@ -1828,9 +1931,18 @@ function registerIpc() {
     const controller = new AbortController();
     speechController = controller;
     try {
-      await services.speak(`This is a voice test from ${APP_NAME}.`, controller.signal, logger);
+      const tts = {
+        ttsEngine: settings.ttsEngine,
+        ttsVoice: settings.ttsVoice,
+        ttsSpeed: settings.ttsSpeed,
+        ttsVolume: settings.ttsVolume,
+        ttsGpu: settings.ttsGpu,
+        ttsModelVariant: settings.ttsModelVariant
+      };
+      await services.speak(`This is a voice test from ${APP_NAME}.`, tts, controller.signal, logger);
       if (controller.signal.aborted) return { ok: false, message: 'Voice test stopped.' };
-      return { ok: true, message: 'Windows voice test finished.' };
+      const engine = settings.ttsEngine === 'kokoro' ? 'Kokoro' : 'Windows';
+      return { ok: true, message: `${engine} voice test finished.` };
     } finally {
       if (speechController === controller) speechController = null;
     }
@@ -1952,6 +2064,7 @@ app.on('before-quit', () => {
   hotkeys?.stop();
   desktop.disposeFocusHelper();
   services.stopWhisper();
+  services.stopKokoro();
   overlay?.destroy();
   if (recorderWindow && !recorderWindow.isDestroyed()) recorderWindow.destroy();
 });

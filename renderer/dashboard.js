@@ -18,6 +18,98 @@ const WHISPER_PRESETS = {
   accurate: { label: 'Accurate', model: 'large-v3', description: 'Best accuracy with the largest download.' },
   custom: { label: 'Custom', model: '', description: 'Choose any installed or downloadable model.' }
 };
+// Kokoro voice language group labels — derived from tts-text.cjs lang codes.
+const TTS_LANG_LABELS = {
+  a: 'American English',
+  b: 'British English',
+  e: 'Spanish',
+  f: 'French',
+  h: 'Hindi',
+  i: 'Italian',
+  j: 'Japanese',
+  p: 'Portuguese',
+  z: 'Mandarin'
+};
+
+// Full Kokoro voice list (mirrors VOICES in lib/tts-text.cjs).
+const TTS_VOICES = [
+  { id: 'af_heart',    lang: 'a', label: 'Heart' },
+  { id: 'af_alloy',    lang: 'a', label: 'Alloy' },
+  { id: 'af_aoede',    lang: 'a', label: 'Aoede' },
+  { id: 'af_bella',    lang: 'a', label: 'Bella' },
+  { id: 'af_jessica',  lang: 'a', label: 'Jessica' },
+  { id: 'af_kore',     lang: 'a', label: 'Kore' },
+  { id: 'af_nicole',   lang: 'a', label: 'Nicole' },
+  { id: 'af_nova',     lang: 'a', label: 'Nova' },
+  { id: 'af_river',    lang: 'a', label: 'River' },
+  { id: 'af_sarah',    lang: 'a', label: 'Sarah' },
+  { id: 'af_sky',      lang: 'a', label: 'Sky' },
+  { id: 'am_adam',     lang: 'a', label: 'Adam' },
+  { id: 'am_echo',     lang: 'a', label: 'Echo' },
+  { id: 'am_eric',     lang: 'a', label: 'Eric' },
+  { id: 'am_fenrir',   lang: 'a', label: 'Fenrir' },
+  { id: 'am_liam',     lang: 'a', label: 'Liam' },
+  { id: 'am_michael',  lang: 'a', label: 'Michael' },
+  { id: 'am_onyx',     lang: 'a', label: 'Onyx' },
+  { id: 'am_puck',     lang: 'a', label: 'Puck' },
+  { id: 'am_santa',    lang: 'a', label: 'Santa' },
+  { id: 'bf_alice',    lang: 'b', label: 'Alice' },
+  { id: 'bf_emma',     lang: 'b', label: 'Emma' },
+  { id: 'bf_isabella', lang: 'b', label: 'Isabella' },
+  { id: 'bf_lily',     lang: 'b', label: 'Lily' },
+  { id: 'bm_daniel',   lang: 'b', label: 'Daniel' },
+  { id: 'bm_fable',    lang: 'b', label: 'Fable' },
+  { id: 'bm_george',   lang: 'b', label: 'George' },
+  { id: 'bm_lewis',    lang: 'b', label: 'Lewis' },
+  { id: 'ef_dora',     lang: 'e', label: 'Dora' },
+  { id: 'em_alex',     lang: 'e', label: 'Alex' },
+  { id: 'em_santa',    lang: 'e', label: 'Santa' },
+  { id: 'ff_siwis',    lang: 'f', label: 'Siwis' },
+  { id: 'hf_alpha',    lang: 'h', label: 'Alpha' },
+  { id: 'hf_beta',     lang: 'h', label: 'Beta' },
+  { id: 'hm_omega',    lang: 'h', label: 'Omega' },
+  { id: 'hm_psi',      lang: 'h', label: 'Psi' },
+  { id: 'if_sara',     lang: 'i', label: 'Sara' },
+  { id: 'im_nicola',   lang: 'i', label: 'Nicola' },
+  { id: 'jf_alpha',      lang: 'j', label: 'Alpha' },
+  { id: 'jf_gongitsune', lang: 'j', label: 'Gongitsune' },
+  { id: 'jf_nezumi',     lang: 'j', label: 'Nezumi' },
+  { id: 'jf_tebukuro',   lang: 'j', label: 'Tebukuro' },
+  { id: 'jm_kumo',       lang: 'j', label: 'Kumo' },
+  { id: 'pf_dora',     lang: 'p', label: 'Dora' },
+  { id: 'pm_alex',     lang: 'p', label: 'Alex' },
+  { id: 'pm_santa',    lang: 'p', label: 'Santa' },
+  { id: 'zf_xiaobei',  lang: 'z', label: 'Xiaobei' },
+  { id: 'zf_xiaoni',   lang: 'z', label: 'Xiaoni' },
+  { id: 'zf_xiaoxiao', lang: 'z', label: 'Xiaoxiao' },
+  { id: 'zf_xiaoyi',   lang: 'z', label: 'Xiaoyi' },
+  { id: 'zm_yunjian',  lang: 'z', label: 'Yunjian' },
+  { id: 'zm_yunxi',    lang: 'z', label: 'Yunxi' },
+  { id: 'zm_yunxia',   lang: 'z', label: 'Yunxia' },
+  { id: 'zm_yunyang',  lang: 'z', label: 'Yunyang' }
+];
+
+function ttsVoiceOptions(selected) {
+  // Group voices by language, emit <optgroup> per group.
+  const groups = new Map();
+  for (const v of TTS_VOICES) {
+    if (!groups.has(v.lang)) groups.set(v.lang, []);
+    groups.get(v.lang).push(v);
+  }
+  return [...groups.entries()].map(([lang, voices]) => {
+    const groupLabel = TTS_LANG_LABELS[lang] || lang;
+    const opts = voices.map((v) => `<option value="${esc(v.id)}" ${selected === v.id ? 'selected' : ''}>${esc(v.label)}</option>`).join('');
+    return `<optgroup label="${esc(groupLabel)}">${opts}</optgroup>`;
+  }).join('');
+}
+
+function updateTtsVoiceSelect() {
+  const engine = $('#ttsEngine');
+  const voice = $('#ttsVoice');
+  if (!engine || !voice) return;
+  voice.disabled = engine.value !== 'kokoro';
+}
+
 const PERMISSION_MODES = [
   ['ask', 'Ask Every Time', 'Show an approval prompt before every desktop action.'],
   ['routine', 'Allow Routine Actions', 'Open files, folders, apps, and websites without repeated prompts. Sensitive actions still ask.'],
@@ -230,6 +322,40 @@ function whisperProgressPanel() {
     <small class="card-note" id="dictationWhisperText"></small>
     <div class="row-side" style="justify-content:flex-end;margin-top:10px"><button class="button" data-action="whisper-cancel" hidden>Cancel</button><button class="button primary" data-action="whisper-retry" hidden>Retry</button></div>
   </div>`;
+}
+
+function kokoroProgressPanel() {
+  return `<div class="whisper-download" id="dictationKokoroProgress" hidden>
+    <div class="row-side" style="justify-content:space-between"><b>Kokoro model</b><span class="badge info" id="dictationKokoroPercent">Working</span></div>
+    <div class="progress-track"><i id="dictationKokoroBar"></i></div>
+    <small class="card-note" id="dictationKokoroText"></small>
+  </div>`;
+}
+
+function updateKokoroProgress() {
+  const status = data.health?.kokoro || {};
+  const panel = document.getElementById('dictationKokoroProgress');
+  if (!panel) return;
+  const isDownloading = status.status === 'downloading';
+  const isWorking = isDownloading || status.status === 'loading';
+  panel.hidden = !isWorking;
+  const bar = document.getElementById('dictationKokoroBar');
+  const text = document.getElementById('dictationKokoroText');
+  const percentBadge = document.getElementById('dictationKokoroPercent');
+  if (bar) {
+    const pct = status.progress?.percent;
+    bar.style.width = Number.isFinite(pct) ? `${pct}%` : '';
+    bar.classList.toggle('indeterminate', !Number.isFinite(pct));
+  }
+  if (text) {
+    text.textContent = isDownloading && status.progress?.totalBytes
+      ? `Downloading Kokoro model (${formatBytes(status.progress.downloadedBytes)} of ${formatBytes(status.progress.totalBytes)})`
+      : status.error || 'Downloading Kokoro-82M model (~86 MB)…';
+  }
+  if (percentBadge) {
+    const pct = status.progress?.percent;
+    percentBadge.textContent = Number.isFinite(pct) ? `${pct}%` : 'Working';
+  }
 }
 
 function updateWhisperProgress() {
@@ -664,6 +790,24 @@ function dictation() {
         <div class="field"><span>Input level</span><div class="input-meter"><i id="settingsMicLevel"></i></div></div>
         <div class="row-side field full"><button class="button" id="micTest" type="button" ${micTestRunning ? 'disabled' : ''}>Mic test · record 3 seconds</button><span id="micTestResult" class="card-note">Records, plays back, then transcribes.</span></div>
       </div>
+      <article class="card"><h2 class="card-title">Voice replies</h2>
+        <div class="form-grid">
+          <label class="field">Engine<select class="select" id="ttsEngine"><option value="windows" ${(settings.ttsEngine || 'windows') === 'windows' ? 'selected' : ''}>Windows (built-in)</option><option value="kokoro" ${settings.ttsEngine === 'kokoro' ? 'selected' : ''}>Kokoro · natural voice</option></select></label>
+          <label class="field">Voice<select class="select" id="ttsVoice" ${(settings.ttsEngine || 'windows') !== 'kokoro' ? 'disabled' : ''}>${ttsVoiceOptions(settings.ttsVoice || 'af_heart')}</select><small class="card-note">Voice selection applies to Kokoro only.</small></label>
+          <label class="field">Speed · <span id="ttsSpeedVal">${(settings.ttsSpeed || 1.0).toFixed(1)}×</span><input type="range" class="full" id="ttsSpeed" min="0.5" max="2.0" step="0.1" value="${settings.ttsSpeed || 1.0}"></label>
+          <label class="field">Volume · <span id="ttsVolumeVal">${Math.round((settings.ttsVolume ?? 1.0) * 100)}%</span><input type="range" class="full" id="ttsVolume" min="0" max="1" step="0.05" value="${settings.ttsVolume ?? 1.0}"></label>
+          <div class="row-side field full"><button class="button primary" id="ttsPreview" type="button">Preview voice</button><span id="ttsPreviewResult" class="card-note"></span></div>
+        </div>
+        <div class="whisper-model-card" id="kokoroModelCard" style="margin-top:14px">
+          <div class="row-side" style="justify-content:space-between;align-items:flex-start">
+            <div class="row-main"><b id="kokoroSelectedName">Kokoro-82M Model</b><small class="card-note" id="kokoroSelectedMeta">Checking model status…</small></div>
+            <span class="badge info" id="kokoroStatusBadge">Checking</span>
+          </div>
+          <div class="whisper-facts"><span>Download <b>~86 MB</b></span><span>Location <b>AppData/kokoro</b></span></div>
+          <div class="row-side" style="justify-content:space-between;margin-top:10px"><span class="card-note" id="kokoroActionNote">One-time download required for natural voice replies.</span><button class="button primary" id="kokoroAction" type="button" data-action="kokoro-download">Download model</button><button class="button" id="kokoroCancel" type="button" data-action="kokoro-cancel" hidden>Cancel</button></div>
+        </div>
+        ${kokoroProgressPanel()}
+      </article>
       ${whisperModelCard()}
       ${whisperProgressPanel()}
       <p class="card-note">Models download into AppData. Downloads run in the background, show real progress here and on the Dashboard, and can be canceled or retried. Switching keeps the current model active until the new one is ready.</p>
@@ -1321,6 +1465,10 @@ function collectPagePatch() {
     }
     patch.whisperDevice = $('#device')?.value || settings.whisperDevice;
     patch.microphoneId = $('#mic')?.value ?? settings.microphoneId;
+    patch.ttsEngine = $('#ttsEngine')?.value || settings.ttsEngine;
+    patch.ttsVoice = $('#ttsVoice')?.value || settings.ttsVoice;
+    patch.ttsSpeed = parseFloat($('#ttsSpeed')?.value || settings.ttsSpeed || 1.0);
+    patch.ttsVolume = parseFloat($('#ttsVolume')?.value || settings.ttsVolume || 1.0);
   } else if (activePage === 'agent') {
     const provider = $('#chatProvider')?.value || settings.chatProvider;
     const fallbackProvider = $('#fallbackProvider')?.value || settings.fallbackProvider || 'none';
@@ -1785,6 +1933,56 @@ function wire() {
     };
   }
 
+  const ttsEngineSelect = $('#ttsEngine');
+  if (ttsEngineSelect) {
+    ttsEngineSelect.onchange = () => {
+      updateTtsVoiceSelect();
+      settingsDirty = activePage === 'dictation';
+    };
+  }
+
+  const ttsSpeedSlider = $('#ttsSpeed');
+  if (ttsSpeedSlider) {
+    ttsSpeedSlider.oninput = () => {
+      const label = $('#ttsSpeedVal');
+      if (label) label.textContent = `${parseFloat(ttsSpeedSlider.value).toFixed(1)}×`;
+    };
+  }
+
+  const ttsVolumeSlider = $('#ttsVolume');
+  if (ttsVolumeSlider) {
+    ttsVolumeSlider.oninput = () => {
+      const label = $('#ttsVolumeVal');
+      if (label) label.textContent = `${Math.round(parseFloat(ttsVolumeSlider.value) * 100)}%`;
+    };
+  }
+
+  const ttsPreview = $('#ttsPreview');
+  if (ttsPreview) {
+    ttsPreview.onclick = async () => {
+      ttsPreview.disabled = true;
+      const result = $('#ttsPreviewResult');
+      if (result) result.textContent = 'Speaking…';
+      try {
+        // Save current slider values first so the test uses what's shown.
+        const patch = {};
+        if ($('#ttsEngine')) patch.ttsEngine = $('#ttsEngine').value;
+        if ($('#ttsVoice')) patch.ttsVoice = $('#ttsVoice').value;
+        if ($('#ttsSpeed')) patch.ttsSpeed = parseFloat($('#ttsSpeed').value);
+        if ($('#ttsVolume')) patch.ttsVolume = parseFloat($('#ttsVolume').value);
+        const saved = await api.saveSettings(patch);
+        settings = { ...settings, ...saved };
+        data.settings = settings;
+        const res = await api.testVoice();
+        if (result) result.textContent = res?.message || 'Done.';
+      } catch (error) {
+        if (result) result.textContent = error.message || 'Voice test failed.';
+      } finally {
+        ttsPreview.disabled = false;
+      }
+    };
+  }
+
   const refreshMic = $('#refreshMic');
   if (refreshMic) refreshMic.onclick = () => void refreshMicrophones();
   const micTest = $('#micTest');
@@ -2130,6 +2328,10 @@ updaterApi?.onStatus((status) => {
   if (!status) return;
   updaterStatus = status;
   updateUpdaterUi();
+});
+
+api.on('tts:play-audio', (buffer) => {
+  window.ttsPlayer?.play(new Uint8Array(buffer));
 });
 
 window.addEventListener('hashchange', () => {
