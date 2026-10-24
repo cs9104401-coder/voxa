@@ -76,6 +76,7 @@ const EVENT_CHANNELS = new Set([
   'ollama:pull-progress',
   'tts:health-updated',
   'tts:play-audio',
+  'tts:stop-audio',
   'overlay:state',
   'overlay:audio-level',
   'recorder:start',

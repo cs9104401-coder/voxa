@@ -47,9 +47,9 @@ DEFAULT_SAMPLE_RATE = 24000   # Kokoro-82M native output rate
 
 # ── Global state ─────────────────────────────────────────────────────────────
 class _State:
-    model: Any = None                  # KokoroOnnx instance or None
+    model: Any = None                  # Kokoro instance or None
     model_path: str = ""
-    voices_dir: str = ""
+    voices_file: str = ""
     load_error: str = ""
     loading: bool = False
     consecutive_failures: int = 0
@@ -62,11 +62,11 @@ _state = _State()
 
 # ── Model loading ─────────────────────────────────────────────────────────────
 
-def _load_model_sync(model_path: str, voices_dir: str) -> Any:
-    """Load KokoroOnnx from disk.  Runs in a thread pool."""
-    from kokoro_onnx import KokoroOnnx  # type: ignore[import-untyped]
+def _load_model_sync(model_path: str, voices_file: str) -> Any:
+    """Load Kokoro from disk.  Runs in a thread pool."""
+    from kokoro_onnx import Kokoro  # type: ignore[import-untyped]
     logger.info("Loading Kokoro model from %s", model_path)
-    model = KokoroOnnx(model_path, voices_dir=voices_dir)
+    model = Kokoro(model_path, voices_path=voices_file)
     logger.info("Kokoro model ready")
     return model
 
@@ -88,7 +88,7 @@ async def _ensure_model() -> Any:
         raise RuntimeError("Kokoro model loading timed out.")
     _state.loading = True
     try:
-        model = await asyncio.to_thread(_load_model_sync, _state.model_path, _state.voices_dir)
+        model = await asyncio.to_thread(_load_model_sync, _state.model_path, _state.voices_file)
         _state.model = model
         _state.load_error = ""
         return model
@@ -104,7 +104,9 @@ async def _ensure_model() -> Any:
 
 def _synthesize_sync(model: Any, text: str, voice: str, speed: float) -> bytes:
     """Run Kokoro synthesis and encode result as WAV.  Runs in a thread pool."""
-    samples, sample_rate = model.create(text, voice=voice, speed=speed)
+    # Extract language code from voice ID (e.g., 'af_heart' → 'a' for American English)
+    lang = voice.split('_')[0][0] if '_' in voice else 'a'
+    samples, sample_rate = model.create(text, voice=voice, speed=speed, lang=lang)
     buf = io.BytesIO()
     sf.write(buf, samples, sample_rate, format="WAV", subtype="PCM_16")
     return buf.getvalue()
@@ -155,7 +157,7 @@ def health() -> dict[str, Any]:
         "circuit_open": _state.circuit_open,
         "consecutive_failures": _state.consecutive_failures,
         "model_path": _state.model_path,
-        "voices_dir": _state.voices_dir,
+        "voices_file": _state.voices_file,
     }
 
 
@@ -220,12 +222,12 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--model-path",
         default=os.getenv("KOKORO_MODEL_PATH", ""),
-        help="Absolute path to model_q8f16.onnx (or model_uint8.onnx).",
+        help="Absolute path to model_quantized.onnx.",
     )
     parser.add_argument(
-        "--voices-dir",
-        default=os.getenv("KOKORO_VOICES_DIR", ""),
-        help="Directory containing the voice .bin files.",
+        "--voices-file",
+        default=os.getenv("KOKORO_VOICES_FILE", ""),
+        help="Absolute path to voices-v1.0.bin.",
     )
     return parser.parse_args()
 
@@ -234,19 +236,19 @@ def main() -> None:
     args = _parse_args()
     if not args.model_path:
         raise SystemExit("--model-path is required.")
-    if not args.voices_dir:
-        raise SystemExit("--voices-dir is required.")
+    if not args.voices_file:
+        raise SystemExit("--voices-file is required.")
     if not os.path.isfile(args.model_path):
         raise SystemExit(f"Model file not found: {args.model_path}")
-    if not os.path.isdir(args.voices_dir):
-        raise SystemExit(f"Voices directory not found: {args.voices_dir}")
+    if not os.path.isfile(args.voices_file):
+        raise SystemExit(f"Voices file not found: {args.voices_file}")
 
     _state.model_path = os.path.abspath(args.model_path)
-    _state.voices_dir = os.path.abspath(args.voices_dir)
+    _state.voices_file = os.path.abspath(args.voices_file)
 
     logger.info(
-        "Kokoro TTS server starting on %s:%d  model=%s  voices=%s",
-        args.host, args.port, _state.model_path, _state.voices_dir,
+        "Kokoro TTS server starting on %s:%d  model=%s  voices_file=%s",
+        args.host, args.port, _state.model_path, _state.voices_file,
     )
     uvicorn.run(app, host=args.host, port=args.port, log_level="warning", access_log=False)
 

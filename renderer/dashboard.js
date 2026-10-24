@@ -108,6 +108,10 @@ function updateTtsVoiceSelect() {
   const voice = $('#ttsVoice');
   if (!engine || !voice) return;
   voice.disabled = engine.value !== 'kokoro';
+  // Update voice options when engine changes to match current selection
+  if (engine.value === 'kokoro' && voice.disabled) {
+    voice.innerHTML = ttsVoiceOptions(settings.ttsVoice || 'af_heart');
+  }
 }
 
 const PERMISSION_MODES = [
@@ -1938,6 +1942,11 @@ function wire() {
     ttsEngineSelect.onchange = () => {
       updateTtsVoiceSelect();
       settingsDirty = activePage === 'dictation';
+      // Re-render voice options if engine is changed
+      const voiceSelect = $('#ttsVoice');
+      if (voiceSelect) {
+        voiceSelect.innerHTML = ttsVoiceOptions(settings.ttsVoice || 'af_heart');
+      }
     };
   }
 
@@ -2188,6 +2197,26 @@ async function handleAction(action, button) {
       button.disabled = false;
       note(result.message || 'Voice test finished.');
     }
+    if (action === 'kokoro-download') {
+      button.disabled = true;
+      try {
+        await api.ttsDownload();
+      } catch (error) {
+        note(error.message || 'Kokoro download failed.');
+      } finally {
+        button.disabled = false;
+      }
+    }
+    if (action === 'kokoro-cancel') {
+      button.disabled = true;
+      try {
+        await api.ttsCancelDownload();
+      } catch (error) {
+        note(error.message || 'Could not cancel download.');
+      } finally {
+        button.disabled = false;
+      }
+    }
   } catch (error) {
     button.disabled = false;
     note(error.message || 'That action failed.');
@@ -2236,6 +2265,14 @@ async function load() {
     }
     settings = data.settings || {};
     settings._microphones = [];
+    // Initial Kokoro status request
+    try {
+      const kokoroHealth = await api.ttsHealth();
+      if (kokoroHealth) data.health = { ...data.health, kokoro: kokoroHealth };
+    } catch (error) {
+      console.error('Initial kokoro health check failed', error);
+      data.health = { ...data.health, kokoro: { status: 'unknown' } };
+    }
     renderAll();
     const initial = location.hash.slice(1);
     nav(renderers[initial] ? initial : 'dashboard', true);
@@ -2332,6 +2369,15 @@ updaterApi?.onStatus((status) => {
 
 api.on('tts:play-audio', (buffer) => {
   window.ttsPlayer?.play(new Uint8Array(buffer));
+});
+
+api.on('tts:stop-audio', () => {
+  window.ttsPlayer?.stop();
+});
+
+api.on('tts:health-updated', (health) => {
+  data.health = { ...data.health, kokoro: health };
+  updateKokoroProgress();
 });
 
 window.addEventListener('hashchange', () => {

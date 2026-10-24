@@ -88,7 +88,19 @@ const pr = spawnSync(py, ['-m', 'py_compile', path.join(root, 'whisper-server', 
 if (pr.error) warnings.push('python: not found, skipped server.py check');
 else if (pr.status !== 0) problems.push(`python: server.py\n${(pr.stderr || '').trim()}`);
 
-// 8. Project self-test, static part only (bounded)
+// 8. Verify services exports
+const servicesContent = read(path.join(root, 'lib', 'services.cjs'));
+const exportedServices = new Set(grab(servicesContent, /^\s*(\w+),?\s*$/gm));
+for (const f of mainFiles) {
+  const t = read(f);
+  for (const m of t.matchAll(/services\.(\w+)/g)) {
+    if (!exportedServices.has(m[1])) {
+      warnings.push(`services: ${rel(f)} calls services.${m[1]} which is not exported from lib/services.cjs`);
+    }
+  }
+}
+
+// 9. Project self-test, static part only (bounded)
 const st = spawnSync('npm', ['run', 'selftest', '--', '--static-only'], { cwd: root, encoding: 'utf8', shell: true, timeout: 120000 });
 if (st.error || st.status !== 0) {
   problems.push('selftest (static-only) failed or timed out\n' + ((st.stdout || '') + (st.stderr || '')).split('\n').slice(-15).join('\n'));

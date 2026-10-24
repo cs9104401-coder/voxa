@@ -1548,7 +1548,9 @@ async function speakReply(turn, text) {
       ttsGpu: settings.ttsGpu,
       ttsModelVariant: settings.ttsModelVariant
     };
-    await services.speak(speech, tts, controller.signal, logger);
+    await services.speakStreaming(speech, tts, controller.signal, logger, (buffer) => {
+      sendToDashboard('tts:play-audio', buffer);
+    });
   } catch (error) {
     logger.warn('speech', cleanError(error));
   } finally {
@@ -1806,7 +1808,14 @@ function registerIpc() {
     15000
   )));
   handle('assistant:toggle', async () => ({ active: await toggleTalk('button', settings.mode) }));
-  handle('assistant:stop', () => ({ stopped: abortTurn('stop button') }));
+  handle('assistant:stop', () => {
+    // If we have an active speech controller, abort it to stop speech output immediately.
+    speechController?.abort();
+    speechController = null;
+    // Stop renderer playback.
+    sendToDashboard('tts:stop-audio', {});
+    return { stopped: abortTurn('stop button') };
+  });
   handle('assistant:set-mode', (payload = {}) => {
     const patch = {};
     if (payload.mode !== undefined) {
@@ -1937,7 +1946,9 @@ function registerIpc() {
         ttsGpu: settings.ttsGpu,
         ttsModelVariant: settings.ttsModelVariant
       };
-      await services.speak(`This is a voice test from ${APP_NAME}.`, tts, controller.signal, logger);
+      await services.speakStreaming(`This is a voice test from ${APP_NAME}.`, tts, controller.signal, logger, (buffer) => {
+        sendToDashboard('tts:play-audio', buffer);
+      });
       if (controller.signal.aborted) return { ok: false, message: 'Voice test stopped.' };
       const engine = settings.ttsEngine === 'kokoro' ? 'Kokoro' : 'Windows';
       return { ok: true, message: `${engine} voice test finished.` };
@@ -2183,6 +2194,9 @@ async function initialize() {
     });
     applyAutostart();
     if (!GALLERY) warmServices();
+    // Initial Kokoro health check
+    const kokoro = require('./lib/tts-kokoro.cjs');
+    kokoro.kokoroHealth().then(publishKokoroHealth).catch((err) => logger.warn('kokoro', `Initial health check failed: ${err.message}`));
     logger.info('app', 'Startup complete');
   } catch (error) {
     const message = cleanError(error);

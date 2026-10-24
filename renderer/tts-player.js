@@ -5,6 +5,7 @@ class TtsPlayer {
     this.context = new (window.AudioContext || window.webkitAudioContext)();
     this.queue = [];
     this.playing = false;
+    this.currentSource = null;
   }
 
   async play(buffer) {
@@ -32,11 +33,29 @@ class TtsPlayer {
     source.buffer = audioBuffer;
     source.connect(this.context.destination);
 
+    this.currentSource = source;
+
     source.onended = () => {
+      if (this.currentSource === source) {
+        this.currentSource = null;
+      }
       this.playNext();
     };
 
     source.start(0);
+  }
+
+  stop() {
+    this.queue = [];
+    if (this.currentSource) {
+      try {
+        this.currentSource.stop(0);
+      } catch {
+        // May already have stopped
+      }
+      this.currentSource = null;
+    }
+    this.playing = false;
   }
 }
 
