@@ -14,7 +14,8 @@ const pythonDir = path.join(runtimeDir, 'python');
 const sitePackages = path.join(pythonDir, 'site-packages');
 const zipPath = path.join(runtimeDir, 'python.zip');
 const PATCH_VERSIONS = {
-  '3.11.9': 'f5ed70a4904e49f12b81aa0b7c8d5a81dc0f9e8e6e8f2e2d5e44b0c36f8c7c6a',
+  // Verified against python.org published MD5/Size
+  '3.11.9': '009d6bf7e3b2ddca3d784fa09f90fe54336d5b60f0e0f305c37f400bf83cfd3b',
 };
 const pythonExe = path.join(root, 'whisper-server', '.venv', 'Scripts', 'python.exe');
 if (!fs.existsSync(pythonExe)) {
@@ -97,10 +98,12 @@ async function build() {
 
   console.log('[build:kokoro-runtime] Copying packages from venv...');
   const pkgsToCopy = [
-    ' kokoro_onnx ', ' kokoro-onnx ', ' soundfile ', ' numpy ', ' fastapi ',
-    ' uvicorn ', ' pydantic ', ' pydantic_core ', ' anyio ', ' sniffio ',
-    ' starlette ', ' h11 ', ' click ', ' idna ', ' typing_extensions ',
-    ' annotated_types ', ' phonemizer ', ' espeakng_loader ', ' onnxruntime '
+    'kokoro_onnx', 'kokoro_onnx-0.6.1.dist-info',
+    'soundfile.py', 'soundfile-0.14.0.dist-info',
+    'numpy', 'fastapi',
+    'uvicorn', 'pydantic', 'pydantic_core', 'anyio', 'sniffio', 'sniffio-1.3.1.dist-info',
+    'starlette', 'h11', 'click', 'idna', 'typing_extensions.py', 'typing_extensions-4.16.0.dist-info',
+    'annotated_types', 'phonemizer', 'espeakng_loader', 'onnxruntime'
   ];
 
   for (const pkg of pkgsToCopy) {
@@ -117,17 +120,35 @@ async function build() {
       try {
         fs.copyFileSync(src, dest);
       } catch (err) {
-        console.warn(`[build:kokoro-runtime] WARN: Could not copy ${pkg.trim()}: ${err.message}`);
+        console.warn(`[build:kokoro-runtime] WARN: Could not copy ${pkg}: ${err.message}`);
+      }
+    }
+  }
+
+  // Also copy any .py file modules or dist-info if needed
+  const extraFiles = ['soundfile.py', '_soundfile.py', 'typing_extensions.py'];
+  for (const file of extraFiles) {
+    const src = path.join(venvSite, file);
+    const dest = path.join(sitePackages, file);
+    if (fs.existsSync(src) && !fs.existsSync(dest)) {
+      try {
+        fs.copyFileSync(src, dest);
+      } catch (err) {
+        console.warn(`[build:kokoro-runtime] WARN: Could not copy file ${file}: ${err.message}`);
       }
     }
   }
 
   // __init__.py placeholder needed for package imports?
   for (const pkg of pkgsToCopy) {
-    const subPath = path.join(sitePackages, pkg.trim(), '__init__.py');
-    if (!fs.existsSync(subPath)) {
-      // Create empty package marker
-      fs.writeFileSync(subPath, '', 'utf8');
+    const pkgName = pkg.trim();
+    const destSubPath = path.join(sitePackages, pkgName);
+    if (fs.existsSync(destSubPath) && fs.statSync(destSubPath).isDirectory()) {
+      const subPath = path.join(destSubPath, '__init__.py');
+      if (!fs.existsSync(subPath)) {
+        // Create empty package marker
+        fs.writeFileSync(subPath, '', 'utf8');
+      }
     }
   }
 

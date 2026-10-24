@@ -21,3 +21,6 @@ SPEC.md
 AUDIT.md
 
 .claude/settings.local.json
+
+whisper-server/runtime-kokoro/
+whisper-server/runtime-kokoro.bak/
