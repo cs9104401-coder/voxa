@@ -5,17 +5,25 @@ description: Build features, redesign UI, and fix bugs in Voxa, the Electron voi
 
 # Voxa development
 
-Voxa is a Windows Electron app. The owner tests on a real desktop and sends screenshots. You cannot see the GUI, so correctness comes from careful reading, small changes and the verify script, not from guessing.
+Voxa is a Windows Electron app. The owner grants full access to run, test, and verify anything that benefits the project, including `npm start`, `npm run ui-gallery`, `npm run verify`, `npm run selftest`, local servers, Electron, and packaging. You still cannot see the GUI yourself unless you capture a screenshot, so visual correctness comes from the owner's screenshots and manual tests; never claim a visual fix works just because a process starts.
 
 ## Workflow (in order)
 1. **Orient.** Read references/architecture-and-bugs.md. Read every file you will touch plus the files that call into them. Run `git status --short`; if the tree is dirty, ask the owner to commit first, because a clean checkpoint is the only safe undo.
 2. **Plan in 5 lines.** Files to change, new IPC channels/settings/tools, risks, what the owner must test. Use the matching recipe below.
 3. **One feature or one bug per session.** Smallest diff that works. Do not refactor unrelated code, rename things, or add dependencies without asking (installer size and native-module risk are real here).
-4. **Verify.** Run `npm run verify` and fix every FAIL. Review each WARN. Add new UI states to `npm run ui-gallery` data so they can be previewed without speaking. Re-read `git diff` for: unhandled promise rejections, listeners registered twice, timers never cleared, missing `await`, renderer code touching elements that do not exist on every page.
-5. **Hand back.** Report: files changed, root cause (for bugs), a numbered manual test list (what to click or say, what should happen), and the commit command. Never say something works if you only checked it statically; say "static checks pass, needs a manual test".
+4. **Verify.** Run `npm run verify` and fix every FAIL. Review each WARN. Run `npm run selftest` when runtime behavior changed. Start the app or `npm run ui-gallery` when the change is visual or interactive, using background execution and bounded waits; capture logs and stop what you start. Add new UI states to gallery data so they can be previewed without speaking. Re-read `git diff` for: unhandled promise rejections, listeners registered twice, timers never cleared, missing `await`, renderer code touching elements that do not exist on every page.
+5. **Hand back.** Report: files changed, commands run and their results, root cause (for bugs), a numbered manual test list (what to click or say, what should happen), and the commit command. Never say something works if you only checked it statically; say "static checks pass, needs a manual test".
+
+## Test and verification commands
+- `npm run verify`: static checks. Fix every FAIL and review each WARN.
+- `npm run selftest`: full runtime and static self-test. Use `npm run selftest -- --static-only` while iterating.
+- `npm start`: run the real app. Launch it in the background, capture logs, and stop it when done.
+- `npm run ui-gallery`: preview every overlay state. Launch it in the background and ask the owner to inspect.
+- `npx electron-builder --win --dir`: packaging check without rebuilding the bundled runtimes. Use `npm run dist` only when the owner explicitly wants the Whisper/Kokoro runtimes rebuilt.
+- `node --check <file>`: fast syntax check while editing.
 
 ## Hard rules (and why)
-- Never launch the GUI or long-running processes (`npm start`, `npm run ui-gallery`, the Whisper server, `electron-builder`, `npm run build:whisper`). They hang agent sessions and clash with the single-instance lock. Ask the owner to run them. Bounded commands only: `node --check`, `npm run verify`, `git`, file reads.
+- Full access to testing: launch the GUI, gallery, local servers, builds, and packaging when they help verify a change (`npm start`, `npm run ui-gallery`, `npm run selftest`, the Whisper/Kokoro servers, `electron-builder`). Run long-lived processes in the background with bounded waits, capture their output, and stop them when done. Close any existing Voxa instance first because of the single-instance lock. Full access is for testing, not publishing: never `git push`, rewrite history, or delete user data unless the owner explicitly asks.
 - Never delete `whisper-server\dist` or run `build:whisper` unless server.py changed; a failed rebuild wipes the working exe.
 - Originality: no code, assets, names, endpoints or text copied from other products.
 - Security: contextIsolation on, nodeIntegration off, no remote content. API keys only in the main process via safeStorage, never in the renderer, logs, URLs or git. Custom URLs must be https, except when the parsed hostname is localhost, 127.0.0.1 or [::1]. Every state-changing agent tool goes through approval. Tool args are validated against a strict schema. Log through lib/logger (it redacts secrets).
