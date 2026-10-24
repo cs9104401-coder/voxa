@@ -672,7 +672,7 @@ function gallery() {
     <div class="gallery-row"><span class="gallery-label">States</span>${samples.map(([status, label, detail]) => `<button class="button" data-preview-status="${status}" data-preview-detail="${esc(detail)}">${label}</button>`).join('')}</div>
     <div class="gallery-row"><span class="gallery-label">Sequence</span><button class="button primary" data-action="play-sequence">${gallerySequenceRunning ? 'Restart sequence' : 'Play full sequence'}</button><button class="button" data-gallery-slow aria-pressed="${gallerySlowMotion}">Slow motion · 0.25x</button><button class="button" data-gallery-loop aria-pressed="${galleryLoop}">Loop</button></div>
     <div class="gallery-row"><span class="gallery-label">Style</span><button class="button ${style === 'island' ? 'is-active' : ''}" data-gallery-style="island" aria-pressed="${style === 'island'}">Island</button><button class="button ${style === 'notch' ? 'is-active' : ''}" data-gallery-style="notch" aria-pressed="${style === 'notch'}">Notch</button></div>
-    <p class="gallery-hint">The sequence plays appear, listening, thinking, streamed answer, chat preview, approval, done, and disappear. Slow motion also affects the island springs.</p>
+    <p class="gallery-hint">The sequence plays appear, listening, thinking, streamed answer, chat preview, approval, done, and disappear. Slow motion also affects the island springs. The answer preview shows Pip speaking when spoken replies are on; done previews success.</p>
   </div>`;
 }
 
@@ -1303,6 +1303,7 @@ function settingsPage() {
     <article class="card"><h2 class="card-title">Preferences</h2>
       <div class="row"><div class="row-main"><b>Start with Windows</b><small>Keep Voxa ready in the tray.</small></div>${toggle('startup', Boolean(settings.startWithWindows), 'Start with Windows', 'startWithWindows')}</div>
       <div class="row"><div class="row-main"><b>Spoken replies</b><small>Use the Windows built-in voice.</small></div>${toggle('spokenRepliesSettings', settings.spokenReplies !== false, 'Spoken replies', 'spokenReplies')}<button class="button" data-action="test-voice">Test voice</button></div>
+      <div class="row"><div class="row-main"><b>Animated companion</b><small>Pip reacts to listening, thinking, replies, and errors in the island.</small></div>${toggle('companionEnabled', settings.companionEnabled !== false, 'Animated companion', 'companionEnabled')}</div>
       <div class="row"><div class="row-main"><b>Overlay style</b><small>Island floats below the work area; Notch stays attached to the top edge.</small></div><div class="row-side"><select class="select" id="overlayStyle" aria-label="Overlay style"><option value="island" ${settings.overlayStyle !== 'notch' ? 'selected' : ''}>Island</option><option value="notch" ${settings.overlayStyle === 'notch' ? 'selected' : ''}>Notch</option></select><button class="button" data-action="save-page">Save appearance</button></div></div>
     </article>
     <article class="card"><h2 class="card-title">Updates</h2>

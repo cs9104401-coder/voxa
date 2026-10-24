@@ -540,6 +540,7 @@ function saveSettingsPatch(patch) {
   const whisperDeviceChanged = next.whisperDevice !== settings.whisperDevice;
   const hotkeysChanged = next.dictationHotkey !== settings.dictationHotkey || next.agentHotkey !== settings.agentHotkey;
   const overlayStyleChanged = next.overlayStyle !== settings.overlayStyle;
+  const companionEnabledChanged = next.companionEnabled !== settings.companionEnabled;
   const chatChanged = next.chatProvider !== settings.chatProvider
     || JSON.stringify(next.providers) !== JSON.stringify(settings.providers);
   if (hotkeysChanged && (turnRunning || currentTurn)) {
@@ -563,6 +564,7 @@ function saveSettingsPatch(patch) {
   settings = next;
   applyAutostart();
   if (overlayStyleChanged) overlay?.setStyle(next.overlayStyle);
+  if (companionEnabledChanged) overlay?.setState({ companionEnabled: next.companionEnabled });
   if (whisperDeviceChanged) {
     stopWhisperWatch();
     services.stopWhisper();
@@ -1164,7 +1166,8 @@ async function beginTurn(mode, origin = 'hotkey') {
       message: mode === 'dictation' ? 'Dictation · release to type' : 'Listening · release to ask',
       approval: null,
       canCopy: false,
-      streaming: false
+      streaming: false,
+      speaking: false
     });
     broadcast('ptt-state', { active: true, mode });
     turn.maxHoldTimer = setTimeout(() => releaseTurn(mode, 'maximum recording length'), 60000);
@@ -1297,7 +1300,8 @@ function openChat() {
     streaming: false,
     chatOpen: true,
     chatPreview: false,
-    chatStreaming: Boolean(chatSession.controller)
+    chatStreaming: Boolean(chatSession.controller),
+    speaking: false
   });
   overlay?.setInteractive(true);
   overlay?.setKeyboardFocus(true);
@@ -1810,7 +1814,7 @@ async function processTurn(turn, audio, mime) {
       if (!turnAlive(turn)) return;
       addTurn(transcript, 'Dictated into the focused app.');
       finishTurn(turn);
-      overlay.show({ status: 'answer', mode: 'dictation', message: transcript, canCopy: true, approval: null, streaming: false });
+      overlay.show({ status: 'answer', mode: 'dictation', message: transcript, canCopy: true, approval: null, streaming: false, speaking: false });
       scheduleOverlayHide(3500);
       return;
     }
@@ -1819,7 +1823,8 @@ async function processTurn(turn, audio, mime) {
     if (!turnAlive(turn)) return;
     finishTurn(turn);
     addTurn(transcript, answer);
-    overlay.show({ status: 'answer', mode: 'agent', message: answer, canCopy: true, approval: null, streaming: false });
+    const willSpeak = Boolean(settings.spokenReplies && stripForSpeech(answer));
+    overlay.show({ status: 'answer', mode: 'agent', message: answer, canCopy: true, approval: null, streaming: false, speaking: willSpeak });
     scheduleOverlayHide(12000);
     void speakReply(turn, answer);
   } catch (error) {
@@ -1890,7 +1895,8 @@ function previewOverlay(status, message) {
     canCopy: next === 'answer',
     chatOpen: isChat,
     chatPreview: isChat,
-    chatStreaming: false
+    chatStreaming: false,
+    speaking: next === 'answer' && Boolean(settings.spokenReplies)
   });
   const motionScale = overlay.state().slowMotion ? 4 : 1;
   scheduleOverlayHide((next === 'approval' ? 8000 : next === 'done' ? 3200 : 6000) * motionScale);
@@ -2385,6 +2391,7 @@ async function initialize() {
     overlay = createOverlay({ log: logger });
     overlay.create();
     overlay.setStyle(settings.overlayStyle);
+    overlay.setState({ companionEnabled: settings.companionEnabled, speaking: false });
     attachConsoleLogging(overlay.getWindow(), 'overlay');
     recorderManager = createRecorderManager({ getWindow: () => recorderWindow, log: logger });
     hotkeys = createHotkeys({

@@ -65,7 +65,7 @@ function checkMarkup() {
   ];
   const overlayIds = [
     'notch', 'notchCard', 'cardText', 'notchState', 'levelMeter', 'approvalActions', 'stopButton', 'allowButton', 'denyButton', 'copyButton',
-    'chatButton', 'chatCloseButton', 'chatPanel', 'chatLog', 'chatEmpty', 'chatForm', 'chatInput', 'chatHint', 'chatStopButton', 'chatSendButton', 'chatError', 'chatPreviewLabel'
+    'chatButton', 'chatCloseButton', 'chatPanel', 'chatLog', 'chatEmpty', 'chatForm', 'chatInput', 'chatHint', 'chatStopButton', 'chatSendButton', 'chatError', 'chatPreviewLabel', 'companion'
   ];
   const missing = [
     ...dashboardIds.filter((id) => !dashboard.includes(`id="${id}"`)).map((id) => `settings.html:${id}`),

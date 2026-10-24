@@ -28,6 +28,7 @@ const chatStopButton = $('#chatStopButton');
 const chatSendButton = $('#chatSendButton');
 const chatError = $('#chatError');
 const chatPreviewLabel = $('#chatPreviewLabel');
+const companion = $('#companion');
 const waveBars = [...(levelMeter?.querySelectorAll('i') || [])];
 const motionQuery = window.matchMedia('(prefers-reduced-motion: reduce)');
 
@@ -55,6 +56,8 @@ let state = {
   approval: null,
   canCopy: false,
   streaming: false,
+  speaking: false,
+  companionEnabled: true,
   style: 'island',
   slowMotion: false,
   dismiss: null,
@@ -83,6 +86,9 @@ let chatOpenedFor = false;
 let wasChatVisible = false;
 let chatFocusFrame = 0;
 let chatRenderFrame = 0;
+let companionBlinkTimer = null;
+let companionBlinkOffTimer = null;
+let companionExpression = 'idle';
 
 function reducedMotion() {
   return motionQuery.matches;
@@ -90,6 +96,79 @@ function reducedMotion() {
 
 function slowFactor() {
   return state.slowMotion ? 4 : 1;
+}
+
+function companionExpressionFor(status) {
+  if (status === 'listening') return 'listening';
+  if (status === 'thinking' || status === 'executing' || status === 'verifying' || status === 'approval') return 'thinking';
+  if (status === 'answer') return state.speaking ? 'speaking' : 'success';
+  if (status === 'done') return 'success';
+  if (status === 'error') return 'error';
+  if (status === 'chat') return state.chatStreaming ? 'thinking' : 'idle';
+  return 'idle';
+}
+
+function resetCompanionLook() {
+  if (!companion) return;
+  companion.style.setProperty('--look-x', '0px');
+  companion.style.setProperty('--look-y', '0px');
+}
+
+function updateCompanionLook(clientX, clientY) {
+  if (!companion || !state.visible || state.companionEnabled === false || reducedMotion()) return;
+  if (companion.dataset.expression === 'success') return;
+  const rect = companion.getBoundingClientRect();
+  if (!rect.width || !rect.height) return;
+  const x = Math.max(-1, Math.min(1, (clientX - (rect.left + rect.width / 2)) / 80));
+  const y = Math.max(-1, Math.min(1, (clientY - (rect.top + rect.height / 2)) / 60));
+  companion.style.setProperty('--look-x', `${(x * 1.2).toFixed(2)}px`);
+  companion.style.setProperty('--look-y', `${(y * 1).toFixed(2)}px`);
+}
+
+function clearCompanionBlink() {
+  clearTimeout(companionBlinkTimer);
+  clearTimeout(companionBlinkOffTimer);
+  companionBlinkTimer = null;
+  companionBlinkOffTimer = null;
+  companion?.classList.remove('is-blinking');
+}
+
+function scheduleCompanionBlink() {
+  if (!companion || !state.visible || state.companionEnabled === false || reducedMotion() || companionExpression === 'success') return;
+  if (companionBlinkTimer || companionBlinkOffTimer) return;
+  const slow = state.slowMotion ? 4 : 1;
+  companionBlinkTimer = setTimeout(() => {
+    companionBlinkTimer = null;
+    if (!companion || !state.visible || state.companionEnabled === false || reducedMotion() || companionExpression === 'success') return;
+    companion.classList.add('is-blinking');
+    companionBlinkOffTimer = setTimeout(() => {
+      companionBlinkOffTimer = null;
+      companion?.classList.remove('is-blinking');
+      scheduleCompanionBlink();
+    }, Math.round(130 * slow));
+  }, Math.round((2800 + Math.random() * 3000) * slow));
+}
+
+function syncCompanionMotion() {
+  if (!companion) return;
+  const enabled = state.companionEnabled !== false;
+  notch.dataset.companion = enabled ? 'true' : 'false';
+  if (!enabled || !state.visible || reducedMotion() || companionExpression === 'success') {
+    clearCompanionBlink();
+    if (!enabled || !state.visible || reducedMotion()) resetCompanionLook();
+    return;
+  }
+  if (!companionBlinkTimer && !companionBlinkOffTimer) scheduleCompanionBlink();
+}
+
+function updateCompanion(status) {
+  if (!companion) return;
+  const expression = companionExpressionFor(status);
+  if (companion.dataset.expression !== expression) {
+    companion.dataset.expression = expression;
+    companionExpression = expression;
+  }
+  syncCompanionMotion();
 }
 
 function inline(parent, text) {
@@ -756,6 +835,7 @@ function render() {
   notch.dataset.mode = state.mode || 'agent';
   notch.dataset.scrolled = cardText.scrollTop > 4 ? 'true' : 'false';
   stage.dataset.style = style;
+  updateCompanion(status);
   document.body.classList.toggle('slow-motion', Boolean(state.slowMotion));
   document.body.dataset.reducedMotion = reducedMotion() ? 'true' : 'false';
   setLabel(statusLabel(status));
@@ -897,9 +977,11 @@ document.addEventListener('mousemove', (event) => {
     if (over) api.overlay.pauseDismiss();
     else api.overlay.resumeDismiss();
   }
+  updateCompanionLook(event.clientX, event.clientY);
 }, { passive: true });
 
 document.addEventListener('mouseleave', () => {
+  resetCompanionLook();
   if (!interactive) return;
   requestInteractive(false);
   notch.classList.remove('is-hovered');
@@ -929,6 +1011,10 @@ window.addEventListener('error', (event) => {
 window.addEventListener('unhandledrejection', (event) => {
   console.error('overlay unhandled rejection', event.reason || 'unknown rejection');
 });
+window.addEventListener('pagehide', () => {
+  clearCompanionBlink();
+  resetCompanionLook();
+});
 
 const resizeObserver = new ResizeObserver(() => {
   updateScrollFade();
@@ -942,6 +1028,8 @@ resizeObserver.observe(chatInput);
 
 motionQuery.addEventListener?.('change', () => {
   document.body.dataset.reducedMotion = reducedMotion() ? 'true' : 'false';
+  if (reducedMotion()) resetCompanionLook();
+  syncCompanionMotion();
   retarget();
 });
 

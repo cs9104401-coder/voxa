@@ -21,6 +21,57 @@
 .pill[data-size=expanded] .status-icon{width:22px;height:22px}
 .status-icon .glyph{display:none;width:100%;height:100%;fill:none;stroke:currentColor;stroke-width:1.75;stroke-linecap:round;stroke-linejoin:round}
 .pill:not([data-state=thinking]):not([data-state=executing]):not([data-state=verifying]):not([data-state=done]):not([data-state=error]) .glyph-mark{display:block}
+.companion{display:none;width:100%;height:100%;pointer-events:none;--companion-shell:#e9f1fc;--companion-leaf:#9fd8b4;--companion-ink:#172033}
+.pill[data-companion=true] .companion{display:block}
+.pill[data-companion=true] .status-icon{width:24px;height:24px}
+.pill[data-companion=true] .status-icon .glyph,.pill[data-companion=true] .status-icon .dots{display:none!important}
+.companion-svg{display:block;width:100%;height:100%;overflow:visible}
+.companion-body{transform-box:fill-box;transform-origin:50% 86%;animation:companion-breathe calc(4.6s * var(--motion)) ease-in-out infinite}
+.companion-shell{fill:var(--companion-shell);transition:fill calc(.24s * var(--motion)) ease}
+.companion-highlight{fill:#fff;opacity:.5}
+.companion-stem{fill:none;stroke:var(--companion-leaf);stroke-width:1.5;stroke-linecap:round}
+.companion-leaf{fill:var(--companion-leaf);transform-box:fill-box;transform-origin:12% 88%;transition:transform calc(.24s * var(--motion)) ease}
+.companion-eye{transform-box:fill-box;transform-origin:center;transition:transform 70ms ease}
+.companion-eye-white{fill:#f8fbff;stroke:rgba(23,32,51,.16);stroke-width:.45}
+.companion-pupil{fill:var(--companion-ink);transform-box:fill-box;transform:translate(calc(var(--look-x,0px) + var(--face-x,0px)),calc(var(--look-y,0px) + var(--face-y,0px)));transition:transform calc(.12s * var(--motion)) ease-out}
+.companion-glint{fill:#fff;opacity:.9;transform-box:fill-box;transform:translate(calc(var(--look-x,0px) + var(--face-x,0px)),calc(var(--look-y,0px) + var(--face-y,0px)));transition:transform calc(.12s * var(--motion)) ease-out}
+.companion.is-blinking .companion-eye{transform:scaleY(.08)}
+.companion-eyes-open{transition:opacity calc(.18s * var(--motion)) ease}
+.companion-eyes-happy,.companion-brows,.companion-thought,.companion-sound,.companion-sparkle,.companion-sweat{opacity:0}
+.companion-eyes-happy,.companion-brows{transition:opacity calc(.18s * var(--motion)) ease}
+.companion-eyes-happy path,.companion-brows path,.companion-mouth{fill:none;stroke:var(--companion-ink);stroke-width:1.25;stroke-linecap:round;stroke-linejoin:round}
+.companion-mouth{opacity:0;transition:opacity calc(.18s * var(--motion)) ease}
+.companion-mouth-listen,.companion-mouth-speak{fill:var(--companion-ink);stroke:none}
+.companion-cheeks{fill:#f3a6b4;opacity:.48}
+.companion-thought{fill:#cfe2ff;transition:opacity calc(.18s * var(--motion)) ease}
+.companion-thought circle{transform-box:fill-box;transform-origin:center}
+.companion-sound{fill:none;stroke:#9fc8ff;stroke-width:1.2;stroke-linecap:round;transform-box:fill-box;transform-origin:left center;transition:opacity calc(.18s * var(--motion)) ease}
+.companion-sound path{transform-box:fill-box;transform-origin:left center}
+.companion-sparkle{fill:#b9f5d1;transform-box:fill-box;transform-origin:center}
+.companion-sweat{fill:#a9d4ff;transform-box:fill-box;transform-origin:center}
+.companion[data-expression=listening]{--companion-shell:#e6f4ff;--companion-leaf:#8fd0ff;--face-y:-.8px}
+.companion[data-expression=thinking]{--companion-shell:#edf2fb;--companion-leaf:#a9c7ef;--face-x:1px;--face-y:-.9px}
+.companion[data-expression=success]{--companion-shell:#e7fff2;--companion-leaf:#7fe0a8}
+.companion[data-expression=error]{--companion-shell:#ffe4e7;--companion-leaf:#f0a3ad;--face-y:.7px}
+.companion[data-expression=listening] .companion-leaf{transform:rotate(-10deg) scale(1.08)}
+.companion[data-expression=thinking] .companion-leaf{transform:rotate(8deg)}
+.companion[data-expression=success] .companion-leaf{transform:rotate(-6deg) scale(1.12)}
+.companion[data-expression=error] .companion-leaf{transform:rotate(26deg)}
+.companion[data-expression=idle] .companion-mouth-idle,.companion[data-expression=listening] .companion-mouth-listen,.companion[data-expression=speaking] .companion-mouth-speak,.companion[data-expression=success] .companion-mouth-happy,.companion[data-expression=error] .companion-mouth-flat{opacity:1}
+.companion[data-expression=success] .companion-eyes-open{opacity:0}
+.companion[data-expression=success] .companion-eyes-happy{opacity:1}
+.companion[data-expression=error] .companion-brows{opacity:1}
+.companion[data-expression=thinking] .companion-thought{opacity:1}
+.companion[data-expression=thinking] .companion-thought circle{animation:companion-think calc(1.25s * var(--motion)) ease-in-out infinite}
+.companion[data-expression=thinking] .companion-thought circle:nth-child(2){animation-delay:calc(.14s * var(--motion))}
+.companion[data-expression=thinking] .companion-thought circle:nth-child(3){animation-delay:calc(.28s * var(--motion))}
+.companion[data-expression=listening] .companion-sound{opacity:.8}
+.companion[data-expression=listening] .companion-sound path{animation:companion-sound calc(1.6s * var(--motion)) ease-in-out infinite}
+.companion[data-expression=listening] .companion-sound path:nth-child(2){animation-delay:calc(.2s * var(--motion))}
+.companion[data-expression=speaking] .companion-mouth-speak{transform-box:fill-box;transform-origin:center;animation:companion-talk calc(.34s * var(--motion)) ease-in-out infinite alternate}
+.companion[data-expression=success] .companion-sparkle{opacity:1;animation:companion-sparkle calc(.7s * var(--motion)) cubic-bezier(.2,.8,.3,1) both}
+.companion[data-expression=error] .companion-sweat{opacity:.9;animation:companion-sweat calc(1.8s * var(--motion)) ease-in-out infinite}
+.pill[data-visible=false] .companion *{animation-play-state:paused!important}
 .pill[data-state=done] .glyph-check{display:block;color:#8fe3b5}
 .pill[data-state=error] .glyph-alert{display:block;color:#ff929a}
 .pill[data-state=error] .status-icon{color:#ff929a}
@@ -157,10 +208,18 @@
 @keyframes island-word-in{from{opacity:0;filter:blur(3px);transform:translateY(2px)}to{opacity:1;filter:blur(0);transform:none}}
 @keyframes island-ghost-out{to{opacity:0;filter:blur(4px);transform:scale(.985)}}
 @keyframes island-caret{0%,45%{opacity:1}50%,100%{opacity:.12}}
+@keyframes companion-breathe{0%,100%{transform:translateY(0) scale(1)}50%{transform:translateY(.28px) scale(1.015)}}
+@keyframes companion-think{0%,100%{opacity:.25;transform:translateY(0)}45%{opacity:1;transform:translateY(-1px)}}
+@keyframes companion-sound{0%,100%{opacity:.28;transform:scale(.94)}50%{opacity:.85;transform:scale(1.04)}}
+@keyframes companion-talk{from{transform:scaleY(.5)}to{transform:scaleY(1.15)}}
+@keyframes companion-sparkle{0%{opacity:0;transform:scale(.4) rotate(-12deg)}60%{opacity:1}100%{opacity:.85;transform:scale(1) rotate(0)}}
+@keyframes companion-sweat{0%,100%{opacity:.35;transform:translateY(-.3px)}50%{opacity:.9;transform:translateY(.6px)}}
 body.slow-motion{--motion:4}
 @media(prefers-reduced-motion:reduce){
   .pill .word,.pill .card-text,.pill .state-label,.pill .pill-body,.pill .level-meter,.pill .status-icon{transform:none!important;filter:none!important}
   .pill-glow,.pill[data-state=error] .pill-surface,.pill[data-state=error] .pill-clip,.pill[data-state=error] .pill-glow,.dots i{animation:none!important}
+  .companion,.companion *{animation:none!important;transition:none!important}
+  .companion.is-blinking .companion-eye,.companion-pupil,.companion-glint{transform:none!important}
   .glyph-check path{animation:none!important;stroke-dashoffset:0}
   .word{animation-name:island-fade-in!important}
   .pill .card-ghost,.pill .label-ghost{animation-name:island-fade-out!important}
