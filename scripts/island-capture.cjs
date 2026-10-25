@@ -276,6 +276,14 @@ const MEDIA_SAMPLE = {
 };
 const MEDIA_PAUSED_SAMPLE = { ...MEDIA_SAMPLE, playing: false };
 
+// Live-feed samples (Phase G): NEW ids so the cards count as unseen events —
+// reopening the same ids must NOT replay the cascade (Phase D contract).
+const LIVE_FEED_SAMPLES = FEED_SAMPLES.map((item, index) => ({
+  ...item,
+  id: `live-${['a', 'b', 'c'][index]}`,
+  ts: Date.now() - index * 60000
+}));
+
 const scenarios = [
   { name: 'compact-idle', style: 'island', wait: 2300, patch: { status: 'idle' } },
   { name: 'compact-listening', style: 'island', wait: 2300, patch: { status: 'listening', message: 'Speak naturally. Release to send.' } },
@@ -287,6 +295,9 @@ const scenarios = [
   { name: 'expanded-approval', style: 'island', wait: 3000, patch: { status: 'approval', approval: { id: 'harness', title: 'Allow this sample action?', detail: 'Harness preview — nothing will run.', tool: 'type_text' } } },
   { name: 'expanded-error', style: 'island', wait: 2600, patch: { status: 'error', message: 'Something failed on purpose so we can inspect the error state.' } },
   { name: 'expanded-feed', style: 'island', wait: 2800, patch: { status: 'feed', feedPreview: true, notifications: FEED_SAMPLES } },
+  // Phase G: the LIVE stack (opened by a real click, not the gallery) — same
+  // layout rules, but no PREVIEW ONLY badge: it holds real Voxa events.
+  { name: 'live-feed', style: 'island', wait: 2800, feedPreview: false, patch: { status: 'feed', feedPreview: false, notifications: LIVE_FEED_SAMPLES, message: '' } },
   { name: 'expanded-chat', style: 'island', wait: 3200, patch: { status: 'chat', chatOpen: true, chatPreview: true } },
   { name: 'back-compact', style: 'island', wait: 2600, patch: { status: 'idle' } },
   { name: 'notch-compact-idle', style: 'notch', wait: 2400, patch: { status: 'idle' } },
@@ -340,6 +351,10 @@ const MEASURE = `(() => {
     feed: rect(document.getElementById('feedPanel')),
     feedItem: rect(document.querySelector('.feed-item')),
     feedThumb: rect(document.querySelector('.feed-thumb')),
+    feedPreviewVisible: (() => {
+      const node = document.getElementById('feedPreviewLabel');
+      return node ? !node.hidden : null;
+    })(),
     feedData: (() => {
       const items = document.querySelectorAll('.feed-item').length;
       const sections = [...document.querySelectorAll('.feed-section')].map((node) => node.textContent.toLowerCase());
@@ -554,6 +569,14 @@ function assertScenario(scenario, m) {
       fail('runtime', `${scenario.name}: no visible feed card`);
     }
     if (m.feedThumb) within(m.feedThumb.width, 44, 1.5, 'feed thumb 44px', scenario);
+    // Phase G badge rule: gallery samples announce themselves, the live stack
+    // (real Voxa events, no feedPreview flag) must not.
+    if (m.feedPreviewVisible !== null) {
+      const wantPreview = scenario.feedPreview === false ? false : true;
+      if (m.feedPreviewVisible === wantPreview) {
+        pass('runtime', `${scenario.name}: PREVIEW badge ${wantPreview ? 'shown' : 'absent'} as scenario expects`);
+      } else fail('runtime', `${scenario.name}: PREVIEW badge visibility ${m.feedPreviewVisible} vs expected ${wantPreview}`);
+    }
     if (m.feedData) {
       if (m.feedData.items === FEED_SAMPLES.length) pass('runtime', `${scenario.name}: all feed cards rendered`);
       else fail('runtime', `${scenario.name}: feed card count ${m.feedData.items} vs ${FEED_SAMPLES.length}`);

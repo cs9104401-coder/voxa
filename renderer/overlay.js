@@ -1072,7 +1072,13 @@ function render() {
   if (!wasVisible && state.visible) pulseCompanionWake();
   document.body.classList.toggle('slow-motion', Boolean(state.slowMotion));
   document.body.dataset.reducedMotion = reducedMotion() ? 'true' : 'false';
-  setLabel(statusLabel(status));
+  // Resting pill advertises the unread event stack with a real count — that
+  // is the click affordance for the live feed (Phase G).
+  let labelText = statusLabel(status);
+  if (status === 'idle' && state.notifications.length) {
+    labelText = `Alerts · ${state.notifications.length}`;
+  }
+  setLabel(labelText);
   const approvalId = state.approval?.id || '';
   if (approvalId !== respondedApprovalId) respondedApprovalId = '';
   notch.dataset.approvalId = approvalId;
@@ -1390,6 +1396,16 @@ allowButton.addEventListener('click', () => {
 mediaPlayButton?.addEventListener('click', () => { api.overlay.mediaControl?.('toggle'); });
 mediaNextButton?.addEventListener('click', () => { api.overlay.mediaControl?.('next'); });
 mediaPrevButton?.addEventListener('click', () => { api.overlay.mediaControl?.('previous'); });
+
+// Phase G: open the live event feed by clicking the resting (idle) pill. The
+// head only receives clicks while the pill is hovered (pointer-events rule),
+// which matches interactive mode. Real controls keep their own handlers; only
+// clicks on the head face itself toggle the feed.
+document.querySelector('.pill-head')?.addEventListener('click', (event) => {
+  if (event.target.closest('button, #companion, #mediaControls')) return;
+  if (!state.visible || notch.dataset.state !== 'idle') return;
+  api.overlay.feedToggle?.();
+});
 
 denyButton.addEventListener('click', () => {
   respond(notch.dataset.approvalId, false, denyButton);

@@ -53,6 +53,7 @@ const SEND_CHANNELS = new Set([
   'overlay:dismiss-resume',
   'overlay:notification-dismiss',
   'overlay:media-control',
+  'overlay:feed-toggle',
   'chat:send',
   'chat:cancel',
   'chat:open',
@@ -197,7 +198,8 @@ contextBridge.exposeInMainWorld('voiceAgent', {
     pauseDismiss: () => send('overlay:dismiss-pause'),
     resumeDismiss: () => send('overlay:dismiss-resume'),
     dismissNotification: (id) => send('overlay:notification-dismiss', { id: String(id || '') }),
-    mediaControl: (action) => send('overlay:media-control', { action: String(action || '') })
+    mediaControl: (action) => send('overlay:media-control', { action: String(action || '') }),
+    feedToggle: () => send('overlay:feed-toggle', {})
   }
 });
 

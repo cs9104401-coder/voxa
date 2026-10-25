@@ -1959,7 +1959,34 @@ function pushFeedEvent({ title, body = '', kind = 'system', tone = 'neutral' } =
   };
   overlayEvents = [event, ...overlayEvents].slice(0, FEED_MAX_EVENTS);
   logger.info('feed', `${event.title}${event.body ? ` — ${event.body.slice(0, 120)}` : ''} (${event.id})`);
-  if (!galleryPreviewActive) overlay?.setNotifications(overlayEvents, false);
+  if (!galleryPreviewActive) {
+    overlay?.setNotifications(overlayEvents, false);
+    announceFeedEvents();
+  }
+}
+
+// Phase G: an event the user could not see otherwise pops the resting pill as
+// an unread toast ("Alerts · n"); clicking it opens the live feed. Never
+// steals the stage from a turn, chat, an approval, or the media pill; respects
+// the media snooze so a stop press keeps the island away.
+function announceFeedEvents() {
+  if (currentTurn || turnRunning) return;
+  if (chatSession.open) return;
+  if (mediaLast) return;
+  if (Date.now() < mediaSnoozeUntil) return;
+  const current = overlay?.state();
+  if (current && current.visible) return;
+  overlay?.show({
+    status: 'idle',
+    message: '',
+    approval: null,
+    canCopy: false,
+    streaming: false,
+    speaking: false,
+    chatOpen: false,
+    chatPreview: false
+  });
+  scheduleOverlayHide(4000);
 }
 
 // Dismissal bookkeeping: drop the id from main's stack so the next push never
@@ -2001,6 +2028,8 @@ function broadcastMediaState(next) {
   if (!next) {
     overlay?.setState({ media: null });
     if (overlay?.state().status === 'media') overlay?.hide();
+    // Playback ended: surface any unread events that arrived mid-playback.
+    announceFeedEvents();
     return;
   }
   // Keep pill data fresh even while a turn or a preview owns the stage; the
@@ -2495,6 +2524,33 @@ function registerIpc() {
       if (!result.ok) logger.info('media', `Control '${action}' not delivered: ${result.reason}`);
       else logger.info('media', `Control '${action}' delivered.`);
     });
+  }, ['overlay']);
+  // Phase G: the only real way to browse the event stack. Hovering makes the
+  // head click-receptive (already true) and pauses dismissal, so the click
+  // toggles the live feed; gallery previews keep their own badge path.
+  listen('overlay:feed-toggle', () => {
+    if (currentTurn || turnRunning) return;
+    if (chatSession.open) return;
+    const current = overlay?.state();
+    if (current && current.status === 'feed') {
+      clearOverlayHideTimer();
+      overlay?.hide();
+      return;
+    }
+    if (current && current.visible && current.status !== 'idle') return;
+    overlay?.show({
+      status: 'feed',
+      notifications: [...overlayEvents],
+      feedPreview: false,
+      approval: null,
+      canCopy: false,
+      streaming: false,
+      speaking: false,
+      chatOpen: false,
+      chatPreview: false,
+      message: ''
+    });
+    scheduleOverlayHide(8000);
   }, ['overlay']);
   listen('chat:open', () => openChat(), ['overlay']);
   listen('chat:close', () => closeChat(), ['overlay']);
