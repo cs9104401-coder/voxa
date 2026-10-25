@@ -92,7 +92,9 @@ let hidePaused = false;
 let speechController = null;
 let quitting = false;
 
-const USER_DATA_DIR = path.join(app.getPath('appData'), 'my-voice-app');
+const USER_DATA_DIR = process.env.VOXA_USER_DATA
+  ? path.resolve(process.env.VOXA_USER_DATA)
+  : path.join(app.getPath('appData'), 'my-voice-app');
 app.setPath('userData', USER_DATA_DIR);
 app.setPath('sessionData', USER_DATA_DIR);
 app.setName(APP_NAME);

@@ -90,6 +90,7 @@ let chatFocusFrame = 0;
 let chatRenderFrame = 0;
 let companionBlinkTimer = null;
 let companionBlinkOffTimer = null;
+let companionWakeTimer = null;
 let companionExpression = 'idle';
 
 function reducedMotion() {
@@ -149,6 +150,18 @@ function scheduleCompanionBlink() {
       scheduleCompanionBlink();
     }, Math.round(130 * slow));
   }, Math.round((2800 + Math.random() * 3000) * slow));
+}
+
+function pulseCompanionWake() {
+  if (!companion || !state.visible || state.companionEnabled === false || reducedMotion()) return;
+  companion.classList.remove('is-waking');
+  void companion.offsetWidth; // force reflow so the one-shot entrance restarts from frame 0
+  companion.classList.add('is-waking');
+  if (companionWakeTimer) clearTimeout(companionWakeTimer);
+  companionWakeTimer = setTimeout(() => {
+    companionWakeTimer = null;
+    companion?.classList.remove('is-waking');
+  }, Math.round(850 * slowFactor()));
 }
 
 function syncCompanionMotion() {
@@ -837,6 +850,7 @@ function render() {
   const style = state.style === 'notch' ? 'notch' : 'island';
   const openChat = status === 'chat' && state.chatOpen;
   const interactiveChat = openChat && !state.chatPreview;
+  const wasVisible = notch.dataset.visible === 'true';
   notch.dataset.state = status;
   notch.dataset.size = size;
   notch.dataset.style = style;
@@ -845,6 +859,7 @@ function render() {
   notch.dataset.scrolled = cardText.scrollTop > 4 ? 'true' : 'false';
   stage.dataset.style = style;
   updateCompanion(status);
+  if (!wasVisible && state.visible) pulseCompanionWake();
   document.body.classList.toggle('slow-motion', Boolean(state.slowMotion));
   document.body.dataset.reducedMotion = reducedMotion() ? 'true' : 'false';
   setLabel(statusLabel(status));

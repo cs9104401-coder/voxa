@@ -22,62 +22,58 @@
               <svg class="glyph glyph-alert" viewBox="0 0 24 24"><path d="M12 3.8 2.9 20.2h18.2z"/><path d="M12 9v5.2m0 2.9v.1"/></svg>
               <svg class="glyph glyph-check" viewBox="0 0 24 24"><path d="m5 12.6 4.5 4.5L19 7.4"/></svg>
               <span id="dots" class="dots"><i></i><i></i><i></i></span>
-              <span id="companion" class="companion" aria-hidden="true">
-                <svg class="companion-svg" viewBox="0 0 32 32" aria-hidden="true" focusable="false">
-                  <g class="companion-body">
-                    <path class="companion-shell" d="M16 5.4c4.9 0 8.4 3.4 8.4 8.5 0 6.1-3.6 11.8-8.4 11.8s-8.4-5.7-8.4-11.8c0-5.1 3.5-8.5 8.4-8.5Z"/>
-                    <path class="companion-highlight" d="M10.4 11.4c.5-2.5 2.1-4.1 4.5-4.8-1.7 1-2.8 2.6-3.2 5-.2 1-1.5.8-1.3-.2Z"/>
-                    <path class="companion-stem" d="M16 5.7c.1-1.5.7-2.6 1.8-3.4"/>
-                    <path class="companion-leaf" d="M17.5 2.8c1.3-.7 2.6-.5 3.7.5-1.2.9-2.5 1-3.8.3Z"/>
-                    <g class="companion-face">
-                      <g class="companion-eyes companion-eyes-open">
-                        <g class="companion-eye companion-eye-left">
-                          <ellipse class="companion-eye-white" cx="12.4" cy="14.7" rx="2.7" ry="3.1"/>
-                          <circle class="companion-pupil" cx="12.4" cy="15" r="1.8"/>
-                          <circle class="companion-glint" cx="11.8" cy="14.2" r=".55"/>
-                        </g>
-                        <g class="companion-eye companion-eye-right">
-                          <ellipse class="companion-eye-white" cx="19.6" cy="14.7" rx="2.7" ry="3.1"/>
-                          <circle class="companion-pupil" cx="19.6" cy="15" r="1.8"/>
-                          <circle class="companion-glint" cx="19" cy="14.2" r=".55"/>
-                        </g>
+              <span id="companion" class="companion" data-expression="idle" aria-hidden="true">
+                <img class="companion-figure companion-body-fig" src="../assets/companion/companion-body.png" alt="" draggable="false">
+                <span class="companion-head">
+                  <img class="companion-figure companion-head-fig" src="../assets/companion/companion-head.png" alt="" draggable="false">
+                  <svg class="companion-face-svg" viewBox="0 0 538 506" aria-hidden="true" focusable="false">
+                    <g class="companion-cheeks">
+                      <ellipse cx="128" cy="410" rx="26" ry="13"/>
+                      <ellipse cx="398" cy="403" rx="28" ry="13"/>
+                    </g>
+                    <g class="companion-eyes companion-eyes-open">
+                      <ellipse class="companion-eye-white" cx="152" cy="335" rx="34" ry="45"/>
+                      <ellipse class="companion-eye-white" cx="285" cy="333" rx="36" ry="45"/>
+                      <g class="companion-iris companion-iris-left">
+                        <circle class="companion-pupil" cx="152" cy="338" r="15"/>
+                        <circle class="companion-glint" cx="146" cy="329" r="5"/>
+                        <circle class="companion-glint companion-glint-small" cx="158" cy="346" r="2.8"/>
                       </g>
-                      <g class="companion-eyes companion-eyes-happy">
-                        <path d="M10.5 15.3c.9-1.2 2-1.2 2.9 0"/>
-                        <path d="M18.6 15.3c.9-1.2 2-1.2 2.9 0"/>
+                      <g class="companion-iris companion-iris-right">
+                        <circle class="companion-pupil" cx="285" cy="336" r="15"/>
+                        <circle class="companion-glint" cx="279" cy="327" r="5"/>
+                        <circle class="companion-glint companion-glint-small" cx="291" cy="344" r="2.8"/>
                       </g>
-                      <g class="companion-brows">
-                        <path d="M10.3 12.2l2.6-.8"/>
-                        <path d="M21.7 12.2l-2.6-.8"/>
+                    </g>
+                    <g class="companion-eyes companion-eyes-closed">
+                      <path d="M118 331c10 12 58 12 68 0"/>
+                      <path d="M249 329c11 13 61 13 72 0"/>
+                    </g>
+                    <g class="companion-mouths">
+                      <path class="companion-mouth companion-mouth-idle" d="M224 452c10 8 26 8 40 0"/>
+                      <g class="companion-mouth companion-mouth-listen">
+                        <ellipse class="companion-mouth-open-shape" cx="247" cy="450" rx="26" ry="29"/>
+                        <ellipse class="companion-tongue" cx="247" cy="462" rx="16" ry="10"/>
                       </g>
-                      <g class="companion-mouths">
-                        <path class="companion-mouth companion-mouth-idle" d="M14.5 20.2c.8.7 2.2.7 3 0"/>
-                        <ellipse class="companion-mouth companion-mouth-listen" cx="16" cy="20.7" rx="1.3" ry="1.5"/>
-                        <ellipse class="companion-mouth companion-mouth-speak" cx="16" cy="20.7" rx="1.8" ry="1.25"/>
-                        <path class="companion-mouth companion-mouth-happy" d="M13.9 19.7c1.1 2 3.1 2 4.2 0"/>
-                        <path class="companion-mouth companion-mouth-flat" d="M14.5 20.8h3"/>
+                      <g class="companion-mouth companion-mouth-speak">
+                        <ellipse class="companion-mouth-open-shape" cx="247" cy="451" rx="29" ry="26"/>
+                        <ellipse class="companion-tongue" cx="247" cy="463" rx="17" ry="9"/>
                       </g>
-                      <g class="companion-cheeks">
-                        <ellipse cx="10.4" cy="19.6" rx="1.5" ry=".8"/>
-                        <ellipse cx="21.6" cy="19.6" rx="1.5" ry=".8"/>
-                      </g>
+                      <path class="companion-mouth companion-mouth-happy" d="M213 436c16 30 52 30 68 0"/>
+                      <path class="companion-mouth companion-mouth-flat" d="M224 462c16-7 34-7 50 0"/>
                     </g>
                     <g class="companion-thought">
-                      <circle cx="23.4" cy="6.2" r=".85"/>
-                      <circle cx="26.2" cy="4.3" r=".85"/>
-                      <circle cx="28.8" cy="2.8" r=".85"/>
-                    </g>
-                    <g class="companion-sound">
-                      <path d="M25.3 12.4c1.4 1.8 1.4 4.3 0 6.1"/>
-                      <path d="M27.7 10.7c2.4 3 2.4 6.5 0 9.5"/>
+                      <circle cx="398" cy="190" r="13"/>
+                      <circle cx="428" cy="152" r="17"/>
+                      <circle cx="456" cy="110" r="21"/>
                     </g>
                     <g class="companion-sparkle">
-                      <path d="M7.4 5.6l.6 1.4 1.4.6-1.4.6-.6 1.4-.6-1.4L5.4 7.6l1.4-.6Z"/>
-                      <path d="M25.4 7.2l.5 1.2 1.2.5-1.2.5-.5 1.2-.5-1.2-1.2-.5 1.2-.5Z"/>
+                      <path d="M459 74l7 17 17 7-17 7-7 17-7-17-17-7 17-7Z"/>
+                      <path d="M500 106l4 10 10 4-10 4-4 10-4-10-10-4 10-4Z"/>
                     </g>
-                    <path class="companion-sweat" d="M23.4 6.7c-1 1.2-1.5 2-1.5 2.7a1.5 1.5 0 0 0 3 0c0-.7-.5-1.5-1.5-2.7Z"/>
-                  </g>
-                </svg>
+                    <path class="companion-sweat" d="M436 200c-9 12-14 20-14 27a15 15 0 0 0 30 0c0-7-5-15-16-27Z"/>
+                  </svg>
+                </span>
               </span>
             </span>
             <div class="head-center">
