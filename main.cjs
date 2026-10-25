@@ -2534,6 +2534,9 @@ function registerIpc() {
   listen('overlay:interactive', (active) => {
     overlay?.setInteractive(Boolean(active));
   }, ['overlay']);
+  listen('overlay:hit-rect', (rect) => {
+    overlay?.setHitRect(rect);
+  }, ['overlay']);
   listen('overlay:hidden', () => {
     overlay?.acknowledgeHide();
   }, ['overlay']);

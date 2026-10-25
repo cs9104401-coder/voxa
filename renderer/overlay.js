@@ -1137,6 +1137,44 @@ function insideNotch(x, y) {
     && y >= rect.top - padding && y <= rect.bottom + padding;
 }
 
+/* --- Shape-based hit testing (replaces hover-driven click-through) ---------- */
+/* The window accepts native input whenever the pill is visible; main applies
+   window-relative window.setShape regions from this renderer, so clicks on the
+   pill land here and clicks anywhere else pass to whatever is under the
+   island. Sends are rAF-coalesced (fires after layout, covers spring morph
+   frames) and deduped by integer rect so repeated renders never flood IPC. */
+const HIT_RECT_PAD = 6;
+let hitRectQueued = false;
+let hitRectSignature = null;
+
+function hitRectPayload() {
+  const rect = notch.getBoundingClientRect();
+  if (!rect.width && !rect.height) return null;
+  const left = Math.floor(rect.left);
+  const top = Math.floor(rect.top);
+  return {
+    x: left - HIT_RECT_PAD,
+    y: top - HIT_RECT_PAD,
+    width: Math.ceil(rect.right) + HIT_RECT_PAD - (left - HIT_RECT_PAD),
+    height: Math.ceil(rect.bottom) + HIT_RECT_PAD - (top - HIT_RECT_PAD)
+  };
+}
+
+function sendHitRect() {
+  if (hitRectQueued) return;
+  hitRectQueued = true;
+  requestAnimationFrame(() => {
+    hitRectQueued = false;
+    if (!state.visible) return;
+    const payload = hitRectPayload();
+    if (!payload) return;
+    const signature = `${payload.x},${payload.y},${payload.width},${payload.height}`;
+    if (signature === hitRectSignature) return;
+    hitRectSignature = signature;
+    try { api.overlay.hitRect(payload); } catch { /* send failures stay isolated */ }
+  });
+}
+
 function updateScrollFade() {
   const max = cardText.scrollHeight - cardText.clientHeight;
   const scrolled = cardText.scrollTop > 4;
@@ -1336,9 +1374,13 @@ function render() {
   }
   if (interactiveChat && !wasChatVisible) focusChatInput();
   if (!interactiveChat && wasChatVisible) {
+    // Chat closing must NOT go click-through: the pill is still visible, the
+    // window shape keeps native input, and main clamps stale interactive
+    // requests to a hidden overlay anyway. Old behavior flipped the window to
+    // be ignored while it was still on screen, which under a resting cursor
+    // left the island dead until the mouse moved again.
     cancelAnimationFrame(chatFocusFrame);
     chatInput.blur();
-    requestInteractive(false);
   }
   wasChatVisible = interactiveChat;
   if (!state.visible) {
@@ -1350,6 +1392,7 @@ function render() {
   }
   updateScrollFade();
   retarget();
+  sendHitRect();
 }
 
 function applyAudioLevel(peak, bins) {
@@ -1691,9 +1734,12 @@ document.addEventListener('mousemove', (event) => {
   if (!state.visible) return;
   lastMouse.x = event.clientX;
   lastMouse.y = event.clientY;
+  // Shape-based hit testing: the window is input-accepting whenever the pill
+  // is visible, so hovering only keeps the CSS hover class and the dismiss
+  // timer honest — it never toggles click-through anymore (native mousemove
+  // arrives inside the window shape).
   const over = insideNotch(lastMouse.x, lastMouse.y);
-  if (over !== interactive) {
-    requestInteractive(over);
+  if (over !== notch.classList.contains('is-hovered')) {
     notch.classList.toggle('is-hovered', over);
     if (over) api.overlay.pauseDismiss();
     else api.overlay.resumeDismiss();
@@ -1703,8 +1749,6 @@ document.addEventListener('mousemove', (event) => {
 
 document.addEventListener('mouseleave', () => {
   resetCompanionLook();
-  if (!interactive) return;
-  requestInteractive(false);
   notch.classList.remove('is-hovered');
   api.overlay.resumeDismiss();
 });
@@ -1750,6 +1794,7 @@ window.addEventListener('pagehide', () => {
 
 const resizeObserver = new ResizeObserver(() => {
   updateScrollFade();
+  sendHitRect();
   if (!state.visible || !settled()) return;
   retarget();
 });
@@ -1759,6 +1804,11 @@ resizeObserver.observe(head);
 resizeObserver.observe(chatInput);
 if (feedList) resizeObserver.observe(feedList);
 if (islandHome) resizeObserver.observe(islandHome);
+
+// CSS transitions (island morphs animate width/height/scale) end here; the
+// settled rect may differ from the last reported one, so re-send the shape.
+notch.addEventListener('transitionend', sendHitRect);
+window.addEventListener('load', sendHitRect);
 
 motionQuery.addEventListener?.('change', () => {
   document.body.dataset.reducedMotion = reducedMotion() ? 'true' : 'false';
@@ -1797,7 +1847,18 @@ api.overlay.onAudioLevel(({ peak, bins }) => applyAudioLevel(peak, bins));
 api.overlay.onSpeechLevel?.((payload) => applySpeechLevel(payload));
 api.overlay.onCursor?.((coords) => {
   if (!coords || !state.visible) return;
-  updateCompanionLook(Number(coords.x) || 0, Number(coords.y) || 0);
+  const x = Number(coords.x) || 0;
+  const y = Number(coords.y) || 0;
+  updateCompanionLook(x, y);
+  // Under shape-based hit testing the DOM receives mousemove only inside the
+  // window region; main's cursor feed is the honest signal for the rest of
+  // the window, so it also keeps the hover class and dismiss pause truthful.
+  const over = insideNotch(x, y);
+  if (over !== notch.classList.contains('is-hovered')) {
+    notch.classList.toggle('is-hovered', over);
+    if (over) api.overlay.pauseDismiss();
+    else api.overlay.resumeDismiss();
+  }
 });
 
 document.fonts?.ready?.then(() => retarget()).catch(() => {});
@@ -1812,3 +1873,6 @@ document.fonts?.ready?.then(() => retarget()).catch(() => {});
 })();
 applyGeometry();
 render();
+// First-shape kick: paints for the very first state (load lands visible=false,
+// so the rAF guard keeps it quiet until the first real show).
+sendHitRect();
