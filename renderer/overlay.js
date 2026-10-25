@@ -35,14 +35,14 @@ const motionQuery = window.matchMedia('(prefers-reduced-motion: reduce)');
 
 const MAX_CARD_HEIGHT = 400;
 const MAX_ANIMATED_WORDS = 280;
-// Pill geometry per size — must stay in sync with the [data-size] rules in island.css
-// (companion = character slot height; expanded.rail = head band height).
+// Pill geometry per size — must mirror the [data-size] band rules in island.css
+// (--char-h / band heights). scripts/island-capture.cjs cross-checks both at runtime.
 const ISLAND_SIZES = {
-  compact: { width: 184, height: 64 },
-  medium: { width: 320, height: 88 },
-  expanded: { width: 440, rail: 112 }
+  compact: { width: 208, height: 88 },
+  medium: { width: 340, height: 104 },
+  expanded: { width: 520, rail: 128 }
 };
-const NOTCH_WIDTH = 464;
+const NOTCH_WIDTH = 544;
 const MEDIUM_STATES = new Set(['thinking', 'executing', 'verifying', 'done']);
 const EXPANDED_STATES = new Set(['answer', 'approval', 'error', 'chat']);
 const SUPPORTED_STATES = new Set(['idle', 'listening', ...MEDIUM_STATES, ...EXPANDED_STATES]);
@@ -675,7 +675,7 @@ function targetGeometry() {
     height = chatMode
       ? Math.max(150, Math.round(rail + chatHeight + 2))
       : expanded
-        ? Math.max(112, Math.round(rail + cardHeight + 2))
+        ? Math.max(128, Math.round(rail + cardHeight + 2))
         : rail;
     radius = 22;
   } else {
@@ -683,7 +683,7 @@ function targetGeometry() {
     height = chatMode
       ? Math.max(150, Math.round(rail + chatHeight + 2))
       : expanded
-        ? Math.max(112, Math.round(rail + cardHeight + 2))
+        ? Math.max(128, Math.round(rail + cardHeight + 2))
         : ISLAND_SIZES[size].height;
     radius = expanded ? 26 : size === 'medium' ? 24 : height / 2;
   }
