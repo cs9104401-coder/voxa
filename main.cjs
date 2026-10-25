@@ -1369,17 +1369,29 @@ function chatSystemPrompt() {
   ].join(' ');
 }
 
-function chatMessagesFor(text) {
-  const recent = history
-    .filter((turn) => turn && turn.said && turn.did && turn.did !== 'Dictated into the focused app.')
-    .slice(0, 6)
-    .reverse();
+function chatMessagesFor() {
   const messages = [{ role: 'system', content: chatSystemPrompt() }];
-  for (const turn of recent) {
-    messages.push({ role: 'user', content: String(turn.said).slice(0, LIMITS.MAX_CHAT_CHARS) });
-    messages.push({ role: 'assistant', content: String(turn.did).slice(0, LIMITS.MAX_CHAT_CHARS) });
+  const sessionMessages = chatSession.messages
+    .filter((message) => message
+      && (message.role === 'user' || message.role === 'assistant')
+      && !message.error
+      && String(message.content || '').trim())
+    .slice(-40);
+  // The first typed message after a launch starts from an empty buffer: seed it
+  // with the recent voice/chat history so continuity survives a restart.
+  if (sessionMessages.length <= 1) {
+    const recent = history
+      .filter((turn) => turn && turn.said && turn.did && turn.did !== 'Dictated into the focused app.')
+      .slice(0, 6)
+      .reverse();
+    for (const turn of recent) {
+      messages.push({ role: 'user', content: String(turn.said).slice(0, LIMITS.MAX_CHAT_CHARS) });
+      messages.push({ role: 'assistant', content: String(turn.did).slice(0, LIMITS.MAX_CHAT_CHARS) });
+    }
   }
-  messages.push({ role: 'user', content: text });
+  for (const message of sessionMessages) {
+    messages.push({ role: message.role, content: String(message.content).slice(0, LIMITS.MAX_CHAT_CHARS) });
+  }
   return messages;
 }
 
@@ -1509,7 +1521,7 @@ async function sendChat(payload) {
     const reply = await services.chatStream(
       chatSettings,
       key,
-      chatMessagesFor(text),
+      chatMessagesFor(),
       controller.signal,
       (partial) => {
         const display = chatDisplayText(partial);
