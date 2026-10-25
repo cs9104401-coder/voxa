@@ -1597,6 +1597,7 @@ function systemPrompt(target) {
     'Answer ordinary questions directly in one to three short sentences.',
     'Use tools when the user asks you to perform an action on their computer.',
     'Never claim an action succeeded unless a tool result says it did.',
+    'After web_search, do not claim you found, read, or summarized results; say you opened the search in the browser and ask the user to look at it.',
     'Routine actions may run without a prompt based on the saved permission mode; sensitive actions still require approval.',
     'If the user denies approval, accept it and do not retry the same action.',
     'Do not end with generic questions such as "Anything else?".',
@@ -1688,7 +1689,7 @@ async function prepareTool(turn, name, args, providerName) {
       detail: query,
       run: async () => {
         await desktop.webSearch(query);
-        return `Searched Google for "${query}".`;
+        return `Opened a Google search for '${query}' in the browser. I cannot read the results.`;
       }
     };
   }
