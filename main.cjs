@@ -1590,8 +1590,15 @@ function toolSchemas() {
 }
 
 function systemPrompt(target) {
-  const installed = apps.appNames(80).join('; ') || '(none discovered)';
-  const notes = memory.length ? memory.join(' | ') : '(none)';
+  const allApps = apps.discoverApps();
+  const appNames = allApps.slice(0, LIMITS.MAX_PROMPT_APPS).map((item) => item.name);
+  const installed = appNames.length
+    ? `${appNames.join('; ')}${allApps.length > appNames.length ? ` (${allApps.length - appNames.length} more available)` : ''}`
+    : '(none discovered)';
+  const recentNotes = memory.slice(-LIMITS.MAX_PROMPT_NOTES).reverse();
+  const notes = recentNotes.length
+    ? `${recentNotes.join(' | ')}${memory.length > recentNotes.length ? ` (${memory.length - recentNotes.length} more available)` : ''}`
+    : '(none)';
   return [
     'You are Voxa, a concise desktop voice assistant.',
     'Answer ordinary questions directly in one to three short sentences.',
@@ -1816,14 +1823,28 @@ async function executeTool(turn, call, providerName = settings.chatProvider) {
   }
 }
 
+function recentVoiceHistory() {
+  const recent = history
+    .filter((turn) => turn && turn.said && turn.did && turn.did !== 'Dictated into the focused app.')
+    .slice(0, LIMITS.MAX_VOICE_HISTORY_TURNS);
+  let chars = recent.reduce((total, turn) => total + turn.said.length + turn.did.length, 0);
+  while (recent.length && chars > LIMITS.MAX_VOICE_HISTORY_CHARS) {
+    const dropped = recent.pop();
+    chars -= dropped.said.length + dropped.did.length;
+  }
+  return recent.reverse();
+}
+
 async function runConversation(turn, transcript, providerName, target) {
   const key = providerNeedsKey(providerName) ? secrets[providerName] : '';
   if (providerNeedsKey(providerName) && !key) throw new Error(`Add an API key for ${providerName} in the dashboard.`);
   const conversationSettings = providerName === settings.chatProvider ? settings : { ...settings, chatProvider: providerName };
-  const messages = [
-    { role: 'system', content: systemPrompt(target) },
-    { role: 'user', content: transcript }
-  ];
+  const messages = [{ role: 'system', content: systemPrompt(target) }];
+  for (const past of recentVoiceHistory()) {
+    messages.push({ role: 'user', content: String(past.said) });
+    messages.push({ role: 'assistant', content: String(past.did) });
+  }
+  messages.push({ role: 'user', content: transcript });
   const tools = toolSchemas();
   const result = await runAgentLoop({
     messages,
