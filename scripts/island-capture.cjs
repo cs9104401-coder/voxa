@@ -2,8 +2,9 @@
 
 // Island visual + geometric verification harness (dev-only; never shipped:
 // package.json excludes scripts/** from the build).
-//  1. Offline pixel audit: decodes the companion PNGs and proves no pixel of the
-//     character can be clipped by the pill's rounded corners at any size.
+//  1. Offline pixel audit: decodes the dormant companion PNGs (unused by the
+//     renderer since the CSS blob mascot, but still on disk) and proves no pixel
+//     of that sprite can be clipped by the pill's rounded corners at any size.
 //  2. Static sync check: the [data-size] band rules in island.css must mirror
 //     ISLAND_SIZES in renderer/overlay.js.
 //  3. Runtime check: drives the REAL overlay window through every state with the
@@ -284,8 +285,9 @@ const MEASURE = `(() => {
     head: rect(document.querySelector('.pill-head')),
     char: rect(charEl),
     charVisible: charEl ? getComputedStyle(charEl).display !== 'none' : false,
-    headFig: rect(document.querySelector('.companion-head-fig')),
-    bodyFig: rect(document.querySelector('.companion-body-fig')),
+    expression: charEl ? charEl.dataset.expression : null,
+    blob: rect(document.querySelector('.blob')),
+    blobEyes: rect(document.querySelector('.blob-eyes')),
     zone: rect(document.querySelector('.head-center')),
     radius: getComputedStyle(pillEl).borderRadius,
     radiusBL: getComputedStyle(pillEl).borderBottomLeftRadius,
@@ -385,8 +387,7 @@ function assertScenario(scenario, m) {
     if (m.charVisible) {
       within(parseFloat(m.charH), 84, 2, 'character height', scenario);
       within(m.char.height, 84, 2, 'character rect height', scenario);
-      const ratio = m.char.width / m.char.height;
-      within(ratio, 538 / 685, 0.02, 'character aspect', scenario);
+      within(m.char.width, 44, 1.5, 'character slot width (blob)', scenario);
       within(m.char.y + m.char.height, m.pill.y + m.pill.height, 2, 'feet flush with pill bottom', scenario);
       within(m.char.y, m.pill.y + 4, 2.5, 'character top clearance', scenario);
     } else if (!scenario.name.includes('nochar')) fail('runtime', `${scenario.name}: companion not visible`);
@@ -406,8 +407,7 @@ function assertScenario(scenario, m) {
     if (m.head) within(m.head.height, 128, 1.5, 'expanded rail height', scenario);
     if (m.charVisible) {
       within(parseFloat(m.charH), 116, 2, 'character height', scenario);
-      const ratio = m.char.width / m.char.height;
-      within(ratio, 538 / 685, 0.02, 'character aspect', scenario);
+      within(m.char.width, 44, 1.5, 'character slot width (blob)', scenario);
       within(m.char.y, m.pill.y + 12, 2.5, 'character top clearance', scenario);
     }
   }
