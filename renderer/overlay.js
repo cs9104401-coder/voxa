@@ -65,6 +65,7 @@ let state = {
   slowMotion: false,
   dismiss: null,
   expand: 'auto',
+  stageMax: 0,
   chatOpen: false,
   chatStreaming: false,
   chatPreview: false
@@ -662,28 +663,40 @@ function targetGeometry() {
   const chatMode = status === 'chat' && Boolean(state.chatOpen);
   const contentWidth = contentWidthFor(size);
   notch.style.setProperty('--content-width', `${contentWidth}px`);
-  const cardHeight = expanded && !chatMode ? Math.min(MAX_CARD_HEIGHT, measureCard(contentWidth)) : 0;
-  const chatHeight = chatMode ? Math.min(MAX_CARD_HEIGHT, measureChat(contentWidth)) : 0;
   // Head band heights are static CSS dimensions (mirrored in ISLAND_SIZES), so read the
   // constant instead of probing the DOM — deterministic and matches the rendering rules.
   const rail = expanded ? ISLAND_SIZES.expanded.rail : ISLAND_SIZES[size].height;
+  // The main process reports the usable stage height for the active display
+  // (window height minus top gap and shadow clearance). Clamp the measured body
+  // so the whole pill — including shadow and divider — stays inside the window
+  // even on small or heavily scaled displays. Falls back unclamped when absent.
+  const stageMax = Number(state.stageMax);
+  const bodyLimit = Number.isFinite(stageMax) && stageMax > 0
+    ? Math.max(96, stageMax - rail - 2)
+    : Number.POSITIVE_INFINITY;
+  const cardHeight = expanded && !chatMode
+    ? Math.min(MAX_CARD_HEIGHT, measureCard(contentWidth), bodyLimit)
+    : 0;
+  const chatHeight = chatMode
+    ? Math.min(MAX_CARD_HEIGHT, measureChat(contentWidth), bodyLimit)
+    : 0;
   let width;
   let height;
   let radius;
   if (state.style === 'notch') {
     width = NOTCH_WIDTH;
     height = chatMode
-      ? Math.max(150, Math.round(rail + chatHeight + 2))
+      ? Math.max(rail + 38, Math.round(rail + chatHeight + 2))
       : expanded
-        ? Math.max(128, Math.round(rail + cardHeight + 2))
+        ? Math.round(rail + cardHeight + 2)
         : rail;
     radius = 22;
   } else {
     width = contentWidth;
     height = chatMode
-      ? Math.max(150, Math.round(rail + chatHeight + 2))
+      ? Math.max(rail + 38, Math.round(rail + chatHeight + 2))
       : expanded
-        ? Math.max(128, Math.round(rail + cardHeight + 2))
+        ? Math.round(rail + cardHeight + 2)
         : ISLAND_SIZES[size].height;
     radius = expanded ? 26 : size === 'medium' ? 24 : height / 2;
   }
