@@ -16,7 +16,11 @@
 /* Surface: translucent ink over the desktop (token-consistent #0f1013 family),
    hairline ring + top highlight for definition on any wallpaper; shadow unchanged. */
 .pill-surface{position:absolute;inset:0;overflow:hidden;border-radius:inherit;background:rgba(13,14,18,.86);box-shadow:inset 0 0 0 1px rgba(255,255,255,.05),inset 0 1px 0 rgba(255,255,255,.085),inset 0 -1px 0 rgba(255,255,255,.02),0 24px 64px rgba(0,0,0,.58),0 9px 26px rgba(0,0,0,.42),0 2px 7px rgba(0,0,0,.34)}
-.pill[data-style=notch] .pill-surface{background:rgba(9,10,13,.92);box-shadow:inset 0 0 0 1px rgba(255,255,255,.04),inset 0 1px 0 rgba(255,255,255,.06),0 14px 34px rgba(0,0,0,.55),0 5px 16px rgba(0,0,0,.32)}
+/* Notch style: a clean solid near-black pill — no glow halo, no seam lines across
+   the surface, soft drop shadow only. Island keeps its translucent treatment. */
+.pill[data-style=notch] .pill-surface{background:#0a0b0e;box-shadow:0 14px 34px rgba(0,0,0,.55),0 5px 16px rgba(0,0,0,.32)}
+.pill[data-style=notch] .pill-glow{display:none}
+.pill[data-style=notch] .pill-card,.pill[data-style=notch] .chat-panel{border-top:0}
 .pill-glow{position:absolute;inset:-6px;border-radius:inherit;border:1px solid rgba(126,183,255,.34);box-shadow:0 0 30px rgba(122,178,255,.24),inset 0 0 18px rgba(122,178,255,.1);opacity:0;pointer-events:none;transition:opacity calc(.22s * var(--motion)) ease}
 .pill[data-state=listening][data-visible=true] .pill-glow{animation:island-glow calc(2s * var(--motion)) ease-in-out infinite}
 .pill-clip{position:absolute;inset:0;overflow:hidden;border-radius:inherit}
@@ -27,61 +31,62 @@
 .pill[data-size=expanded] .pill-head{height:128px;padding:0 var(--pad-r) 0 var(--pad-l)}
 .pill[data-style=notch][data-size=compact] .pill-head{height:88px;padding-top:4px}
 .pill.is-hovered .pill-head{pointer-events:auto}
-.status-icon{position:relative;z-index:2;flex:none;display:grid;place-items:center;width:20px;height:20px;color:#e6edf6;transition:color calc(.2s * var(--motion)) ease}
+.status-icon{position:relative;z-index:5;flex:none;display:grid;place-items:center;width:20px;height:20px;color:#e6edf6;transition:color calc(.2s * var(--motion)) ease}
 .pill[data-size=medium] .status-icon{width:24px;height:24px}
 .pill[data-size=expanded] .status-icon{width:22px;height:22px}
 .status-icon .glyph{display:none;width:100%;height:100%;fill:none;stroke:currentColor;stroke-width:1.75;stroke-linecap:round;stroke-linejoin:round}
 .pill:not([data-state=thinking]):not([data-state=executing]):not([data-state=verifying]):not([data-state=done]):not([data-state=error]) .glyph-mark{display:block}
-/* --- Companion: layered character sprite (head/body PNGs, baked art) + vector face SVG --- */
-/* One ratio chain: canvas 538x685 (head 506 + body 189, ~10px neck overlap). --char-h
-   drives the character in every state; the pill's leading column follows its width. */
-.companion{display:none;position:absolute;bottom:0;left:50%;height:var(--char-h);width:calc(var(--char-h) * 538 / 685);transform:translateX(-50%);transform-origin:50% 100%;pointer-events:none;--head-tilt:0deg;--look-x:0px;--look-y:0px;--look-x-mult:14;--look-y-mult:12;animation:companion-bob calc(3.6s * var(--motion)) ease-in-out infinite}
+/* --- Companion: CSS blob mascot (pure styling + tiny inline SVG variants; no assets) --- */
+/* The .companion slot keeps the pre-existing geometry (bottom-anchored in the lead
+   column; --char-h drives wake/bob/pause). The blob is a 38x42 squircle that scales
+   to ~43px in active states — small enough to always sit inside the pill. */
+.companion{display:none;position:absolute;bottom:0;left:50%;height:var(--char-h);width:44px;transform:translateX(-50%);transform-origin:50% 100%;pointer-events:none;--look-x:0px;--look-y:0px;--look-x-mult:2.4;--look-y-mult:2.2;--blink-y:1;--act:1;animation:companion-bob calc(3.6s * var(--motion)) ease-in-out infinite}
 .pill[data-companion=true] .companion{display:block}
 .pill[data-companion=true] .status-icon .glyph,.pill[data-companion=true] .status-icon .dots{display:none!important}
-/* Eye-track strength follows the sprite scale (mult is tuned relative to the
-   116px expanded sprite), so glances stay proportionate in every band. */
-.pill[data-size=compact] .companion{--look-x-mult:10;--look-y-mult:9}
-.pill[data-size=medium] .companion{--look-x-mult:11;--look-y-mult:9}
 /* The companion anchors through --lead-w, not the 20-24px icon box; the icon only
    stretches when the companion is on, leaving the fallback glyph untouched. */
 .pill[data-companion=true] .status-icon{height:100%;width:var(--lead-w)}
-.companion-figure{position:absolute;display:block;width:100%;user-select:none}
-.companion-body-fig{bottom:0;height:27.59%;transform-origin:50% 100%;animation:companion-breathe calc(3.6s * var(--motion)) ease-in-out infinite}
-.companion-head{position:absolute;top:0;left:0;width:100%;height:73.87%;transform-origin:50% 100%;transform:rotate(var(--head-tilt));transition:transform calc(.5s * var(--motion)) cubic-bezier(.25,.8,.3,1)}
-.companion-head-fig,.companion-face-svg{position:absolute;inset:0;width:100%;height:100%;transform-origin:50% 100%;animation:companion-sway calc(5.4s * var(--motion)) ease-in-out infinite}
-.companion-eyes-open,.companion-eyes-closed{transition:opacity calc(.1s * var(--motion)) ease}
-.companion-eyes-closed{opacity:0}
-.companion.is-blinking .companion-eyes-open{opacity:0}
-.companion.is-blinking .companion-eyes-closed{opacity:1}
-.companion-eye-white{fill:#f1eff2;stroke:#231a16;stroke-width:6}
-.companion-iris{transform:translate(calc(var(--look-x,0px) * var(--look-x-mult)),calc(var(--look-y,0px) * var(--look-y-mult)));transition:transform calc(.14s * var(--motion)) ease-out}
-.companion-pupil{fill:#0c0809}
-.companion-glint{fill:#fdfcff;opacity:.92}
-.companion-glint-small{opacity:.65}
-.companion-eyes-closed path{fill:none;stroke:#231a16;stroke-width:9;stroke-linecap:round}
-.companion-mouth{opacity:0;transition:opacity calc(.18s * var(--motion)) ease}
-.companion-mouth-idle,.companion-mouth-happy,.companion-mouth-flat{fill:none;stroke:#231a16;stroke-width:7;stroke-linecap:round}
-.companion-mouth-listen,.companion-mouth-speak{fill:#1c1114;stroke:none}
-.companion-tongue{fill:#e0757c;opacity:.9}
-.companion-cheeks{fill:#eda094;opacity:0;transition:opacity calc(.24s * var(--motion)) ease}
-.companion-thought{fill:#cfe2ff;opacity:0;transition:opacity calc(.18s * var(--motion)) ease}
-.companion-thought circle{transform-box:fill-box;transform-origin:center}
-.companion-sparkle{fill:#ffe6a6;opacity:0;transform-box:fill-box;transform-origin:center}
-.companion-sweat{fill:#a9d4ff;opacity:0;transform-box:fill-box;transform-origin:center}
+.blob{position:absolute;bottom:0;left:50%;width:38px;height:42px;margin-left:-19px;border-radius:46% 46% 42% 42%/52% 52% 44% 44%;transform:scale(var(--act,1));transform-origin:50% 100%;pointer-events:auto;cursor:pointer}
+.blob-body{position:absolute;inset:0;border-radius:inherit;background:radial-gradient(120% 115% at 30% 22%,#fff 0,#f2f6fc 46%,#dfe8f3 100%);box-shadow:inset -3px -4px 7px rgba(174,192,214,.42),inset 2px 3px 6px rgba(255,255,255,.95),0 3px 8px rgba(6,8,12,.28);transform-origin:50% 100%;animation:companion-breathe calc(3.6s * var(--motion)) ease-in-out infinite}
+.blob-eyes{position:absolute;left:0;right:0;top:15px;height:12px;transition:opacity calc(.12s * var(--motion)) ease}
+.blob-eye{position:absolute;top:1px;width:9px;height:10px;border-radius:50%;background:#171b24;transform:translate(calc(var(--look-x,0px) * var(--look-x-mult)),calc(var(--look-y,0px) * var(--look-y-mult))) scaleY(calc(var(--blink-y,1) * var(--eye-s,1)));transform-origin:50% 62%;transition:transform calc(.15s * var(--motion)) ease}
+.blob-eye::after{content:"";position:absolute;left:1.5px;top:1.4px;width:2.6px;height:2.6px;border-radius:50%;background:#fff;opacity:.94}
+.blob-eye-l{left:7.5px}
+.blob-eye-r{left:21.5px}
+.companion.is-blinking{--blink-y:.08}
+.blob-face{position:absolute;inset:0;pointer-events:none}
+.blob-cheek{fill:#f0a7b1;opacity:.5;transition:opacity calc(.2s * var(--motion)) ease}
+.blob-smile{fill:none;stroke:#171b24;stroke-width:2;stroke-linecap:round;opacity:.75;transition:opacity calc(.16s * var(--motion)) ease}
+.blob-mouth{fill:#171b24;opacity:0;transform-origin:19px 30px;transition:opacity calc(.16s * var(--motion)) ease}
+/* Eye-shape variants: happy arcs (done), X eyes (error), spirals (dizzy). */
+.blob-variant{position:absolute;left:50%;top:14px;width:38px;height:16px;margin-left:-19px;opacity:0;pointer-events:none;transition:opacity calc(.12s * var(--motion)) ease}
+.blob-variant path{fill:none;stroke:#171b24;stroke-width:2.4;stroke-linecap:round;stroke-linejoin:round}
+/* Expression states, driven by the existing data-expression attribute. */
+.companion[data-expression=listening]{--act:1.13;--eye-s:1.18}
+.companion[data-expression=listening] .blob-body{animation:blob-listen calc(1.05s * var(--motion)) ease-in-out infinite}
+.companion[data-expression=thinking]{--act:1.05}
+.companion[data-expression=thinking] .blob{animation:blob-wobble calc(2.8s * var(--motion)) ease-in-out infinite}
+.companion[data-expression=speaking]{--act:1.12}
+.companion[data-expression=speaking] .blob{animation:blob-bounce calc(.5s * var(--motion)) ease-in-out infinite}
+.companion[data-expression=speaking] .blob-mouth{opacity:1;animation:blob-talk calc(.32s * var(--motion)) ease-in-out infinite alternate}
+.companion[data-expression=speaking] .blob-smile{opacity:0}
+.companion[data-expression=success]{--act:1.06}
+.companion[data-expression=success] .blob{animation:blob-cheer calc(.62s * var(--motion)) cubic-bezier(.3,.8,.3,1)}
+.companion[data-expression=success] .blob-cheek{opacity:.65}
+.companion[data-expression=success] .blob-eyes,.companion[data-expression=error] .blob-eyes{opacity:0}
+.companion[data-expression=success] .blob-variant-happy{opacity:1}
+.companion[data-expression=error] .blob{animation:blob-squish calc(.5s * var(--motion)) cubic-bezier(.36,.07,.19,.97)}
+.companion[data-expression=error] .blob-variant-hard{opacity:1}
+.companion[data-expression=error] .blob-smile{opacity:0}
+/* Poke: hop + squint; five fast pokes become dizzy for 2s. */
+.companion.is-poked .blob{animation:blob-hop calc(.64s * var(--motion)) cubic-bezier(.3,.7,.3,1)}
+.companion.is-poked .blob-eye{--eye-s:.55}
+.companion.is-poked .blob-smile{opacity:0}
+.companion.is-dizzy .blob{animation:blob-dizzy calc(.8s * var(--motion)) ease-in-out infinite}
+.companion.is-dizzy .blob-eyes{opacity:0}
+.companion.is-dizzy .blob-variant-dizzy{opacity:1}
+.companion.is-dizzy .blob-smile{opacity:0}
 .companion.is-waking{animation:companion-wake calc(.8s * var(--motion)) ease both}
-.companion[data-expression=listening]{--head-tilt:-2.6deg}
-.companion[data-expression=thinking]{--head-tilt:1.8deg}
-.companion[data-expression=speaking]{--head-tilt:.6deg}
-.companion[data-expression=error]{--head-tilt:2.4deg}
-.companion[data-expression=idle] .companion-mouth-idle,.companion[data-expression=listening] .companion-mouth-listen,.companion[data-expression=speaking] .companion-mouth-speak,.companion[data-expression=success] .companion-mouth-happy,.companion[data-expression=error] .companion-mouth-flat{opacity:1}
-.companion[data-expression=speaking] .companion-mouth-speak{transform-box:fill-box;transform-origin:center;animation:companion-talk calc(.34s * var(--motion)) ease-in-out infinite alternate}
-.companion[data-expression=success] .companion-cheeks{opacity:.55}
-.companion[data-expression=thinking] .companion-thought{opacity:1}
-.companion[data-expression=thinking] .companion-thought circle{animation:companion-think calc(1.25s * var(--motion)) ease-in-out infinite}
-.companion[data-expression=thinking] .companion-thought circle:nth-child(2){animation-delay:calc(.14s * var(--motion))}
-.companion[data-expression=thinking] .companion-thought circle:nth-child(3){animation-delay:calc(.28s * var(--motion))}
-.companion[data-expression=success] .companion-sparkle{opacity:1;animation:companion-sparkle calc(.7s * var(--motion)) cubic-bezier(.2,.8,.3,1) both}
-.companion[data-expression=error] .companion-sweat{opacity:.92;animation:companion-sweat calc(1.8s * var(--motion)) ease-in-out infinite}
 .pill[data-visible=false] .companion,.pill[data-visible=false] .companion *{animation-play-state:paused!important}
 .pill[data-state=done] .glyph-check{display:block;color:#8fe3b5}
 .pill[data-state=error] .glyph-alert{display:block;color:#ff929a}
@@ -148,7 +153,9 @@
 .notch-button kbd{padding:1px 5px;border-radius:5px;border:1px solid rgba(255,255,255,.16);background:rgba(255,255,255,.06);font-family:inherit;font-size:10px;color:inherit;opacity:.72}
 .notch-button.primary kbd{border-color:rgba(10,12,16,.14);background:rgba(10,12,16,.07)}
 .copy-button{height:28px;font-size:12px}
-.progress-line{position:absolute;z-index:4;left:16px;right:16px;bottom:6px;height:2px;overflow:hidden;border-radius:2px;background:rgba(255,255,255,.12);opacity:0;pointer-events:none;transition:opacity calc(.2s * var(--motion)) ease}
+/* Streaming line lives in the meter/text zone — never under the companion's lead
+   column, and the lead column itself stacks above every decoration (z below). */
+.progress-line{position:absolute;z-index:4;left:calc(var(--pad-l) + var(--lead-w) + var(--gap-col));right:calc(var(--pad-r) + 12px);bottom:6px;height:2px;overflow:hidden;border-radius:2px;background:rgba(255,255,255,.12);opacity:0;pointer-events:none;transition:opacity calc(.2s * var(--motion)) ease}
 .progress-line[data-active=true]{opacity:.82}
 .progress-line i{display:block;width:100%;height:100%;border-radius:inherit;background:linear-gradient(90deg,var(--accent2,#6da9f6),#c3dcff);transform:scaleX(0);transform-origin:left center}
 .head-actions{position:relative;z-index:3;display:flex;align-items:center;gap:4px;margin-left:auto}
@@ -220,26 +227,28 @@
 @keyframes island-word-in{from{opacity:0;filter:blur(3px);transform:translateY(2px)}to{opacity:1;filter:blur(0);transform:none}}
 @keyframes island-ghost-out{to{opacity:0;filter:blur(4px);transform:scale(.985)}}
 @keyframes island-caret{0%,45%{opacity:1}50%,100%{opacity:.12}}
-@keyframes companion-sway{0%,100%{transform:rotate(0deg)}30%{transform:rotate(1deg)}70%{transform:rotate(-1deg)}}
-/* Idle float: anchored to translateX(-50%) so the horizontal centering survives;
-   amplitude stays inside the harness's ±2px feet-flush tolerance. */
+/* Idle float: anchored to translateX(-50%) so the horizontal centering survives. */
 @keyframes companion-bob{0%,100%{transform:translateX(-50%) translateY(0)}50%{transform:translateX(-50%) translateY(-1.5px)}}
-/* Body breathing: scales from the feet (origin 50% 100%) so they stay flush while
-   the torso lifts a hair. */
+/* Body breathing: scales from the feet (origin 50% 100%) so it stays grounded. */
 @keyframes companion-breathe{0%,100%{transform:translateY(0) scaleY(1)}50%{transform:translateY(-.4px) scaleY(1.012)}}
 @keyframes companion-wake{0%{opacity:0;transform:translateX(-50%) translateY(-9px) scale(.7)}55%{opacity:1;transform:translateX(-50%) translateY(1.5px) scale(1.05)}100%{opacity:1;transform:translateX(-50%)}}
-@keyframes companion-think{0%,100%{opacity:.3;transform:translateY(0)}40%{opacity:1;transform:translateY(-16px)}}
-@keyframes companion-talk{from{transform:scaleY(.55)}to{transform:scaleY(1.12)}}
-@keyframes companion-sparkle{0%{opacity:0;transform:scale(.4) rotate(-14deg)}60%{opacity:1}100%{opacity:.9;transform:scale(1) rotate(0)}}
-@keyframes companion-sweat{0%,100%{opacity:.4;transform:translateY(-4px)}50%{opacity:.95;transform:translateY(8px)}}
+/* Blob moods. Mood transforms bake scale(var(--act,1)) so the active-size factor
+   survives every keyframe. All transform/opacity only. */
+@keyframes blob-listen{0%,100%{transform:scaleY(calc(1 + var(--level,0) * .03))}50%{transform:scale(calc(1 + var(--level,0) * .02),calc(1.04 + var(--level,0) * .06))}}
+@keyframes blob-wobble{0%,100%{transform:rotate(0) scale(var(--act,1))}25%{transform:rotate(-2.4deg) scale(var(--act,1))}75%{transform:rotate(2.4deg) scale(var(--act,1))}}
+@keyframes blob-bounce{0%,100%{transform:translateY(0) scale(var(--act,1))}40%{transform:translateY(-5px) scale(calc(var(--act,1) * .95),calc(var(--act,1) * 1.06))}70%{transform:translateY(0) scale(calc(var(--act,1) * 1.06),calc(var(--act,1) * .94))}}
+@keyframes blob-cheer{0%{transform:scale(var(--act,1))}30%{transform:translateY(-9px) scale(calc(var(--act,1) * .88),calc(var(--act,1) * 1.14))}55%{transform:translateY(0) scale(calc(var(--act,1) * 1.16),calc(var(--act,1) * .82))}75%{transform:translateY(-3px) scale(calc(var(--act,1) * .98),calc(var(--act,1) * 1.04))}100%{transform:translateY(0) scale(var(--act,1))}}
+@keyframes blob-squish{0%,100%{transform:scale(var(--act,1))}35%{transform:scale(calc(var(--act,1) * 1.22),calc(var(--act,1) * .78))}70%{transform:scale(calc(var(--act,1) * .94),calc(var(--act,1) * 1.06))}}
+@keyframes blob-hop{0%,100%{transform:translateY(0) scale(var(--act,1))}35%{transform:translateY(-8px) scale(calc(var(--act,1) * .9),calc(var(--act,1) * 1.12))}65%{transform:translateY(0) scale(calc(var(--act,1) * 1.14),calc(var(--act,1) * .84))}}
+@keyframes blob-dizzy{0%,100%{transform:rotate(0) scale(var(--act,1))}20%{transform:translate(-2px,1px) rotate(-3deg) scale(var(--act,1))}40%{transform:translate(2px,-1px) rotate(3deg) scale(var(--act,1))}60%{transform:translate(-1.5px,1.5px) rotate(-2deg) scale(var(--act,1))}80%{transform:translate(1.5px,-.5px) rotate(2deg) scale(var(--act,1))}}
+@keyframes blob-talk{from{transform:scaleY(.55)}to{transform:scaleY(1.12)}}
 body.slow-motion{--motion:4}
 @media(prefers-reduced-motion:reduce){
   .pill .word,.pill .card-text,.pill .state-label,.pill .pill-body,.pill .level-meter,.pill .status-icon{transform:none!important;filter:none!important}
   .pill-glow,.pill[data-state=error] .pill-surface,.pill[data-state=error] .pill-clip,.pill[data-state=error] .pill-glow,.dots i{animation:none!important}
   .companion,.companion *{animation:none!important;transition:none!important}
-  .companion .companion-iris{transform:translate(0,0)!important}
-  .companion .companion-eyes-open{opacity:1!important}
-  .companion .companion-eyes-closed{opacity:0!important}
+  .companion .blob-eye{transform:translate(0,0) scaleY(1)!important}
+  .companion .blob,body.slow-motion .companion .blob{transform:scale(1)!important}
   .glyph-check path{animation:none!important;stroke-dashoffset:0}
   .word{animation-name:island-fade-in!important}
   .pill .card-ghost,.pill .label-ghost{animation-name:island-fade-out!important}

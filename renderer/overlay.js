@@ -95,6 +95,9 @@ let companionBlinkTimer = null;
 let companionBlinkOffTimer = null;
 let companionWakeTimer = null;
 let companionExpression = 'idle';
+let companionPokeStamps = [];
+let companionPokeTimer = null;
+let companionDizzyTimer = null;
 
 function reducedMotion() {
   return motionQuery.matches;
@@ -114,15 +117,25 @@ function companionExpressionFor(status) {
   return 'idle';
 }
 
+// Moods with a fixed gaze: the eyes hold a static glance instead of tracking
+// the cursor (thinking looks up-left; success/error faces are centered).
+const COMPANION_STATIC_LOOK = {
+  thinking: ['-0.9px', '-1.4px'],
+  success: ['0px', '0px'],
+  error: ['0px', '0px']
+};
+
 function resetCompanionLook() {
   if (!companion) return;
-  companion.style.setProperty('--look-x', '0px');
-  companion.style.setProperty('--look-y', '0px');
+  const look = COMPANION_STATIC_LOOK[companionExpression] || ['0px', '0px'];
+  companion.style.setProperty('--look-x', look[0]);
+  companion.style.setProperty('--look-y', look[1]);
 }
 
 function updateCompanionLook(clientX, clientY) {
   if (!companion || !state.visible || state.companionEnabled === false || reducedMotion()) return;
-  if (companion.dataset.expression === 'success') return;
+  if (!companionExpression || COMPANION_STATIC_LOOK[companionExpression]) return;
+  if (companion.classList.contains('is-dizzy') || companion.classList.contains('is-poked')) return;
   const rect = companion.getBoundingClientRect();
   if (!rect.width || !rect.height) return;
   const x = Math.max(-1, Math.min(1, (clientX - (rect.left + rect.width / 2)) / 80));
@@ -140,19 +153,21 @@ function clearCompanionBlink() {
 }
 
 function scheduleCompanionBlink() {
-  if (!companion || !state.visible || state.companionEnabled === false || reducedMotion() || companionExpression === 'success') return;
+  if (!companion || !state.visible || state.companionEnabled === false || reducedMotion()) return;
+  if (companionExpression === 'success' || companion.classList.contains('is-dizzy')) return;
   if (companionBlinkTimer || companionBlinkOffTimer) return;
   const slow = state.slowMotion ? 4 : 1;
   companionBlinkTimer = setTimeout(() => {
     companionBlinkTimer = null;
-    if (!companion || !state.visible || state.companionEnabled === false || reducedMotion() || companionExpression === 'success') return;
+    if (!companion || !state.visible || state.companionEnabled === false || reducedMotion()) return;
+    if (companionExpression === 'success' || companion.classList.contains('is-dizzy')) return;
     companion.classList.add('is-blinking');
     companionBlinkOffTimer = setTimeout(() => {
       companionBlinkOffTimer = null;
       companion?.classList.remove('is-blinking');
       scheduleCompanionBlink();
     }, Math.round(130 * slow));
-  }, Math.round((2800 + Math.random() * 3000) * slow));
+  }, Math.round((3000 + Math.random() * 3000) * slow));
 }
 
 function pulseCompanionWake() {
@@ -185,8 +200,9 @@ function updateCompanion(status) {
   if (companion.dataset.expression !== expression) {
     companion.dataset.expression = expression;
     companionExpression = expression;
-    // Success is a centred celebration: drop any pointer-driven glance.
-    if (expression === 'success') resetCompanionLook();
+    // Fixed-gaze moods (success/error/thinking) pin the eyes; tracking moods
+    // re-glue to the cursor on the next feed frame.
+    resetCompanionLook();
   }
   syncCompanionMotion();
 }
@@ -940,8 +956,38 @@ function render() {
 function applyAudioLevel(peak) {
   const normalized = Math.min(1, Math.max(0, Number(peak) || 0) * 9);
   levelTarget = normalized;
+  companion?.style.setProperty('--level', normalized.toFixed(3));
   levelMeter.setAttribute('aria-label', `Microphone level ${Math.round(normalized * 100)} percent`);
   if (state.visible && notch.dataset.state === 'listening') startLoop();
+}
+
+/* --- Poke / dizzy (blob interaction) ------------------------------------- */
+function triggerCompanionPoke() {
+  if (!companion || !state.visible || state.companionEnabled === false || reducedMotion()) return;
+  if (companionExpression === 'success' || companion.classList.contains('is-dizzy')) return;
+  const now = performance.now();
+  companionPokeStamps = companionPokeStamps.filter((stamp) => now - stamp < 900);
+  companionPokeStamps.push(now);
+  if (companionPokeStamps.length >= 5) {
+    companionPokeStamps = [];
+    companion.classList.remove('is-poked');
+    companion.classList.add('is-dizzy');
+    resetCompanionLook();
+    clearTimeout(companionDizzyTimer);
+    companionDizzyTimer = setTimeout(() => {
+      companionDizzyTimer = null;
+      companion?.classList.remove('is-dizzy');
+    }, 2000);
+    return;
+  }
+  companion.classList.remove('is-poked');
+  void companion.offsetWidth; // restart the one-shot hop from frame 0
+  companion.classList.add('is-poked');
+  clearTimeout(companionPokeTimer);
+  companionPokeTimer = setTimeout(() => {
+    companionPokeTimer = null;
+    companion?.classList.remove('is-poked');
+  }, 700);
 }
 
 stopButton.addEventListener('click', () => {
@@ -1020,6 +1066,8 @@ denyButton.addEventListener('click', () => {
   respond(notch.dataset.approvalId, false, denyButton);
 });
 
+document.querySelector('.blob')?.addEventListener('pointerdown', triggerCompanionPoke);
+
 cardText.addEventListener('scroll', updateScrollFade, { passive: true });
 
 document.addEventListener('mousemove', (event) => {
@@ -1078,7 +1126,10 @@ window.addEventListener('unhandledrejection', (event) => {
 window.addEventListener('pagehide', () => {
   clearCompanionBlink();
   if (companionWakeTimer) { clearTimeout(companionWakeTimer); companionWakeTimer = null; }
-  companion?.classList.remove('is-waking');
+  if (companionPokeTimer) { clearTimeout(companionPokeTimer); companionPokeTimer = null; }
+  if (companionDizzyTimer) { clearTimeout(companionDizzyTimer); companionDizzyTimer = null; }
+  companionPokeStamps = [];
+  companion?.classList.remove('is-waking', 'is-poked', 'is-dizzy');
   resetCompanionLook();
 });
 
@@ -1126,6 +1177,10 @@ api.overlay.onState((next) => {
 });
 
 api.overlay.onAudioLevel(({ peak }) => applyAudioLevel(peak));
+api.overlay.onCursor?.((coords) => {
+  if (!coords || !state.visible) return;
+  updateCompanionLook(Number(coords.x) || 0, Number(coords.y) || 0);
+});
 
 document.fonts?.ready?.then(() => retarget()).catch(() => {});
 applyGeometry();

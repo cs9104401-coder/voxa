@@ -85,6 +85,7 @@ const EVENT_CHANNELS = new Set([
   'tts:stop-audio',
   'overlay:state',
   'overlay:audio-level',
+  'overlay:cursor',
   'chat:started',
   'chat:delta',
   'chat:done',
@@ -179,6 +180,7 @@ contextBridge.exposeInMainWorld('voiceAgent', {
   overlay: {
     onState: (callback) => on('overlay:state', callback),
     onAudioLevel: (callback) => on('overlay:audio-level', callback),
+    onCursor: (callback) => on('overlay:cursor', callback),
     resize: (width, height) => send('overlay:resize', { width, height }),
     stop: () => send('overlay:stop'),
     approve: (id, allowed) => send('approval:respond', { id, allowed }),
