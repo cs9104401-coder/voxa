@@ -1174,6 +1174,15 @@ let hitTargetSignature = '';
 let hitMorphPending = false;
 let hitWasSettled = true;
 
+// Main resets the OS hit region to the compact pill on every hidden→shown
+// cycle, so the renderer's cached signatures are stale at that point.
+function invalidateHitShape() {
+  hitSignature = '';
+  hitTargetSignature = '';
+  hitMorphPending = false;
+  hitWasSettled = true;
+}
+
 function paddedHitRect(clientRect, pad) {
   const left = Math.floor(clientRect.left - pad);
   const top = Math.floor(clientRect.top - pad);
@@ -1231,6 +1240,9 @@ function sendHitRect() {
 // Morph-start region: called by retarget() when the geometry target changes.
 function sendMorphHitRect() {
   hitMorphPending = true;
+  // Springs can jump straight to the target (immediate/reduced motion), so a
+  // settled-state flag from the previous band must not swallow the final rect.
+  hitWasSettled = false;
   queueHitRect(morphHitRect());
 }
 
@@ -1312,6 +1324,7 @@ function render() {
   const interactiveChat = openChat && !state.chatPreview;
   const wasVisible = notch.dataset.visible === 'true';
   const wasSize = notch.dataset.size;
+  if (state.visible !== wasVisible) invalidateHitShape();
   // Stage 2 tab model: state patches steer the tab; the user's pinned choice
   // survives only while the pill rests idle-expanded.
   if (size !== 'expanded') pinnedTab = null;
