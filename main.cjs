@@ -1676,14 +1676,14 @@ async function prepareTool(turn, name, args, providerName) {
   if (name === 'open_app') {
     const query = String(args.app || '').trim();
     if (!query) throw new Error('No app name was provided.');
+    if (query.length > 200) throw new Error('The app name is too long.');
     const entry = apps.findApp(query);
-    if (!entry) throw new Error(`I could not find an installed app matching "${query}".`);
     return {
-      title: `Open ${entry.name}?`,
-      detail: entry.launch,
+      title: `Open ${entry?.name || query}?`,
+      detail: entry?.launch || query,
       run: async () => {
-        await apps.openApp(entry);
-        return `Opened ${entry.name}.`;
+        const opened = await apps.openAppByName(query);
+        return `Opened ${opened.name}.`;
       }
     };
   }
@@ -1754,6 +1754,13 @@ async function prepareTool(turn, name, args, providerName) {
   throw new Error(`Unknown action: ${name}`);
 }
 
+function summarizeToolArgs(name, args) {
+  if (name === 'type_text') return `${String(args.text || '').length} characters of text`;
+  if (name === 'remember_note') return `${String(args.note || '').length} character note`;
+  const text = JSON.stringify(args || {});
+  return text.length > 200 ? `${text.slice(0, 197)}...` : text;
+}
+
 async function executeTool(turn, call, providerName = settings.chatProvider) {
   const name = call?.function?.name;
   if (!TOOL_NAMES.includes(name)) return { ok: false, error: 'That action is unavailable.' };
@@ -1764,8 +1771,10 @@ async function executeTool(turn, call, providerName = settings.chatProvider) {
   } catch (error) {
     return { ok: false, error: cleanError(error) };
   }
+  const argsSummary = summarizeToolArgs(name, args);
   if (name === 'refresh_apps') {
     const list = apps.refreshApps(logger);
+    logger.info('tool', `action=refresh_apps args=${argsSummary} result=ok`);
     return { ok: true, message: `Refreshed ${list.length} installed apps.` };
   }
   let prepared;
@@ -1781,7 +1790,10 @@ async function executeTool(turn, call, providerName = settings.chatProvider) {
     return { ok: false, duplicate: true, error: 'That action already ran in this turn, so it was not repeated.' };
   }
   const permission = permissions.resolvePermission(settings, name, prepared.permissionContext);
-  if (permission.requiresApproval) {
+  const fullAccess = settings.agentFullAccess === true;
+  if (fullAccess) {
+    logger.info('permission', `${name} allowed by full access.`);
+  } else if (permission.requiresApproval) {
     const decisions = turn.approvalDecisions || (turn.approvalDecisions = new Map());
     if (decisions.has(fingerprint)) {
       if (!decisions.get(fingerprint)) {
@@ -1814,11 +1826,11 @@ async function executeTool(turn, call, providerName = settings.chatProvider) {
     const message = await prepared.run();
     executed.add(fingerprint);
     if (turnAlive(turn)) overlay.setState({ status: 'verifying', message: 'Checking the result…', approval: null });
-    logger.info('tool', `${name} completed`);
+    logger.info('tool', `action=${name} args=${argsSummary} result=ok`);
     return { ok: true, message: message || `Completed ${name.replaceAll('_', ' ')}.` };
   } catch (error) {
     if (error.cancelled) return { ok: false, cancelled: true, error: 'Turn cancelled.' };
-    logger.warn('tool', `${name} failed: ${cleanError(error)}`);
+    logger.warn('tool', `action=${name} args=${argsSummary} result=error error=${cleanError(error)}`);
     return { ok: false, error: cleanError(error) };
   }
 }

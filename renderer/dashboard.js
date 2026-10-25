@@ -1298,6 +1298,10 @@ function agent() {
       <div class="row-side" style="margin-top:14px"><button class="button" data-action="test-provider">Test connection</button><button class="button" data-action="refresh-models">Refresh models</button><span id="providerStatus" class="card-note"></span></div>
     </article>
     ${provider === 'local' ? ollamaSetupCard() : ''}
+    <article class="card"><h2 class="card-title">Full access</h2>
+      <div class="row"><div class="row-main"><b>Full access</b><small>Full access: Agent runs every action without asking. Tool schema, folder limits, and HTTPS checks still apply.</small></div>${toggle('agentFullAccess', settings.agentFullAccess === true, 'Full access: Agent runs every action without asking', 'agentFullAccess')}</div>
+      <p class="card-note">When off, the Permission Mode below controls approvals.</p>
+    </article>
     <article class="card"><h2 class="card-title">Permission Mode</h2><p class="card-note">Choose how Agent Mode handles desktop permissions. Routine actions can run without a prompt; sensitive actions always ask.</p>
       <label class="field" style="margin-top:12px">Permission Mode<select class="select" id="permissionMode">${PERMISSION_MODES.map(([id, label]) => `<option value="${id}" ${(settings.permissionMode || 'ask') === id ? 'selected' : ''}>${esc(label)}</option>`).join('')}</select></label>
       <p id="permissionModeNote" class="card-note">${esc(PERMISSION_MODES.find(([id]) => id === (settings.permissionMode || 'ask'))?.[2] || '')}</p>
