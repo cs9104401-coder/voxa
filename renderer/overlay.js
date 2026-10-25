@@ -85,6 +85,7 @@ let state = {
   chatPreview: false,
   notifications: [],
   feedPreview: false,
+  download: null,
   media: null
 };
 let chat = {
@@ -664,6 +665,10 @@ function sizeFor(status) {
   // The media pill is always its medium band; pinned expansion must not turn
   // it into a wide rail with an empty card.
   if (status === 'media') return 'medium';
+  // A resting pill that carries content (Phase H download, Phase G unread
+  // alerts) uses the medium band: compact hides the state label by design, so
+  // text-only affordances would be invisible there. Plain idle stays compact.
+  if (status === 'idle' && (state.download || state.notifications.length)) return 'medium';
   if (state.expand === 'collapsed') {
     const chatMode = status === 'chat' && Boolean(state.chatOpen);
     if (!chatMode && status !== 'approval') return 'compact';
@@ -1073,9 +1078,18 @@ function render() {
   document.body.classList.toggle('slow-motion', Boolean(state.slowMotion));
   document.body.dataset.reducedMotion = reducedMotion() ? 'true' : 'false';
   // Resting pill advertises the unread event stack with a real count — that
-  // is the click affordance for the live feed (Phase G).
+  // is the click affordance for the live feed (Phase G). A live model
+  // download (Phase H) outranks it: it is the current long activity and the
+  // count is still one click away. The pill only moves on real percent steps
+  // — never a fake animation.
   let labelText = statusLabel(status);
-  if (status === 'idle' && state.notifications.length) {
+  if (status === 'idle' && state.download) {
+    const download = state.download;
+    const tail = download.phase === 'downloading' && download.percent != null
+      ? ` · ${download.percent}%`
+      : download.phase === 'loading' ? ' · loading' : '';
+    labelText = `${download.label}${tail}`;
+  } else if (status === 'idle' && state.notifications.length) {
     labelText = `Alerts · ${state.notifications.length}`;
   }
   setLabel(labelText);

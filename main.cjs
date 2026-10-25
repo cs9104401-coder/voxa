@@ -22,6 +22,12 @@ const { createOverlay } = require('./lib/overlay.cjs');
 const { createHotkeys, isValidHotkey } = require('./lib/hotkeys.cjs');
 const mediaSmtc = require('./lib/media-smtc.cjs');
 const {
+  whisperIslandDownload,
+  whisperStartingIslandDownload,
+  kokoroIslandDownload,
+  ollamaIslandDownload
+} = require('./lib/island-download.cjs');
+const {
   APP_NAME, APPROVABLE_TOOLS, LIMITS, MESSAGES, STT_CLOUD_PROVIDERS, TOOL_DEFINITIONS, TOOL_NAMES,
   WHISPER_MODELS, WHISPER_PRESETS, defaults
 } = require('./lib/constants.cjs');
@@ -712,15 +718,23 @@ function whisperHealthSummary(health = {}) {
 function publishKokoroHealth(status) {
   lastHealth.kokoro = { ...status, checkedAt: new Date().toISOString() };
   sendToDashboard('tts:health-updated', lastHealth.kokoro);
+  // Phase H: the voice-pack download is a real long activity with a percent —
+  // mirror it on the island; every other status (ready/cancelled/consent) is a
+  // no-op null sync that clears any stale pill state.
+  syncIslandDownload(kokoroIslandDownload(status));
 }
 
 function publishWhisperHealth(health) {
+  const summary = whisperHealthSummary(health);
   lastHealth = {
     ...lastHealth,
-    whisper: whisperHealthSummary(health),
+    whisper: summary,
     checkedAt: new Date().toISOString()
   };
   sendToDashboard('health:updated', structuredClone(lastHealth));
+  // Phase H: while a model downloads or loads, the pill mirrors the real
+  // progress; on ordinary health states this is a no-op null sync.
+  syncIslandDownload(whisperIslandDownload(summary));
 }
 
 async function ensureWhisper() {
@@ -776,6 +790,14 @@ function startWhisperWatch(expectStart = false) {
         || ['downloading', 'loading'].includes(health.status)
         || starting;
       const startExpired = health.status === 'unreachable' && Date.now() > deadline;
+      // Phase H: while the *server* is starting (no download progress yet),
+      // the pill still shows the real long activity; a start that expired
+      // clears it so nothing pretends progress never ended.
+      if (starting && !startExpired) {
+        syncIslandDownload(whisperStartingIslandDownload(settings.whisperModel));
+      } else if (startExpired) {
+        syncIslandDownload(null);
+      }
       if (!active || health.status === 'error' || startExpired) stopWhisperWatch(token);
     } finally {
       polling = false;
@@ -1961,15 +1983,15 @@ function pushFeedEvent({ title, body = '', kind = 'system', tone = 'neutral' } =
   logger.info('feed', `${event.title}${event.body ? ` — ${event.body.slice(0, 120)}` : ''} (${event.id})`);
   if (!galleryPreviewActive) {
     overlay?.setNotifications(overlayEvents, false);
-    announceFeedEvents();
+    popRestingPill();
   }
 }
 
-// Phase G: an event the user could not see otherwise pops the resting pill as
-// an unread toast ("Alerts · n"); clicking it opens the live feed. Never
-// steals the stage from a turn, chat, an approval, or the media pill; respects
-// the media snooze so a stop press keeps the island away.
-function announceFeedEvents() {
+// Phase H: a resting pill pop is shared behavior — anything the user could not
+// otherwise see (new feed events, a download starting) raises the idle pill as
+// a toast. Never steals the stage from a turn, chat, an approval, or the media
+// pill; respects the media snooze so a stop press keeps the island away.
+function popRestingPill() {
   if (currentTurn || turnRunning) return;
   if (chatSession.open) return;
   if (mediaLast) return;
@@ -1987,6 +2009,23 @@ function announceFeedEvents() {
     chatPreview: false
   });
   scheduleOverlayHide(4000);
+}
+
+/* Phase H: the download live activity. Producers (whisper health, kokoro
+   download, ollama pull) call syncIslandDownload with either null or a
+   { phase, label, percent } summary from lib/island-download.cjs. Only real
+   changes reach the pill; the first activation pops the resting pill once so
+   the user learns the download began. Completion is announced by the existing
+   feed event (which already pops with the unread count). */
+let islandDownloadLast = null;
+function syncIslandDownload(next) {
+  const previous = islandDownloadLast;
+  if (!next && !previous) return;
+  if (previous && next && previous.phase === next.phase
+    && previous.label === next.label && previous.percent === next.percent) return;
+  islandDownloadLast = next ? { ...next } : null;
+  overlay?.setDownload(next);
+  if (next && !previous) popRestingPill();
 }
 
 // Dismissal bookkeeping: drop the id from main's stack so the next push never
@@ -2029,7 +2068,7 @@ function broadcastMediaState(next) {
     overlay?.setState({ media: null });
     if (overlay?.state().status === 'media') overlay?.hide();
     // Playback ended: surface any unread events that arrived mid-playback.
-    announceFeedEvents();
+    popRestingPill();
     return;
   }
   // Keep pill data fresh even while a turn or a preview owns the stage; the
@@ -2262,6 +2301,9 @@ function registerIpc() {
       await services.ensureOllamaRunning(base, logger);
       const result = await services.pullOllamaModel(base, model, (progress) => {
         sendToDashboard('ollama:pull-progress', progress);
+        // Phase H: the pull is a real long activity — mirror the stream's
+        // percent on the island.
+        syncIslandDownload(ollamaIslandDownload(progress, model));
       }, logger);
       await healthChecks().catch((error) => logger.warn('health', cleanError(error)));
       // Phase E feed: finished model pulls are recorded as download cards.
@@ -2271,6 +2313,9 @@ function registerIpc() {
       pushFeedEvent({ title: 'Ollama model download failed', body: cleanError(error), kind: 'error', tone: 'highlight' });
       throw error;
     } finally {
+      // Phase H: a pull that ends (success, error, or cancelled) always clears
+      // the pill state.
+      syncIslandDownload(null);
       ollamaPullRunning = false;
     }
   });

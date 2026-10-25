@@ -458,6 +458,76 @@ function checkTtsSettings() {
   }
 }
 
+function checkIslandDownload() {
+  try {
+    const {
+      whisperIslandDownload,
+      whisperStartingIslandDownload,
+      kokoroIslandDownload,
+      ollamaIslandDownload
+    } = require('./lib/island-download.cjs');
+    // Real payload shapes, as produced by each service.
+    const whisperDownloading = whisperIslandDownload({
+      ok: false, switching: true, status: 'downloading',
+      targetModel: 'medium',
+      progress: { model: 'medium', status: 'downloading', downloadedBytes: 615_089_400, totalBytes: 1_464_072_658, percent: 42, speedBps: 2_517_819, stalled: false, error: '' }
+    });
+    const whisperLoading = whisperIslandDownload({
+      switching: true, status: 'loading', targetModel: 'small', progress: null
+    });
+    const whisperIdle = whisperIslandDownload({
+      ok: true, switching: false, status: 'ready', model: 'small', progress: null
+    });
+    const whisperMismatch = whisperIslandDownload({
+      ok: false, switching: false, status: 'mismatch', activeModel: 'tiny', selectedModel: 'medium'
+    });
+    const starting = whisperStartingIslandDownload('medium');
+    const startingUnknown = whisperStartingIslandDownload('');
+    const kokoroDownloading = kokoroIslandDownload({
+      status: 'downloading', modelReady: false, hasConsent: true, variant: 'quantized',
+      progress: { percent: 7, totalBytes: 86_840_000, downloadedBytes: 6_078_800 }
+    });
+    const kokoroReady = kokoroIslandDownload({ status: 'downloaded', modelReady: true, hasConsent: true, variant: 'quantized' });
+    const ollamaPull = ollamaIslandDownload({ status: 'pulling', completed: 9_900_000, total: 10_000_000, percent: 99 }, 'qwen3:8b');
+    const ollamaNoPercent = ollamaIslandDownload({ status: 'pulling sha256:abcd', completed: 0, total: 0, percent: null }, 'qwen3:8b');
+    const ollamaSuccess = ollamaIslandDownload({ status: 'success', completed: 10, total: 10, percent: 100 }, 'qwen3:8b');
+    const overOneHundred = kokoroIslandDownload({ status: 'downloading', variant: 'quantized', progress: { percent: 182 } });
+    const longLabel = kokoroIslandDownload({ status: 'downloading', variant: 'pack'.repeat(60), progress: { percent: 1 } });
+    // Pill layer: lib/overlay.cjs normalizes again on every state change; the
+    // same null-percent rule and clamp must hold there (Number(null) trap).
+    const pill = require('./lib/overlay.cjs').createOverlay({ log: null });
+    const pillNullPercent = pill.setDownload({ phase: 'loading', label: 'Whisper · small', percent: null }).download;
+    const pillClamped = pill.setDownload({ phase: 'downloading', label: 'Whisper · tiny', percent: 412 }).download;
+    const pillCleared = pill.setDownload(null).download;
+    const cases = [
+      ['whisper downloading', whisperDownloading && whisperDownloading.phase === 'downloading' && whisperDownloading.percent === 42 && whisperDownloading.label === 'Whisper · medium'],
+      ['whisper loading', whisperLoading && whisperLoading.phase === 'loading' && whisperLoading.percent === null && whisperLoading.label === 'Whisper · small'],
+      ['whisper idle', whisperIdle === null],
+      ['whisper mismatch', whisperMismatch === null],
+      ['whisper starting', starting && starting.phase === 'starting' && starting.percent === null],
+      ['whisper starting unknown model', startingUnknown === null],
+      ['kokoro downloading', kokoroDownloading && kokoroDownloading.percent === 7 && kokoroDownloading.label === 'Voice · quantized'],
+      ['kokoro ready', kokoroReady === null],
+      ['ollama pulling percent', ollamaPull && ollamaPull.percent === 99 && ollamaPull.label === 'Ollama · qwen3:8b'],
+      ['ollama no percent yet', ollamaNoPercent && ollamaNoPercent.percent === null],
+      ['ollama success clears', ollamaSuccess === null],
+      ['percent clamps at 100', overOneHundred && overOneHundred.percent === 100],
+      ['label capped at 60 chars', longLabel && longLabel.label.length === 60],
+      ['pill layer keeps null percent', pillNullPercent && pillNullPercent.percent === null],
+      ['pill layer clamps percent', pillClamped && pillClamped.percent === 100],
+      ['pill layer clears download', pillCleared === null]
+    ];
+    const failures = cases.filter(([name, ok]) => !ok).map(([name]) => name);
+    record(
+      'Island download mapping',
+      failures.length === 0,
+      failures.length ? `failed: ${failures.join('; ')}` : `${cases.length} real-payload mapping cases passed.`
+    );
+  } catch (error) {
+    record('Island download mapping', false, error.stack || error.message);
+  }
+}
+
 function run() {
   checkJavaScript();
   checkMarkup();
@@ -468,6 +538,7 @@ function run() {
   checkLogRedaction();
   checkTtsNormaliser();
   checkTtsSegmenter();
+  checkIslandDownload();
   checkTtsSettings();
   if (process.argv.includes('--static-only')) {
     record('Runtime checks', true, 'Skipped because --static-only was requested.');

@@ -284,6 +284,12 @@ const LIVE_FEED_SAMPLES = FEED_SAMPLES.map((item, index) => ({
   ts: Date.now() - index * 60000
 }));
 
+// Download live-activity sample (Phase H): same shape
+// lib/island-download.cjs produces from real producer payloads — label names
+// the model, percent comes from the server, never invented here.
+const DOWNLOAD_SAMPLE = { phase: 'downloading', label: 'Whisper · medium', percent: 42 };
+const DOWNLOAD_DONE_SAMPLE = { phase: 'loading', label: 'Whisper · medium', percent: null };
+
 const scenarios = [
   { name: 'compact-idle', style: 'island', wait: 2300, patch: { status: 'idle' } },
   { name: 'compact-listening', style: 'island', wait: 2300, patch: { status: 'listening', message: 'Speak naturally. Release to send.' } },
@@ -298,6 +304,16 @@ const scenarios = [
   // Phase G: the LIVE stack (opened by a real click, not the gallery) — same
   // layout rules, but no PREVIEW ONLY badge: it holds real Voxa events.
   { name: 'live-feed', style: 'island', wait: 2800, feedPreview: false, patch: { status: 'feed', feedPreview: false, notifications: LIVE_FEED_SAMPLES, message: '' } },
+  // G/H legibility fix: content on a resting pill renders on the medium band,
+  // because compact hides the state label (opacity 0). This scenario pins the
+  // unread toast — the click affordance — to a readable label.
+  { name: 'live-alert-toast', style: 'island', wait: 2800, feedPreview: false, wantLabel: 'Alerts · 3', patch: { status: 'idle', notifications: LIVE_FEED_SAMPLES, download: null, message: '' } },
+  // Phase H: the download live activity on a resting pill — label names the
+  // model and shows the server-reported percent; on completion it disappears
+  // without an ornament.
+  { name: 'live-download', style: 'island', wait: 2800, feedPreview: false, wantLabel: 'Whisper · medium · 42%', patch: { status: 'idle', notifications: [], download: DOWNLOAD_SAMPLE, message: '' } },
+  { name: 'live-download-loading', style: 'island', wait: 2800, feedPreview: false, wantLabel: 'Whisper · medium · loading', patch: { status: 'idle', notifications: [], download: DOWNLOAD_DONE_SAMPLE, message: '' } },
+  { name: 'live-download-done', style: 'island', wait: 2600, wantLabel: 'Idle', patch: { status: 'idle', notifications: [], download: null, message: '' } },
   { name: 'expanded-chat', style: 'island', wait: 3200, patch: { status: 'chat', chatOpen: true, chatPreview: true } },
   { name: 'back-compact', style: 'island', wait: 2600, patch: { status: 'idle' } },
   { name: 'notch-compact-idle', style: 'notch', wait: 2400, patch: { status: 'idle' } },
@@ -354,6 +370,12 @@ const MEASURE = `(() => {
     feedPreviewVisible: (() => {
       const node = document.getElementById('feedPreviewLabel');
       return node ? !node.hidden : null;
+    })(),
+    // Phase H: the exact resting label text — download summaries, alert
+    // counts, and plain status all surface here.
+    stateText: (() => {
+      const node = document.getElementById('notchState');
+      return node ? node.textContent : null;
     })(),
     feedData: (() => {
       const items = document.querySelectorAll('.feed-item').length;
@@ -590,6 +612,16 @@ function assertScenario(scenario, m) {
       else fail('runtime', `${scenario.name}: feed cascade ${m.feedEnter.entering} vs ${FEED_SAMPLES.length}`);
       if (m.feedEnter.staggered) pass('runtime', `${scenario.name}: feed cascade staggered`);
       else fail('runtime', `${scenario.name}: feed cascade not staggered`);
+    }
+  }
+  // Phase H label rule: the resting pill shows exactly the download summary —
+  // model · percent while downloading, · loading while the model loads, and
+  // the plain status once the download clears.
+  if (scenario.wantLabel !== undefined) {
+    if (m.stateText === scenario.wantLabel) {
+      pass('runtime', `${scenario.name}: resting label ${JSON.stringify(m.stateText)}`);
+    } else {
+      fail('runtime', `${scenario.name}: resting label ${JSON.stringify(m.stateText)} vs ${JSON.stringify(scenario.wantLabel)}`);
     }
   }
   // Phase F media pill: sample metadata on the medium band, transport right on
