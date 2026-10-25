@@ -19,6 +19,7 @@
           <header class="pill-head">
             <span id="statusIcon" class="status-icon" aria-hidden="true">
               <svg class="glyph glyph-mark" viewBox="0 0 24 24"><path d="M3 13h4l2-6 4 11 2-5h6"/></svg>
+              <svg class="glyph glyph-media" viewBox="0 0 24 24"><circle cx="7" cy="17.5" r="2.1"/><circle cx="18" cy="16.5" r="2.1"/><path d="M9.1 17.5V6.4l11-2.3v12.4"/></svg>
               <svg class="glyph glyph-alert" viewBox="0 0 24 24"><path d="M12 3.8 2.9 20.2h18.2z"/><path d="M12 9v5.2m0 2.9v.1"/></svg>
               <svg class="glyph glyph-check" viewBox="0 0 24 24"><path d="m5 12.6 4.5 4.5L19 7.4"/></svg>
               <span id="dots" class="dots"><i></i><i></i><i></i></span>
@@ -53,8 +54,24 @@
             <div class="head-center">
               <span id="levelMeter" class="level-meter" aria-label="Microphone level"><canvas id="spectrumCanvas" class="meter-canvas" width="88" height="30" aria-hidden="true"></canvas></span>
               <span id="notchState" class="state-label">Idle</span>
+              <span id="mediaPanel" class="media-panel" aria-label="Now playing" hidden>
+                <span id="mediaTitle" class="media-title"></span>
+                <span id="mediaArtist" class="media-artist"></span>
+              </span>
             </div>
             <div class="head-actions">
+              <div id="mediaControls" class="media-controls" aria-label="Playback controls" hidden>
+                <button id="mediaPrev" class="head-button media-btn" type="button" aria-label="Previous track" title="Previous">
+                  <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M17.5 5.5v13L9 12z"/><path d="M6.5 6v12"/></svg>
+                </button>
+                <button id="mediaPlay" class="head-button media-btn media-play" type="button" aria-label="Play or pause" title="Play or pause">
+                  <svg class="glyph-media-play" viewBox="0 0 24 24" aria-hidden="true"><path d="M8.5 5.6v12.8L18.5 12z"/></svg>
+                  <svg class="glyph-media-pause" viewBox="0 0 24 24" aria-hidden="true"><path d="M8.5 6v12"/><path d="M15.5 6v12"/></svg>
+                </button>
+                <button id="mediaNext" class="head-button media-btn" type="button" aria-label="Next track" title="Next">
+                  <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6.5 5.5v13L15 12z"/><path d="M17.5 6v12"/></svg>
+                </button>
+              </div>
               <button id="chatButton" class="head-button chat-button" type="button" aria-label="Open chat" title="Ask Voxa">
                 <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 6.5h14v9H9.5L5 19v-12.5z"/><path d="M8.5 10h7M8.5 12.8h4.5"/></svg>
               </button>

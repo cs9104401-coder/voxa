@@ -664,6 +664,7 @@ function gallery() {
     ['approval', 'Approval', 'Allow this sample action? Nothing will run.'],
     ['error', 'Error', 'A sample microphone or service error.'],
     ['done', 'Done', 'Done.'],
+    ['media', 'Media', 'Sample now-playing pill — real transport controls, sample metadata.'],
     ['feed', 'Feed', 'Sample Voxa event alerts with dismiss controls.']
   ];
   const style = settings.overlayStyle === 'notch' ? 'notch' : 'island';
@@ -673,7 +674,7 @@ function gallery() {
     <div class="gallery-row"><span class="gallery-label">States</span>${samples.map(([status, label, detail]) => `<button class="button" data-preview-status="${status}" data-preview-detail="${esc(detail)}">${label}</button>`).join('')}</div>
     <div class="gallery-row"><span class="gallery-label">Sequence</span><button class="button primary" data-action="play-sequence">${gallerySequenceRunning ? 'Restart sequence' : 'Play full sequence'}</button><button class="button" data-gallery-slow aria-pressed="${gallerySlowMotion}">Slow motion · 0.25x</button><button class="button" data-gallery-loop aria-pressed="${galleryLoop}">Loop</button></div>
     <div class="gallery-row"><span class="gallery-label">Style</span><button class="button ${style === 'island' ? 'is-active' : ''}" data-gallery-style="island" aria-pressed="${style === 'island'}">Island</button><button class="button ${style === 'notch' ? 'is-active' : ''}" data-gallery-style="notch" aria-pressed="${style === 'notch'}">Notch</button></div>
-    <p class="gallery-hint">The sequence plays appear, listening, thinking, streamed answer, chat preview, approval, the alert feed, done, and disappear. Slow motion also affects the island springs. The answer preview shows Pip speaking when spoken replies are on; done previews success.</p>
+    <p class="gallery-hint">The sequence plays appear, listening, thinking, streamed answer, chat preview, approval, the media pill, the alert feed, done, and disappear. Slow motion also affects the island springs. The answer preview shows Pip speaking when spoken replies are on; done previews success.</p>
   </div>`;
 }
 
@@ -692,6 +693,7 @@ async function playGallerySequence() {
     ['answer', 'Here is a sample answer from Voxa. Words fade in as the island settles into its expanded card, and the height follows the content without a jump.', 2200],
     ['chat', '', 2000],
     ['approval', 'Allow this sample action? Nothing will run in the gallery.', 1500],
+    ['media', '', 1600],
     ['feed', '', 1800],
     ['done', 'Done.', 900],
     ['idle', '', 850]

@@ -268,11 +268,21 @@ const FEED_SAMPLES = [
   { id: 'feed-c', title: 'Media controls connected', body: 'Playback info and controls are wired to the island.', ts: Date.now() - 52 * 60000, kind: 'media', tone: 'neutral' }
 ];
 
+// Media pill samples (Phase F): same shape mediaSmtc.normalizeMedia() sends.
+// Harness metadata only — real SMTC sessions are verified live.
+const MEDIA_SAMPLE = {
+  title: 'Sample track', artist: 'Sample artist', app: 'Sample player',
+  playing: true, canToggle: true, canNext: true, canPrev: true
+};
+const MEDIA_PAUSED_SAMPLE = { ...MEDIA_SAMPLE, playing: false };
+
 const scenarios = [
   { name: 'compact-idle', style: 'island', wait: 2300, patch: { status: 'idle' } },
   { name: 'compact-listening', style: 'island', wait: 2300, patch: { status: 'listening', message: 'Speak naturally. Release to send.' } },
   { name: 'medium-thinking', style: 'island', wait: 3000, patch: { status: 'thinking', message: 'Transcribing, one moment please…' } },
   { name: 'medium-done', style: 'island', wait: 2300, patch: { status: 'done' } },
+  { name: 'medium-media', style: 'island', wait: 2600, patch: { status: 'media', media: MEDIA_SAMPLE } },
+  { name: 'medium-media-paused', style: 'island', wait: 2600, patch: { status: 'media', media: MEDIA_PAUSED_SAMPLE } },
   { name: 'expanded-answer', style: 'island', wait: 3200, patch: { status: 'answer', canCopy: true, speaking: true, approval: null, message: SAMPLE_ANSWER } },
   { name: 'expanded-approval', style: 'island', wait: 3000, patch: { status: 'approval', approval: { id: 'harness', title: 'Allow this sample action?', detail: 'Harness preview — nothing will run.', tool: 'type_text' } } },
   { name: 'expanded-error', style: 'island', wait: 2600, patch: { status: 'error', message: 'Something failed on purpose so we can inspect the error state.' } },
@@ -342,6 +352,30 @@ const MEASURE = `(() => {
     feedEnter: (() => {
       const nodes = [...document.querySelectorAll('.feed-item.feed-enter')];
       return { entering: nodes.length, staggered: nodes.some((node) => (parseFloat(node.style.animationDelay) || 0) > 0) };
+    })(),
+    mediaInfo: (() => {
+      const panel = document.getElementById('mediaPanel');
+      const controls = document.getElementById('mediaControls');
+      const playBtn = document.getElementById('mediaPlay');
+      const buttons = controls ? [...controls.querySelectorAll('.media-btn')] : [];
+      const glyphDisplay = (cls) => {
+        if (!playBtn) return null;
+        const node = playBtn.querySelector(cls);
+        return node ? getComputedStyle(node).display : null;
+      };
+      return {
+        visible: panel ? !panel.hidden : false,
+        title: document.getElementById('mediaTitle')?.textContent ?? null,
+        artist: document.getElementById('mediaArtist')?.textContent ?? null,
+        panel: rect(panel),
+        controls: rect(controls),
+        buttons: buttons.length,
+        disabled: buttons.filter((node) => node.disabled).length,
+        playing: pillEl ? pillEl.dataset.mediaPlaying : null,
+        playGlyph: glyphDisplay('.glyph-media-play'),
+        pauseGlyph: glyphDisplay('.glyph-media-pause'),
+        kicker: rect(document.querySelector('.state-label'))
+      };
     })(),
     radius: getComputedStyle(pillEl).borderRadius,
     radiusBL: getComputedStyle(pillEl).borderBottomLeftRadius,
@@ -534,6 +568,38 @@ function assertScenario(scenario, m) {
       if (m.feedEnter.staggered) pass('runtime', `${scenario.name}: feed cascade staggered`);
       else fail('runtime', `${scenario.name}: feed cascade not staggered`);
     }
+  }
+  // Phase F media pill: sample metadata on the medium band, transport right on
+  // the shared pad, kicker clear of the title block. Outside media status the
+  // panel must be hidden in every scenario (stale media state never leaks).
+  if (m.status === 'media') {
+    const info = m.mediaInfo;
+    if (!info || !info.visible) {
+      fail('runtime', `${scenario.name}: media panel not visible`);
+    } else {
+      if (info.title === 'Sample track') pass('runtime', `${scenario.name}: media title rendered`);
+      else fail('runtime', `${scenario.name}: media title ${JSON.stringify(info.title)}`);
+      if (info.buttons === 3 && info.disabled === 0) pass('runtime', `${scenario.name}: 3 enabled transport buttons`);
+      else fail('runtime', `${scenario.name}: transport buttons ${info.buttons}, disabled ${info.disabled}`);
+      const wantPlaying = scenario.name.includes('paused') ? 'false' : 'true';
+      if (info.playing === wantPlaying) pass('runtime', `${scenario.name}: mediaPlaying flag ${info.playing}`);
+      else fail('runtime', `${scenario.name}: mediaPlaying ${JSON.stringify(info.playing)} vs ${wantPlaying}`);
+      const wantPlayGlyph = wantPlaying === 'true' ? 'none' : 'block';
+      const wantPauseGlyph = wantPlaying === 'true' ? 'block' : 'none';
+      if (info.playGlyph === wantPlayGlyph && info.pauseGlyph === wantPauseGlyph) pass('runtime', `${scenario.name}: play/pause glyph swap follows playback state`);
+      else fail('runtime', `${scenario.name}: glyph swap play=${info.playGlyph} pause=${info.pauseGlyph}`);
+      if (info.controls && info.controls.width > 0) {
+        within(info.controls.x + info.controls.width, m.pill.x + m.pill.width - padX, 2, 'transport right on shared pad', scenario);
+      } else fail('runtime', `${scenario.name}: transport row not laid out`);
+      if (info.kicker && info.panel && info.kicker.y + info.kicker.height <= info.panel.y + 1) {
+        pass('runtime', `${scenario.name}: NOW PLAYING kicker clear of the title block`);
+      } else fail('runtime', `${scenario.name}: kicker overlaps title block (kicker ${JSON.stringify(info.kicker)}, panel ${JSON.stringify(info.panel)})`);
+      if (m.meter && m.meter.height > 0.5) {
+        fail('runtime', `${scenario.name}: media pill laid out a meter slot`);
+      } else pass('runtime', `${scenario.name}: meter slot stays out of the media band`);
+    }
+  } else if (m.mediaInfo && m.mediaInfo.visible) {
+    fail('runtime', `${scenario.name}: media panel visible outside media status`);
   }
   if (size === 'expanded') {
     if (m.cardActions && m.cardActions.width > 0) within(m.cardActions.x + m.cardActions.width, m.pill.x + m.pill.width - padX, 2, 'footer actions right on shared pad', scenario);

@@ -266,6 +266,26 @@ body[data-reduced-motion=true] .pill .feed-item.feed-enter{animation-name:feed-f
 .feed-x:hover{background:rgba(255,255,255,.1);color:var(--island-text)}
 .feed-x:active{transform:scale(.88)}
 .feed-x:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+
+/* --- Media pill (Phase F): real SMTC metadata + transport on the medium band.
+   Left-flush like the expanded head: kicker label, title/artist column, then
+   the transport row flush right. Playback state drives the play/pause glyphs
+   and a warm accent ring — the accent rules stay: real activity only. --- */
+.pill[data-state=media] .glyph-media{display:block}
+.pill[data-state=media] .head-center{justify-content:flex-start}
+.pill[data-state=media] .state-label{position:absolute;left:0;top:22px;font-size:8.5px;font-weight:700;letter-spacing:.13em;text-transform:uppercase;color:var(--island-text-dim);opacity:1;transform:none;filter:none}
+.media-panel{display:none;min-width:0;align-self:center;flex-direction:column;gap:3px}
+.pill[data-state=media] .media-panel{display:flex;flex:1 1 auto}
+.media-title{max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13.5px;font-weight:630;color:var(--island-text);line-height:1.18;transition:opacity calc(.18s * var(--motion)) ease}
+.media-artist{max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px;color:var(--island-text-dim);line-height:1.15;transition:opacity calc(.18s * var(--motion)) ease}
+.media-controls{flex:none;display:flex;align-items:center;gap:5px}
+.media-btn{color:var(--island-text)}
+.media-btn:disabled{opacity:.38;pointer-events:none}
+.media-btn .glyph-media-play{display:block}
+.media-btn .glyph-media-pause{display:none}
+.pill[data-media-playing=true] .media-btn .glyph-media-play{display:none}
+.pill[data-media-playing=true] .media-btn .glyph-media-pause{display:block}
+.pill[data-media-playing=true] .media-play{color:var(--accent-soft);box-shadow:inset 0 0 0 1px var(--accent),inset 0 0 12px rgba(226,87,30,.22)}
 .pill[data-state=error] .pill-surface,.pill[data-state=error] .pill-clip,.pill[data-state=error] .pill-glow{animation:island-shake calc(.38s * var(--motion)) cubic-bezier(.36,.07,.19,.97)}
 .measure-card,.measure-chat,.measure-feed{position:fixed!important;left:-100000px!important;top:0!important;right:auto!important;bottom:auto!important;height:auto!important;max-height:none!important;visibility:hidden!important;pointer-events:none!important;overflow:visible!important}
 .measure-chat .chat-log{max-height:220px}

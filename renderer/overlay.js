@@ -30,6 +30,13 @@ const chatSendButton = $('#chatSendButton');
 const chatError = $('#chatError');
 const chatPreviewLabel = $('#chatPreviewLabel');
 const feedPanel = $('#feedPanel');
+const mediaPanel = $('#mediaPanel');
+const mediaTitle = $('#mediaTitle');
+const mediaArtist = $('#mediaArtist');
+const mediaControls = $('#mediaControls');
+const mediaPrevButton = $('#mediaPrev');
+const mediaPlayButton = $('#mediaPlay');
+const mediaNextButton = $('#mediaNext');
 const feedList = $('#feedList');
 const feedCount = $('#feedCount');
 const feedEmpty = $('#feedEmpty');
@@ -50,7 +57,7 @@ const ISLAND_SIZES = {
   expanded: { width: 520, rail: 128 }
 };
 const NOTCH_WIDTH = 544;
-const MEDIUM_STATES = new Set(['thinking', 'executing', 'verifying', 'done']);
+const MEDIUM_STATES = new Set(['thinking', 'executing', 'verifying', 'done', 'media']);
 const EXPANDED_STATES = new Set(['answer', 'approval', 'error', 'chat', 'feed']);
 const SUPPORTED_STATES = new Set(['idle', 'listening', ...MEDIUM_STATES, ...EXPANDED_STATES]);
 const CHAT_PREVIEW_MESSAGES = [
@@ -77,7 +84,8 @@ let state = {
   chatStreaming: false,
   chatPreview: false,
   notifications: [],
-  feedPreview: false
+  feedPreview: false,
+  media: null
 };
 let chat = {
   requestId: 0,
@@ -478,9 +486,12 @@ function scheduleChatDeltaRender() {
 function updateChatHeader() {
   const open = notch.dataset.state === 'chat' && state.chatOpen;
   const preview = Boolean(state.chatPreview);
-  chatButton.hidden = !state.visible || open || preview || voiceBusy();
+  // Media pill owns the actions row: chat/stop would be decorative there (the
+  // ESC hotkey keeps its snooze path in main.cjs), so only transport shows.
+  const mediaOpen = notch.dataset.state === 'media';
+  chatButton.hidden = !state.visible || open || preview || voiceBusy() || mediaOpen;
   chatCloseButton.hidden = !state.visible || !open || preview;
-  stopButton.hidden = open;
+  stopButton.hidden = open || mediaOpen;
   if (open) setLabel(statusLabel('chat'));
 }
 
@@ -643,12 +654,16 @@ function statusLabel(status) {
     error: 'Needs attention',
     done: 'Done',
     chat: state.chatPreview ? 'Chat preview' : chat.streaming ? 'Replying…' : 'Ask Voxa',
-    feed: 'Alerts'
+    feed: 'Alerts',
+    media: 'Now playing'
   };
   return mapping[status] || status;
 }
 
 function sizeFor(status) {
+  // The media pill is always its medium band; pinned expansion must not turn
+  // it into a wide rail with an empty card.
+  if (status === 'media') return 'medium';
   if (state.expand === 'collapsed') {
     const chatMode = status === 'chat' && Boolean(state.chatOpen);
     if (!chatMode && status !== 'approval') return 'compact';
@@ -1079,6 +1094,29 @@ function render() {
   card.hidden = openChat || openFeed;
   chatPanel.hidden = !openChat;
   if (feedPanel) feedPanel.hidden = !openFeed;
+  // Phase F media band: the pill renders real SMTC metadata only when the
+  // media status is up; the transport row behaves even without the mascot.
+  const media = status === 'media' && state.media && typeof state.media === 'object' ? state.media : null;
+  if (mediaPanel) {
+    if (media) {
+      mediaPanel.hidden = false;
+      mediaTitle.textContent = String(media.title || 'Unknown title');
+      mediaArtist.textContent = String(media.artist || '');
+      mediaPanel.title = media.app ? `Source: ${media.app}` : '';
+    } else {
+      mediaPanel.hidden = true;
+      mediaTitle.textContent = '';
+      mediaArtist.textContent = '';
+      mediaPanel.title = '';
+    }
+  }
+  if (mediaControls) {
+    mediaControls.hidden = !media;
+    if (mediaPlayButton) mediaPlayButton.disabled = Boolean(media) && media.canToggle === false;
+    if (mediaNextButton) mediaNextButton.disabled = Boolean(media) && media.canNext === false;
+    if (mediaPrevButton) mediaPrevButton.disabled = Boolean(media) && media.canPrev === false;
+  }
+  notch.dataset.mediaPlaying = media && media.playing ? 'true' : 'false';
   // Leaving the feed forgets which cards were rendered so the next open
   // replays the Ref 1 cascade from the top.
   if (status !== 'feed' && feedRenderedIds.size) feedRenderedIds.clear();
@@ -1348,6 +1386,10 @@ function respond(id, allowed, button) {
 allowButton.addEventListener('click', () => {
   respond(notch.dataset.approvalId, true, allowButton);
 });
+
+mediaPlayButton?.addEventListener('click', () => { api.overlay.mediaControl?.('toggle'); });
+mediaNextButton?.addEventListener('click', () => { api.overlay.mediaControl?.('next'); });
+mediaPrevButton?.addEventListener('click', () => { api.overlay.mediaControl?.('previous'); });
 
 denyButton.addEventListener('click', () => {
   respond(notch.dataset.approvalId, false, denyButton);

@@ -20,6 +20,7 @@ const services = require('./lib/services.cjs');
 const { createRecorderManager } = require('./lib/recorder.cjs');
 const { createOverlay } = require('./lib/overlay.cjs');
 const { createHotkeys, isValidHotkey } = require('./lib/hotkeys.cjs');
+const mediaSmtc = require('./lib/media-smtc.cjs');
 const {
   APP_NAME, APPROVABLE_TOOLS, LIMITS, MESSAGES, STT_CLOUD_PROVIDERS, TOOL_DEFINITIONS, TOOL_NAMES,
   WHISPER_MODELS, WHISPER_PRESETS, defaults
@@ -1009,7 +1010,13 @@ function scheduleOverlayHide(delay) {
     hideTimer = null;
     hidePaused = false;
     hideRemaining = 0;
-    if (!currentTurn && !chatSession.open) overlay?.hide();
+    if (currentTurn || chatSession.open) return;
+    // While media plays, turns end on the now-playing pill instead of leaving
+    // the desktop bare; stop presses set mediaSnoozeUntil to opt out. If the
+    // status is still media, that is an expiring gallery sample — hand the
+    // pill back to the live SMTC data.
+    if (mediaLast) showMediaOverlay();
+    else overlay?.hide();
   }, hideRemaining);
   hideTimer.unref?.();
   overlay?.setDismiss({
@@ -1041,7 +1048,9 @@ function resumeOverlayHide() {
   hideTimer = setTimeout(() => {
     hideTimer = null;
     hideRemaining = 0;
-    if (!currentTurn && !chatSession.open) overlay?.hide();
+    if (currentTurn || chatSession.open) return;
+    if (mediaLast) showMediaOverlay();
+    else overlay?.hide();
   }, hideRemaining);
   hideTimer.unref?.();
   overlay?.setDismiss({
@@ -1089,6 +1098,9 @@ function abortTurn(reason = 'cancelled') {
   } else {
     speechController?.abort(); sendToPlayer('tts:stop-audio', {});
     speechController = null;
+    // A stop press with no turn under way means "put the island away"; snooze
+    // the now-playing pill so it does not immediately resurface.
+    if (mediaLast && overlay?.state().status === 'media') mediaSnoozeUntil = Date.now() + 5 * 60000;
     overlay?.hide();
   }
   clearTimeout(tailTimer);
@@ -1958,10 +1970,71 @@ function forgetFeedEvent(id) {
   overlayEvents = overlayEvents.filter((item) => item.id !== target);
 }
 
+/* --- Phase F media (SMTC) ----------------------------------------------- */
+/* Real system now-playing: lib/media-smtc.cjs polls the Windows session
+   manager through a long-lived PowerShell process and reports changes only.
+   The island renders metadata + transport controls; never audio levels. */
+let mediaController = null;
+let mediaLast = null;
+const mediaSeenApps = new Set();
+let mediaPreviewUntil = 0;
+let mediaSnoozeUntil = 0;
+
+function showMediaOverlay() {
+  if (!mediaLast || currentTurn || turnRunning) return;
+  if (Date.now() < mediaSnoozeUntil) return;
+  overlay?.show({
+    status: 'media',
+    message: '',
+    media: mediaLast,
+    approval: null,
+    canCopy: false,
+    streaming: false,
+    speaking: false,
+    chatOpen: false,
+    chatPreview: false
+  });
+}
+
+function broadcastMediaState(next) {
+  mediaLast = next;
+  if (!next) {
+    overlay?.setState({ media: null });
+    if (overlay?.state().status === 'media') overlay?.hide();
+    return;
+  }
+  // Keep pill data fresh even while a turn or a preview owns the stage; the
+  // pill itself only surfaces when nothing else is showing.
+  overlay?.setState({ media: next });
+  if (currentTurn || turnRunning) return;
+  const current = overlay?.state();
+  if (!current) return;
+  if (Date.now() < mediaPreviewUntil) return;
+  if (current.status === 'media' || !current.visible) showMediaOverlay();
+}
+
+function handleMediaUpdate(raw) {
+  if (raw && raw.error) {
+    logger.warn('media', `SMTC watcher error: ${raw.error}`);
+    return;
+  }
+  const next = mediaSmtc.normalizeMedia(raw);
+  if (next && next.app && !mediaSeenApps.has(next.app)) {
+    mediaSeenApps.add(next.app);
+    pushFeedEvent({
+      title: 'Media controls connected',
+      body: `${next.app} is now linked to the island.`,
+      kind: 'media',
+      tone: 'neutral'
+    });
+  }
+  broadcastMediaState(next);
+}
+
 function previewOverlay(status, message) {
   if (currentTurn) throw new Error('Finish the current turn before previewing the overlay.');
   if (chatSession.open) throw new Error('Close chat before previewing the overlay.');
-  const allowed = ['idle', 'listening', 'thinking', 'executing', 'verifying', 'answer', 'approval', 'error', 'done', 'chat', 'feed'];
+  const allowed = ['idle', 'listening', 'thinking', 'executing', 'verifying', 'answer', 'approval', 'error', 'done', 'chat', 'feed', 'media'];
   const next = allowed.includes(String(status).toLowerCase()) ? String(status).toLowerCase() : 'listening';
   if (next === 'idle') {
     clearOverlayHideTimer();
@@ -1970,28 +2043,33 @@ function previewOverlay(status, message) {
   }
   const isChat = next === 'chat';
   const isFeed = next === 'feed';
+  const isMedia = next === 'media';
+  const motionScale = overlay.state().slowMotion ? 4 : 1;
   // While the gallery samples sit on screen, real producers keep recording but
   // do not repaint the preview; they take over when it expires or a real turn
   // starts.
   if (isFeed) galleryPreviewActive = true;
   else galleryPreviewActive = false;
+  // Same rule for the media preview: real SMTC updates refresh pill data but
+  // must not replace the sample mid-preview.
+  mediaPreviewUntil = isMedia ? Date.now() + 6000 * motionScale : 0;
   const approval = next === 'approval'
     ? { id: 'preview', title: 'Allow this sample action?', detail: message || 'This is a preview; no action will run.', tool: 'preview' }
     : null;
   overlay.show({
     status: next,
     mode: settings.mode,
-    message: isChat || isFeed ? '' : message || `Overlay preview · ${next}`,
+    message: isChat || isFeed || isMedia ? '' : message || `Overlay preview · ${next}`,
     approval,
     notifications: isFeed ? galleryNotifications() : [],
     feedPreview: isFeed,
+    media: isMedia ? galleryMedia() : undefined,
     canCopy: next === 'answer',
     chatOpen: isChat,
     chatPreview: isChat,
     chatStreaming: false,
     speaking: next === 'answer' && Boolean(settings.spokenReplies)
   });
-  const motionScale = overlay.state().slowMotion ? 4 : 1;
   scheduleOverlayHide((next === 'approval' ? 8000 : next === 'done' ? 3200 : 6000) * motionScale);
   // Mirror the feed preview's 6-second dwell: when the samples leave, put the
   // real event stack back (a sooner turn resets this too).
@@ -2015,6 +2093,21 @@ function galleryNotifications() {
     { id: 'sample-download', title: 'Whisper model downloaded', body: 'Voice recognition model staged and ready to transcribe.', ts: now - 14 * 60000, kind: 'download', tone: 'neutral' },
     { id: 'sample-media', title: 'Media controls connected', body: 'Playback info and controls are wired to the island.', ts: now - 52 * 60000, kind: 'media', tone: 'neutral' }
   ];
+}
+
+// Reference media sample for the gallery preview. Transport buttons behave
+// (real SMTC wiring below), but the metadata is a labeled sample like the feed
+// preview cards.
+function galleryMedia() {
+  return {
+    title: 'Sample track',
+    artist: 'Sample artist',
+    app: 'Sample player',
+    playing: true,
+    canToggle: true,
+    canNext: true,
+    canPrev: true
+  };
 }
 
 function senderRole(event) {
@@ -2392,6 +2485,17 @@ function registerIpc() {
     forgetFeedEvent(id);
     return true;
   }, ['overlay']);
+  listen('overlay:media-control', (payload) => {
+    const action = typeof payload?.action === 'string' ? payload.action : '';
+    if (!['toggle', 'next', 'previous'].includes(action)) {
+      logger.warn('media', `Ignored unknown media control: ${action}`);
+      return;
+    }
+    void mediaController?.runCommand(action).then((result) => {
+      if (!result.ok) logger.info('media', `Control '${action}' not delivered: ${result.reason}`);
+      else logger.info('media', `Control '${action}' delivered.`);
+    });
+  }, ['overlay']);
   listen('chat:open', () => openChat(), ['overlay']);
   listen('chat:close', () => closeChat(), ['overlay']);
   listen('chat:request-history', () => sendChatHistory(), ['overlay']);
@@ -2476,6 +2580,8 @@ app.on('before-quit', () => {
   speechController?.abort(); sendToPlayer('tts:stop-audio', {});
   speechController = null;
   hotkeys?.stop();
+  mediaController?.stop();
+  mediaController = null;
   desktop.disposeFocusHelper();
   services.stopWhisper();
   services.stopKokoro();
@@ -2604,6 +2710,14 @@ async function initialize() {
     const kokoro = require('./lib/tts-kokoro.cjs');
     kokoro.kokoroHealth().then(publishKokoroHealth).catch((err) => logger.warn('kokoro', `Initial health check failed: ${err.message}`));
     logger.info('app', 'Startup complete');
+    // SMTC watcher: real system media metadata + transport. Skipped for the
+    // gallery preview build and self-test workers; keep the pill honest.
+    if (!GALLERY && !SELF_TEST) {
+      mediaController = mediaSmtc.startMediaWatcher({
+        log: logger,
+        onUpdate: handleMediaUpdate
+      });
+    }
   } catch (error) {
     const message = cleanError(error);
     console.error('[voxa] Startup failed:', error);
