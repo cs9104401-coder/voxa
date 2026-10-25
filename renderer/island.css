@@ -243,6 +243,13 @@
 .feed-section{flex:none;padding-left:2px;font-size:9.5px;font-weight:700;letter-spacing:.14em;text-transform:uppercase;color:var(--island-muted)}
 .feed-empty{margin:auto 8px;color:var(--island-muted);font-size:12.5px;line-height:1.5;text-align:center}
 .feed-item{flex:none;display:flex;align-items:flex-start;gap:10px;padding:10px 9px 10px 11px;border:1px solid rgba(255,255,255,.07);border-radius:16px;background:var(--island-raised)}
+/* Ref 1 cascade: new cards drop into the stack with a short stagger. Only
+   freshly rendered items carry .feed-enter (set in renderFeed), so dismissing
+   one alert re-groups the stack without replaying every entrance. */
+.pill .feed-item.feed-enter{animation:feed-in calc(.32s * var(--motion)) cubic-bezier(.2,.9,.25,1) both}
+@keyframes feed-in{0%{opacity:0;transform:translateY(-8px) scale(.985);filter:blur(3px)}100%{opacity:1;transform:none;filter:blur(0)}}
+body[data-reduced-motion=true] .pill .feed-item.feed-enter{animation-name:feed-fade-in}
+@keyframes feed-fade-in{0%{opacity:0}100%{opacity:1}}
 .feed-item.is-highlight{border-color:var(--accent-line);background:linear-gradient(135deg,rgba(226,87,30,.24),rgba(255,138,76,.1) 46%,rgba(255,255,255,.02));box-shadow:0 6px 22px rgba(226,87,30,.16)}
 .feed-item:hover{border-color:rgba(255,255,255,.12)}
 .feed-item.is-highlight:hover{border-color:var(--accent-glow)}

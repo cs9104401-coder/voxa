@@ -285,6 +285,9 @@ const scenarios = [
   { name: 'notch-expanded-answer', style: 'notch', wait: 3000, patch: { status: 'answer', canCopy: true, approval: null, message: SAMPLE_ANSWER } },
   { name: 'notch-chat', style: 'notch', wait: 3200, patch: { status: 'chat', chatOpen: true, chatPreview: true } },
   { name: 'compact-idle-nochar', style: 'island', wait: 2400, patch: { status: 'idle', companionEnabled: false } },
+  // Phase D: interrupt the compact→medium spring mid-flight with a new target
+  // (listening → thinking). Visual only: proves retargeting, not snapping.
+  { name: 'retarget-mid-flight', style: 'island', wait: 620, noAssert: true, patch: { status: 'listening', message: 'Speak naturally. Release to send.' }, then: { after: 340, patch: { status: 'thinking', message: 'Retargeting mid-flight…' } } },
   { name: 'slow-mid-transition', style: 'island', wait: 950, slow: true, noAssert: true, patch: { status: 'answer', canCopy: true, approval: null, message: SAMPLE_ANSWER } }
 ];
 
@@ -331,6 +334,14 @@ const MEASURE = `(() => {
       const items = document.querySelectorAll('.feed-item').length;
       const sections = [...document.querySelectorAll('.feed-section')].map((node) => node.textContent.toLowerCase());
       return { items, sections };
+    })(),
+    labelOpacity: (() => {
+      const el = document.querySelector('.state-label');
+      return el ? Number(getComputedStyle(el).opacity) : null;
+    })(),
+    feedEnter: (() => {
+      const nodes = [...document.querySelectorAll('.feed-item.feed-enter')];
+      return { entering: nodes.length, staggered: nodes.some((node) => (parseFloat(node.style.animationDelay) || 0) > 0) };
     })(),
     radius: getComputedStyle(pillEl).borderRadius,
     radiusBL: getComputedStyle(pillEl).borderBottomLeftRadius,
@@ -379,6 +390,10 @@ async function runtimeCheck() {
       overlay.hideNow();
       await sleep(420);
       overlay.show(scenario.patch);
+      if (scenario.then) {
+        await sleep(scenario.then.after);
+        overlay.show(scenario.then.patch);
+      }
       await sleep(scenario.wait);
       let metrics = null;
       try {
@@ -488,6 +503,13 @@ function assertScenario(scenario, m) {
     fail('runtime', `${scenario.name}: card-text rect missing`);
   }
   if (m.actions) within(m.actions.x + m.actions.width, m.pill.x + m.pill.width - padX, 2, 'header buttons right on shared pad', scenario);
+  // Phase D widget priority matrix: the state label is medium/expanded only,
+  // the spectrum slot exists in compact listening only.
+  if (m.labelOpacity != null) {
+    const want = size === 'compact' ? 0 : 1;
+    if (Math.abs(m.labelOpacity - want) < 0.05) pass('runtime', `${scenario.name}: label opacity matches widget matrix`);
+    else fail('runtime', `${scenario.name}: label opacity ${m.labelOpacity} vs matrix ${want}`);
+  }
   // Feed specifics: stacked cards on the shared grid, 44px thumbnail, NEW/OLD labels.
   if (m.status === 'feed') {
     if (m.feedItem && m.feedItem.width > 0) {
@@ -504,6 +526,13 @@ function assertScenario(scenario, m) {
       const wanted = ['new', 'old'];
       if (wanted.every((label) => m.feedData.sections.includes(label))) pass('runtime', `${scenario.name}: NEW/OLD sections present`);
       else fail('runtime', `${scenario.name}: sections ${JSON.stringify(m.feedData.sections)} missing NEW/OLD`);
+    }
+    // Phase D cascade: every card enters on first open, staggered top-down.
+    if (m.feedEnter) {
+      if (m.feedEnter.entering === FEED_SAMPLES.length) pass('runtime', `${scenario.name}: all feed cards cascade in`);
+      else fail('runtime', `${scenario.name}: feed cascade ${m.feedEnter.entering} vs ${FEED_SAMPLES.length}`);
+      if (m.feedEnter.staggered) pass('runtime', `${scenario.name}: feed cascade staggered`);
+      else fail('runtime', `${scenario.name}: feed cascade not staggered`);
     }
   }
   if (size === 'expanded') {
@@ -531,7 +560,9 @@ function assertScenario(scenario, m) {
   }
   // Spectrum slot (Phase C): the canvas parks inside the center zone in compact
   // listening only. Pixel assertions rely on real payloads; without any, the
-  // canvas must stay clear.
+  // canvas must stay clear. Phase D extends the else side: no slot layout and
+  // no paint may appear in any other state, and label opacity follows the
+  // widget priority matrix.
   if (size === 'compact' && m.status === 'listening') {
     if (m.meter) {
       within(m.meter.height, 30, 2, 'spectrum canvas height', scenario);
@@ -545,8 +576,13 @@ function assertScenario(scenario, m) {
         else fail('runtime', `${scenario.name}: spectrum canvas hidden in listening`);
       }
     } else fail('runtime', `${scenario.name}: spectrum canvas missing`);
-  } else if (m.meterInfo && m.meterInfo.painted > 0) {
-    fail('runtime', `${scenario.name}: spectrum painted outside listening (${m.meterInfo.painted} px)`);
+  } else {
+    if (m.meterInfo && m.meterInfo.painted > 0) {
+      fail('runtime', `${scenario.name}: spectrum painted outside listening (${m.meterInfo.painted} px)`);
+    }
+    if (m.meter && m.meter.height > 0.5) {
+      fail('runtime', `${scenario.name}: meter slot laid out outside listening (h=${m.meter.height})`);
+    }
   }
   if (m.head) within(m.head.y, m.pill.y, 1, 'head band top', scenario);
   if (m.zone) {

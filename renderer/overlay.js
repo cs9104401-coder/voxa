@@ -118,6 +118,9 @@ let companionExpression = 'idle';
 let companionPokeStamps = [];
 let companionPokeTimer = null;
 let companionDizzyTimer = null;
+// Phase D feed choreography: ids present in the previous feed paint so a
+// re-render (dismiss, state patch) never replays entrances for known cards.
+let feedRenderedIds = new Set();
 
 function reducedMotion() {
   return motionQuery.matches;
@@ -804,8 +807,19 @@ function renderFeed() {
   items.forEach((item, index) => {
     if (index === 0) feedList.append(feedSection('New'));
     else if (index === 1) feedList.append(feedSection('Old'));
-    feedList.append(feedItem(item));
+    const node = feedItem(item);
+    // Ref 1 cascade: cards drop into the stack one after another, staggered by
+    // position. Reduced motion swaps to a pure opacity wave (feed-fade), so the
+    // rhythm stays visible without translating or blurring anything.
+    const id = String(item.id || '');
+    const fresh = Boolean(id) && !feedRenderedIds.has(id);
+    if (fresh) {
+      node.classList.add('feed-enter');
+      node.style.animationDelay = `${Math.round(index * 36 * slowFactor())}ms`;
+    }
+    feedList.append(node);
   });
+  feedRenderedIds = new Set(items.map((item) => String(item.id || '')).filter(Boolean));
   feedList.scrollTop = 0;
 }
 
@@ -895,9 +909,11 @@ class Spring {
 }
 
 const springs = {
-  width: new Spring(ISLAND_SIZES.compact.width),
-  height: new Spring(ISLAND_SIZES.compact.height),
-  radius: new Spring(ISLAND_SIZES.compact.height / 2),
+  // Phase D retune: a touch snappier than the stock numbers so the island grows
+  // with intent and settles soft. Kept well within the harness settle waits.
+  width: new Spring(ISLAND_SIZES.compact.width, 185, 22),
+  height: new Spring(ISLAND_SIZES.compact.height, 185, 22),
+  radius: new Spring(ISLAND_SIZES.compact.height / 2, 185, 22),
   scale: new Spring(0.14, 220, 22),
   opacity: new Spring(0, 200, 24),
   blur: new Spring(0, 220, 24)
@@ -1063,6 +1079,9 @@ function render() {
   card.hidden = openChat || openFeed;
   chatPanel.hidden = !openChat;
   if (feedPanel) feedPanel.hidden = !openFeed;
+  // Leaving the feed forgets which cards were rendered so the next open
+  // replays the Ref 1 cascade from the top.
+  if (status !== 'feed' && feedRenderedIds.size) feedRenderedIds.clear();
   updateChatHeader();
   updateChatComposer();
   if (openChat) renderChatLog();
