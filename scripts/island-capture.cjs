@@ -151,14 +151,18 @@ function encodePNGOpaque(width, height, rgbRows) {
 
 // ---------- 1. Offline corner-clip audit ----------
 
-// Companion overlay geometry derived from the CSS ratio chain (island.css):
-// character height H, width H*538/685, head span 73.87% top-anchored, body 27.59% bottom.
+// Geometry constants of the dormant PNG sprite from its last shipped CSS layout
+// (island.css before the blob avatar grid): height H, width H*538/685, body 27.59%.
+// Only auditClip() consumes these; the runtime grid checks use PAD_X below.
 const SIZES = {
   compact: { W: 208, H: 88, R: 44, padL: 18, lead: 66, charH: 84 },
   medium: { W: 340, H: 104, R: 24, padL: 16, lead: 72, charH: 88 },
   expanded: { W: 520, H: 128, R: 26, padL: 16, lead: 94, charH: 116 },
   notchCompact: { W: 544, H: 88, R: 22, padL: 18, lead: 66, charH: 84 }
 };
+
+// Shared horizontal padding of the header/text/footer grid per size (island.css --pad-x).
+const PAD_X = { compact: 18, medium: 16, expanded: 16 };
 
 function leftInset(y, R, H) {
   if (y >= R && y <= H - R) return 0;
@@ -216,11 +220,11 @@ function syncCheck() {
     const match = css.match(new RegExp(`\\.pill\\[data-size=${size}\\] \\.pill-head\\{height:(\\d+)px`));
     band[size] = match ? Number(match[1]) : null;
   }
-  const charH = {};
-  charH.compact = Number((css.match(/\.pill\{[^}]*--char-h:(\d+)px/) || [])[1]);
+  const padX = {};
+  padX.compact = Number((css.match(/\.pill\{[^}]*--pad-x:(\d+)px/) || [])[1]);
   for (const size of ['medium', 'expanded']) {
-    const match = css.match(new RegExp(`\\.pill\\[data-size=${size}\\]\\{[^}]*--char-h:(\\d+)px`));
-    charH[size] = match ? Number(match[1]) : null;
+    const match = css.match(new RegExp(`\\.pill\\[data-size=${size}\\]\\{[^}]*--pad-x:(\\d+)px`));
+    padX[size] = match ? Number(match[1]) : null;
   }
   const jsSizes = js.match(/const ISLAND_SIZES = \{[\s\S]*?\};/);
   if (!jsSizes) { fail('sync', 'ISLAND_SIZES not found in overlay.js'); return; }
@@ -234,9 +238,9 @@ function syncCheck() {
     ['compact band css/js', band.compact, Number(jsCompact[2])],
     ['medium band css/js', band.medium, Number(jsMedium[1])],
     ['expanded rail css/js', band.expanded, jsRail],
-    ['compact char css/harness', charH.compact, SIZES.compact.charH],
-    ['medium char css/harness', charH.medium, SIZES.medium.charH],
-    ['expanded char css/harness', charH.expanded, SIZES.expanded.charH]
+    ['compact pad css/harness', padX.compact, PAD_X.compact],
+    ['medium pad css/harness', padX.medium, PAD_X.medium],
+    ['expanded pad css/harness', padX.expanded, PAD_X.expanded]
   ];
   for (const [label, a, b] of checks) {
     if (a === b) pass('sync', `${label} = ${b}`);
@@ -262,7 +266,7 @@ const scenarios = [
   { name: 'compact-listening', style: 'island', wait: 2300, patch: { status: 'listening', message: 'Speak naturally. Release to send.' } },
   { name: 'medium-thinking', style: 'island', wait: 3000, patch: { status: 'thinking', message: 'Transcribing, one moment please…' } },
   { name: 'medium-done', style: 'island', wait: 2300, patch: { status: 'done' } },
-  { name: 'expanded-answer', style: 'island', wait: 3200, patch: { status: 'answer', canCopy: true, speaking: true, message: SAMPLE_ANSWER } },
+  { name: 'expanded-answer', style: 'island', wait: 3200, patch: { status: 'answer', canCopy: true, speaking: true, approval: null, message: SAMPLE_ANSWER } },
   { name: 'expanded-approval', style: 'island', wait: 3000, patch: { status: 'approval', approval: { id: 'harness', title: 'Allow this sample action?', detail: 'Harness preview — nothing will run.', tool: 'type_text' } } },
   { name: 'expanded-error', style: 'island', wait: 2600, patch: { status: 'error', message: 'Something failed on purpose so we can inspect the error state.' } },
   { name: 'expanded-chat', style: 'island', wait: 3200, patch: { status: 'chat', chatOpen: true, chatPreview: true } },
@@ -270,10 +274,10 @@ const scenarios = [
   { name: 'notch-compact-idle', style: 'notch', wait: 2400, patch: { status: 'idle' } },
   { name: 'notch-compact-listening', style: 'notch', wait: 2400, patch: { status: 'listening', message: 'Speak naturally. Release to send.' } },
   { name: 'notch-medium', style: 'notch', wait: 2600, patch: { status: 'thinking', message: 'Transcribing…' } },
-  { name: 'notch-expanded-answer', style: 'notch', wait: 3000, patch: { status: 'answer', canCopy: true, message: SAMPLE_ANSWER } },
+  { name: 'notch-expanded-answer', style: 'notch', wait: 3000, patch: { status: 'answer', canCopy: true, approval: null, message: SAMPLE_ANSWER } },
   { name: 'notch-chat', style: 'notch', wait: 3200, patch: { status: 'chat', chatOpen: true, chatPreview: true } },
   { name: 'compact-idle-nochar', style: 'island', wait: 2400, patch: { status: 'idle', companionEnabled: false } },
-  { name: 'slow-mid-transition', style: 'island', wait: 950, slow: true, noAssert: true, patch: { status: 'answer', canCopy: true, message: SAMPLE_ANSWER } }
+  { name: 'slow-mid-transition', style: 'island', wait: 950, slow: true, noAssert: true, patch: { status: 'answer', canCopy: true, approval: null, message: SAMPLE_ANSWER } }
 ];
 
 const MEASURE = `(() => {
@@ -288,6 +292,10 @@ const MEASURE = `(() => {
     expression: charEl ? charEl.dataset.expression : null,
     blob: rect(document.querySelector('.blob')),
     blobEyes: rect(document.querySelector('.blob-eyes')),
+    label: rect(document.querySelector('.state-label')),
+    actions: rect(document.querySelector('.head-actions')),
+    cardActions: rect(document.querySelector('.card-actions')),
+    text: rect(document.querySelector('.card-text')),
     zone: rect(document.querySelector('.head-center')),
     radius: getComputedStyle(pillEl).borderRadius,
     radiusBL: getComputedStyle(pillEl).borderBottomLeftRadius,
@@ -380,38 +388,59 @@ function assertScenario(scenario, m) {
   const size = m.size;
   if (!m.pill) { fail('runtime', `${scenario.name}: no pill rect`); return; }
   const radiusPx = parseFloat(notch ? m.radiusBL : m.radius);
+  const padX = PAD_X[size] ?? PAD_X.compact;
   if (size === 'compact') {
     within(m.pill.width, notch ? 544 : 208, 1.5, 'pill width', scenario);
     within(m.pill.height, 88, 1.5, 'pill height', scenario);
     within(radiusPx, notch ? 22 : 44, 1, 'pill radius', scenario);
-    if (m.charVisible) {
-      within(parseFloat(m.charH), 84, 2, 'character height', scenario);
-      within(m.char.height, 84, 2, 'character rect height', scenario);
-      within(m.char.width, 44, 1.5, 'character slot width (blob)', scenario);
-      within(m.char.y + m.char.height, m.pill.y + m.pill.height, 2, 'feet flush with pill bottom', scenario);
-      within(m.char.y, m.pill.y + 4, 2.5, 'character top clearance', scenario);
-    } else if (!scenario.name.includes('nochar')) fail('runtime', `${scenario.name}: companion not visible`);
   } else if (size === 'medium') {
     within(m.pill.width, notch ? 544 : 340, 1.5, 'pill width', scenario);
     within(m.pill.height, 104, 1.5, 'pill height', scenario);
     within(radiusPx, notch ? 22 : 24, 1, 'pill radius', scenario);
-    if (m.charVisible) {
-      within(parseFloat(m.charH), 88, 2, 'character height', scenario);
-      within(m.char.y + m.char.height, m.pill.y + m.pill.height, 2, 'feet flush with pill bottom', scenario);
-      within(m.char.y, m.pill.y + 16, 2.5, 'character top clearance', scenario);
-    }
   } else {
     within(m.pill.width, notch ? 544 : 520, 1.5, 'pill width', scenario);
     within(radiusPx, notch ? 22 : 26, 1, 'pill radius', scenario);
     relaxedAtLeast(m.pill.height, 214, 'expanded height includes card', scenario);
     if (m.head) within(m.head.height, 128, 1.5, 'expanded rail height', scenario);
-    if (m.charVisible) {
-      within(parseFloat(m.charH), 116, 2, 'character height', scenario);
-      within(m.char.width, 44, 1.5, 'character slot width (blob)', scenario);
-      within(m.char.y, m.pill.y + 12, 2.5, 'character top clearance', scenario);
+  }
+  // Shared grid: card text sits on --pad-x; when the blob is up, it shares that edge.
+  // Display-hidden elements report 0x0 rects, so guard on real widths (chat state).
+  const hasText = m.text && m.text.width > 0;
+  const hasBlob = m.blob && m.blob.width > 0;
+  if (hasText) {
+    within(m.text.x, m.pill.x + padX, 1.5, 'card text left edge on shared pad', scenario);
+    if (hasBlob) {
+      within(m.blob.x, m.pill.x + padX, 3.5, 'blob left edge on shared pad', scenario);
+      within(m.blob.x, m.text.x, 3.5, 'blob left == text left (shared grid)', scenario);
+    }
+  } else if (m.status !== 'chat') {
+    fail('runtime', `${scenario.name}: card-text rect missing`);
+  }
+  if (m.actions) within(m.actions.x + m.actions.width, m.pill.x + m.pill.width - padX, 2, 'header buttons right on shared pad', scenario);
+  if (size === 'expanded') {
+    if (m.cardActions && m.cardActions.width > 0) within(m.cardActions.x + m.cardActions.width, m.pill.x + m.pill.width - padX, 2, 'footer actions right on shared pad', scenario);
+    if (m.label) {
+      within(m.label.y + m.label.height / 2, m.head.y + m.head.height / 2, 3.5, 'label centered on head band', scenario);
+      if (hasBlob) within(m.label.x - (m.blob.x + m.blob.width), 10, 4, 'label gap after blob', scenario);
     }
   }
-  if (m.pill && m.head) within(m.head.y, m.pill.y, 1, 'head band top', scenario);
+  // Blob slot geometry: avatar box, centered on the head band, strictly inside the pill.
+  if (m.charVisible) {
+    within(m.char.width, 38, 1.5, 'blob slot width', scenario);
+    within(m.char.height, 42, 1.5, 'blob slot height', scenario);
+    if (m.head && hasBlob) within(m.blob.y + m.blob.height / 2, m.head.y + m.head.height / 2, 4, 'blob centered on head band', scenario);
+    if (hasBlob) {
+      const insidePill = m.blob.x >= m.pill.x + 2
+        && m.blob.x + m.blob.width <= m.pill.x + m.pill.width - 2
+        && m.blob.y >= m.pill.y + 2
+        && m.blob.y + m.blob.height <= m.pill.y + m.pill.height - 2;
+      if (insidePill) pass('runtime', `${scenario.name}: blob fully inside pill bounds`);
+      else fail('runtime', `${scenario.name}: blob exceeds pill bounds`);
+    }
+  } else if (!scenario.name.includes('nochar')) {
+    fail('runtime', `${scenario.name}: companion not visible`);
+  }
+  if (m.head) within(m.head.y, m.pill.y, 1, 'head band top', scenario);
   if (m.zone) {
     relaxedAtLeast(m.zone.width, 20, 'center zone width', scenario);
     if (m.pill) {
