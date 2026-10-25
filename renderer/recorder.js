@@ -62,6 +62,30 @@ function readLevel(analyser) {
   return { rms: Math.sqrt(sum / samples.length), peak };
 }
 
+// Phase C: 16 log-spaced FFT bands riding the existing level payloads. The
+// island spectrum paints these real mic bins; the dashboard payload stays
+// { peak } because main.cjs forwards only the peak there.
+const BAND_COUNT = 16;
+let freqData = null;
+function readBands(analyser) {
+  if (!analyser || typeof analyser.getByteFrequencyData !== 'function') return null;
+  const count = analyser.frequencyBinCount;
+  if (!count) return null;
+  if (!freqData || freqData.length !== count) freqData = new Uint8Array(count);
+  analyser.getByteFrequencyData(freqData);
+  const bins = [];
+  for (let band = 0; band < BAND_COUNT; band += 1) {
+    let lo = Math.round(Math.pow(count, band / BAND_COUNT));
+    let hi = Math.round(Math.pow(count, (band + 1) / BAND_COUNT));
+    lo = Math.min(count - 1, Math.max(1, lo));
+    hi = Math.min(count, Math.max(lo + 1, hi));
+    let value = 0;
+    for (let i = lo; i < hi; i += 1) value = Math.max(value, freqData[i]);
+    bins.push(Math.min(1, value / 255));
+  }
+  return bins;
+}
+
 function cleanup(target) {
   if (!target) return;
   clearInterval(target.levelTimer);
@@ -102,7 +126,7 @@ async function startMonitor(deviceId) {
   const target = { stream, context: analyserData.context, analyser: analyserData.analyser, levelTimer: null };
   target.levelTimer = setInterval(() => {
     if (!target.analyser) return;
-    api.recorder.level({ peak: readLevel(target.analyser).peak, at: Date.now() });
+    api.recorder.level({ peak: readLevel(target.analyser).peak, at: Date.now(), bins: readBands(target.analyser) });
   }, 100);
   monitor = target;
   return true;
@@ -250,7 +274,7 @@ async function startSession(options) {
       target.levelSamples += 1;
       target.rmsSum += level.rms;
       target.peakMax = Math.max(target.peakMax, level.peak);
-      api.recorder.level({ peak: level.peak, at: Date.now() });
+      api.recorder.level({ peak: level.peak, at: Date.now(), bins: readBands(target.analyser) });
     }, 100);
     recorder.start(250);
     if (target.kind === 'test') {

@@ -126,6 +126,11 @@
 .pill .level-meter i{width:3px;height:18px;border-radius:2px;background:linear-gradient(180deg,var(--accent-soft),var(--accent-deep));transform:scaleY(var(--bar,.14));transform-origin:center;transition:none}
 .pill[data-size=compact] .level-meter{height:30px;gap:4px}
 .pill[data-size=compact] .level-meter i{width:4px;height:30px}
+/* Phase C spectrum: real mic FFT bands (and, later, nothing synthetic) rendered
+   into a canvas parked in the level-meter slot. Visible only in the compact
+   listening centerpiece; the slot band rules above stay first for syncCheck. */
+.pill .level-meter .meter-canvas{display:none;width:88px;height:30px}
+.pill[data-size=compact][data-state=listening] .level-meter .meter-canvas{display:block}
 .stop-button{position:relative;z-index:3;flex:none;margin-left:auto;width:26px;height:26px;padding:0;border:0;border-radius:50%;display:grid;place-items:center;background:rgba(255,255,255,.06);box-shadow:inset 0 0 0 1px rgba(255,255,255,.08);pointer-events:auto;transition:background calc(.16s * var(--motion)) ease,transform calc(.14s * var(--motion)) ease,opacity calc(.18s * var(--motion)) ease}
 .pill[data-size=medium] .stop-button,.pill[data-size=expanded] .stop-button{width:28px;height:28px}
 .stop-button:hover{background:rgba(255,255,255,.15);transform:scale(1.06)}

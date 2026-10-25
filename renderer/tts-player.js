@@ -3,6 +3,14 @@
 class TtsPlayer {
   constructor() {
     this.context = new (window.AudioContext || window.webkitAudioContext)();
+    // Phase C: one analyser tap between every played source and the speakers so
+    // speech levels are measured from the real TTS audio graph. Cosmetic-only:
+    // metering failures must never break playback.
+    this.analyser = this.context.createAnalyser();
+    this.analyser.fftSize = 512;
+    this.analyser.connect(this.context.destination);
+    this.analyserData = new Uint8Array(this.analyser.frequencyBinCount);
+    this.speechTimer = null;
     this.queue = [];
     this.playing = false;
     this.currentSource = null;
@@ -27,6 +35,7 @@ class TtsPlayer {
   async playNext() {
     if (this.queue.length === 0) {
       this.playing = false;
+      this.stopSpeechFeed();
       return;
     }
 
@@ -34,7 +43,7 @@ class TtsPlayer {
     const audioBuffer = this.queue.shift();
     const source = this.context.createBufferSource();
     source.buffer = audioBuffer;
-    source.connect(this.context.destination);
+    source.connect(this.analyser);
 
     this.currentSource = source;
 
@@ -45,7 +54,40 @@ class TtsPlayer {
       this.playNext();
     };
 
+    this.startSpeechFeed();
     source.start(0);
+  }
+
+  startSpeechFeed() {
+    if (this.speechTimer) return;
+    this.speechTimer = setInterval(() => {
+      if (!this.playing) {
+        this.stopSpeechFeed();
+        return;
+      }
+      if (!this.analyser) return;
+      this.analyser.getByteFrequencyData(this.analyserData);
+      let sum = 0;
+      for (const value of this.analyserData) sum += value;
+      const level = Math.min(1, sum / (this.analyserData.length * 160));
+      this.sendSpeechLevel(level);
+    }, 100);
+  }
+
+  stopSpeechFeed() {
+    if (this.speechTimer) {
+      clearInterval(this.speechTimer);
+      this.speechTimer = null;
+      this.sendSpeechLevel(0);
+    }
+  }
+
+  sendSpeechLevel(level) {
+    try {
+      window.voiceAgent?.recorder?.speechLevel?.({ level: Math.max(0, Math.min(1, level || 0)), at: Date.now() });
+    } catch {
+      // Metering is cosmetic; never let it break playback.
+    }
   }
 
   stop() {
@@ -60,6 +102,7 @@ class TtsPlayer {
       this.currentSource = null;
     }
     this.playing = false;
+    this.stopSpeechFeed();
   }
 }
 

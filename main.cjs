@@ -2289,8 +2289,11 @@ function registerIpc() {
   listen('recorder:audio-level', (payload) => {
     const peak = Math.max(0, Math.min(1, Number(payload?.peak) || 0));
     sendToDashboard('audio-level', { peak });
-    overlay?.audioLevel(peak);
+    overlay?.audioLevel(peak, Array.isArray(payload?.bins) ? payload.bins : null);
   }, ['recorder']);
+  listen('recorder:speech-level', (payload) => {
+    overlay?.speechLevel(Math.max(0, Math.min(1, Number(payload?.level) || 0)));
+  }, ['recorder', 'dashboard']);
   listen('recorder:test-progress', (text) => sendToDashboard('microphone:test-progress', String(text || '')), ['recorder']);
   listen('recorder:audio', (payload) => {
     const turn = currentTurn;

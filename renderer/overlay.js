@@ -36,6 +36,8 @@ const feedEmpty = $('#feedEmpty');
 const feedPreviewLabel = $('#feedPreviewLabel');
 const companion = $('#companion');
 const waveBars = [...(levelMeter?.querySelectorAll('i') || [])];
+const spectrumCanvas = levelMeter ? levelMeter.querySelector('canvas') : null;
+const spectrumCtx = spectrumCanvas && typeof spectrumCanvas.getContext === 'function' ? spectrumCanvas.getContext('2d') : null;
 const motionQuery = window.matchMedia('(prefers-reduced-motion: reduce)');
 
 const MAX_CARD_HEIGHT = 400;
@@ -94,6 +96,17 @@ let lastFrame = 0;
 let levelTarget = 0;
 let level = 0;
 let wavePhase = 0;
+// Phase C spectrum + speech metering. Bands come from the recorder mic graph;
+// speech level comes from the TTS analyser tap. No synthetic sources.
+const BAND_COUNT = 16;
+let spectrumTarget = new Array(BAND_COUNT).fill(0);
+let spectrumSmooth = new Array(BAND_COUNT).fill(0);
+let spectrumUnit = null;
+let spectrumDirty = false;
+let speechTarget = 0;
+let speechValue = 0;
+let speechTrafficAt = 0;
+let companionActMod = false;
 let chatOpenedFor = false;
 let wasChatVisible = false;
 let chatFocusFrame = 0;
@@ -960,6 +973,7 @@ function settled() {
 
 function loopNeeded() {
   if (state.visible && notch.dataset.state === 'listening') return true;
+  if (speakingActive()) return true;
   if (state.visible && state.dismiss && !state.dismiss.paused) return true;
   return !settled();
 }
@@ -971,6 +985,8 @@ function frame(now) {
   const dt = rawDt * (state.slowMotion ? 0.25 : 1);
   Object.values(springs).forEach((spring) => spring.step(dt));
   updateWave(dt);
+  updateSpectrum(rawDt);
+  updateSpeech(rawDt);
   updateProgress();
   applyGeometry();
   if (!state.visible && !hideAckSent && settled()) {
@@ -1085,12 +1101,132 @@ function render() {
   retarget();
 }
 
-function applyAudioLevel(peak) {
+function applyAudioLevel(peak, bins) {
   const normalized = Math.min(1, Math.max(0, Number(peak) || 0) * 9);
   levelTarget = normalized;
+  if (Array.isArray(bins)) {
+    for (let i = 0; i < BAND_COUNT; i += 1) {
+      const value = Number(bins[i]);
+      spectrumTarget[i] = Number.isFinite(value) ? Math.max(0, Math.min(1, value)) : spectrumTarget[i];
+    }
+  }
   companion?.style.setProperty('--level', normalized.toFixed(3));
   levelMeter.setAttribute('aria-label', `Microphone level ${Math.round(normalized * 100)} percent`);
   if (state.visible && notch.dataset.state === 'listening') startLoop();
+}
+
+/* --- Real audio spectrum (Phase C) ---------------------------------------- */
+// Compact-listening centerpiece: 16 mic FFT bands painted as a mirrored,
+// warm-lit spectrum. Painting runs inside the shared frame loop and only while
+// the slot is actually on screen; it decays and clears itself when hidden.
+function prepareSpectrum() {
+  if (!spectrumCtx) return false;
+  if (spectrumUnit) return true;
+  const rect = spectrumCanvas.getBoundingClientRect();
+  if (!rect.width || !rect.height) return false;
+  const dpr = Math.max(1, Math.min(3, window.devicePixelRatio || 1));
+  spectrumCanvas.width = Math.max(2, Math.round(rect.width * dpr));
+  spectrumCanvas.height = Math.max(2, Math.round(rect.height * dpr));
+  spectrumCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  spectrumUnit = { w: rect.width, h: rect.height };
+  return true;
+}
+
+function roundedBar(x, y, width, height, radius) {
+  spectrumCtx.beginPath();
+  if (typeof spectrumCtx.roundRect === 'function') {
+    spectrumCtx.roundRect(x, y, width, height, radius);
+  } else {
+    spectrumCtx.rect(x, y, width, height);
+  }
+  spectrumCtx.fill();
+}
+
+function paintSpectrum() {
+  const { w, h } = spectrumUnit;
+  const gap = 2.4;
+  const width = barW();
+  const step = width + gap;
+  const offset = (w - (width * BAND_COUNT + gap * (BAND_COUNT - 1))) / 2;
+  const mid = h / 2;
+  const grad = spectrumCtx.createLinearGradient(0, 0, 0, h);
+  grad.addColorStop(0, 'rgba(226, 87, 30, .75)');
+  grad.addColorStop(0.32, 'rgba(255, 138, 76, .92)');
+  grad.addColorStop(0.5, 'rgba(255, 213, 168, 1)');
+  grad.addColorStop(0.68, 'rgba(255, 138, 76, .92)');
+  grad.addColorStop(1, 'rgba(226, 87, 30, .75)');
+  spectrumCtx.clearRect(0, 0, w, h);
+  spectrumCtx.fillStyle = grad;
+  spectrumCtx.shadowColor = 'rgba(255, 122, 50, .5)';
+  spectrumCtx.shadowBlur = 5;
+  for (let i = 0; i < BAND_COUNT; i += 1) {
+    const value = Math.max(0.06, Math.min(1, spectrumSmooth[i]));
+    const reach = value * (mid - 2.5);
+    const upH = Math.max(1.8, reach);
+    const downH = Math.max(1.2, reach * 0.55);
+    const x = offset + i * step;
+    roundedBar(x, mid - upH, width, upH, Math.min(width / 2, upH / 2));
+    roundedBar(x, mid, width, downH, Math.min(width / 2, downH / 2));
+  }
+}
+
+function barW() {
+  const gap = 2.4;
+  return Math.max(2, (spectrumUnit.w - gap * (BAND_COUNT - 1)) / BAND_COUNT);
+}
+
+function updateSpectrum(dt) {
+  const active = state.visible && notch.dataset.state === 'listening';
+  let live = false;
+  for (let i = 0; i < BAND_COUNT; i += 1) {
+    const target = active ? spectrumTarget[i] : 0;
+    const tau = target > spectrumSmooth[i] ? 0.05 : 0.16;
+    spectrumSmooth[i] += (target - spectrumSmooth[i]) * (1 - Math.exp(-dt / tau));
+    if (spectrumSmooth[i] > 0.012) live = true;
+  }
+  if (!live) {
+    if (spectrumDirty && prepareSpectrum()) {
+      spectrumCtx.clearRect(0, 0, spectrumUnit.w, spectrumUnit.h);
+      spectrumDirty = false;
+    }
+    return;
+  }
+  if (!prepareSpectrum()) return;
+  paintSpectrum();
+  spectrumDirty = true;
+}
+
+/* --- Real speech level (Phase C) ------------------------------------------ */
+// TTS playback level modulates the companion squash (--act) and --level while
+// the expanded answer is speaking; the pill glow stays CSS-driven.
+function applySpeechLevel(payload) {
+  const value = Math.max(0, Math.min(1, Number(payload?.level) || 0));
+  speechTarget = Math.min(1, value * 2.2);
+  if (value > 0.002) speechTrafficAt = Date.now();
+  if (state.visible && notch.dataset.state === 'answer' && notch.dataset.speaking === 'true') startLoop();
+}
+
+function speakingActive() {
+  return state.visible
+    && notch.dataset.state === 'answer'
+    && notch.dataset.speaking === 'true'
+    && Date.now() - speechTrafficAt < 7000;
+}
+
+function updateSpeech(dt) {
+  if (!companion) return;
+  const speaking = speakingActive();
+  const target = speaking ? speechTarget : 0;
+  speechValue += (target - speechValue) * (1 - Math.exp(-dt / (speaking ? 0.05 : 0.14)));
+  if (speaking && speechValue > 0.012) {
+    companion.style.setProperty('--act', (1.12 + speechValue * 0.1).toFixed(3));
+    companion.style.setProperty('--level', speechValue.toFixed(3));
+    companionActMod = true;
+  } else if (companionActMod) {
+    companion.style.removeProperty('--act');
+    companion.style.setProperty('--level', Math.min(1, levelTarget).toFixed(3));
+    companionActMod = false;
+  }
 }
 
 /* --- Poke / dizzy (blob interaction) ------------------------------------- */
@@ -1309,7 +1445,8 @@ api.overlay.onState((next) => {
   }
 });
 
-api.overlay.onAudioLevel(({ peak }) => applyAudioLevel(peak));
+api.overlay.onAudioLevel(({ peak, bins }) => applyAudioLevel(peak, bins));
+api.overlay.onSpeechLevel?.((payload) => applySpeechLevel(payload));
 api.overlay.onCursor?.((coords) => {
   if (!coords || !state.visible) return;
   updateCompanionLook(Number(coords.x) || 0, Number(coords.y) || 0);

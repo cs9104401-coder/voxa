@@ -60,6 +60,7 @@ const SEND_CHANNELS = new Set([
   'recorder:audio',
   'recorder:error',
   'recorder:audio-level',
+  'recorder:speech-level',
   'recorder:test-progress',
   'recorder:response',
   'recorder:ready'
@@ -86,6 +87,7 @@ const EVENT_CHANNELS = new Set([
   'tts:stop-audio',
   'overlay:state',
   'overlay:audio-level',
+  'overlay:speech-level',
   'overlay:cursor',
   'chat:started',
   'chat:delta',
@@ -174,6 +176,7 @@ contextBridge.exposeInMainWorld('voiceAgent', {
     audio: (payload) => send('recorder:audio', payload),
     error: (payload) => send('recorder:error', payload),
     level: (payload) => send('recorder:audio-level', payload),
+    speechLevel: (payload) => send('recorder:speech-level', payload),
     progress: (text) => send('recorder:test-progress', text),
     respond: (id, payload) => send('recorder:response', { id, ...payload }),
     ready: () => send('recorder:ready')
@@ -181,6 +184,7 @@ contextBridge.exposeInMainWorld('voiceAgent', {
   overlay: {
     onState: (callback) => on('overlay:state', callback),
     onAudioLevel: (callback) => on('overlay:audio-level', callback),
+    onSpeechLevel: (callback) => on('overlay:speech-level', callback),
     onCursor: (callback) => on('overlay:cursor', callback),
     resize: (width, height) => send('overlay:resize', { width, height }),
     stop: () => send('overlay:stop'),

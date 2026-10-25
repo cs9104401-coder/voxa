@@ -305,6 +305,25 @@ const MEASURE = `(() => {
     cardActions: rect(document.querySelector('.card-actions')),
     text: rect(document.querySelector('.card-text')),
     zone: rect(document.querySelector('.head-center')),
+    meter: rect(document.querySelector('.meter-canvas')),
+    meterInfo: (() => {
+      const c = document.querySelector('.meter-canvas');
+      if (!c || !c.getContext) return null;
+      try {
+        const zone = document.querySelector('.head-center')?.getBoundingClientRect() || null;
+        const r = c.getBoundingClientRect();
+        const data = c.getContext('2d').getImageData(0, 0, c.width, c.height).data;
+        let painted = 0;
+        for (let i = 3; i < data.length; i += 4) { if (data[i] > 8) painted += 1; }
+        return {
+          painted,
+          inZone: zone ? r.x >= zone.x - 1 && r.x + r.width <= zone.x + zone.width + 1 : null,
+          visible: getComputedStyle(c).display !== 'none'
+        };
+      } catch {
+        return null;
+      }
+    })(),
     feed: rect(document.getElementById('feedPanel')),
     feedItem: rect(document.querySelector('.feed-item')),
     feedThumb: rect(document.querySelector('.feed-thumb')),
@@ -343,6 +362,9 @@ async function runtimeCheck() {
   // actual app name instead of the no-listener fallback.
   ipcMain.removeAllListeners('brand:name');
   ipcMain.on('brand:name', (event) => { event.returnValue = 'Voxa'; });
+  // Without this, destroying the overlay window quits via the default
+  // window-all-closed path and drops the pending async chain before the tally.
+  app.on('window-all-closed', () => {});
   overlay = createOverlay({ log: { info: () => {}, warn: (tag, text) => console.log(`[warn:${tag}] ${text}`), error: (tag, text) => console.log(`[error:${tag}] ${text}`) } });
   await app.whenReady();
   overlay.create();
@@ -380,11 +402,44 @@ async function runtimeCheck() {
     saveResults();
   }
 
+  // Spectrum painting pipeline (Phase C): injects labelled synthetic band data
+  // through the real applyAudioLevel parser so the canvas painting path is
+  // exercised end-to-end. The input is test data — real audio is verified live.
+  try {
+    overlay.hideNow();
+    await sleep(420);
+    overlay.show({ status: 'listening', message: 'Speak naturally. Release to send.', companionEnabled: true });
+    await sleep(1400);
+    const wave = Array.from({ length: 16 }, (_, i) => (i % 2 ? 0.9 : 0.35));
+    await contents.executeJavaScript(`applyAudioLevel(0.5, ${JSON.stringify(wave)})`, true);
+    await sleep(650);
+    const spectrumMetrics = JSON.parse(JSON.stringify(await contents.executeJavaScript(MEASURE, true)));
+    const shotPath = path.join(OUT, 'spectrum-inject.png');
+    const capture = await overlay.getWindow().webContents.capturePage();
+    fs.writeFileSync(shotPath, capture.toPNG());
+    flattenPNG(shotPath, shotPath, [35, 38, 43]);
+    results.screenshots.push(shotPath);
+    results.runtime.push({ name: 'spectrum-inject', metrics: spectrumMetrics });
+    console.log(`saved ${shotPath}`);
+    assertScenario({ name: 'spectrum-inject' }, spectrumMetrics);
+    const painted = spectrumMetrics.meterInfo ? spectrumMetrics.meterInfo.painted : 0;
+    if (painted > 120) pass('runtime', `spectrum-inject: canvas painted (${painted} px)`);
+    else fail('runtime', `spectrum-inject: canvas not painted (${painted} px)`);
+  } catch (error) {
+    fail('runtime', `spectrum-inject: crashed: ${error && error.stack || error}`);
+  }
+  saveResults();
+
   overlay.hideNow();
   await sleep(400);
   overlay.destroy();
   await sleep(120);
-  app.quit();
+  // Print the tally before app.quit(): Electron can tear the loop down before
+  // the outer promise continuation runs, which would silence the report. The
+  // brief wait also lets stdout flush everything captured by the driver.
+  console.log(failed === 0 ? `\nALL CHECKS PASSED — output in ${OUT}` : `\n${failed} check(s) FAILED — output in ${OUT}`);
+  await sleep(350);
+  app.exit(failed === 0 ? 0 : 1);
 }
 
 function within(actual, expected, tolerance, label, scenario) {
@@ -473,6 +528,25 @@ function assertScenario(scenario, m) {
     }
   } else if (!scenario.name.includes('nochar')) {
     fail('runtime', `${scenario.name}: companion not visible`);
+  }
+  // Spectrum slot (Phase C): the canvas parks inside the center zone in compact
+  // listening only. Pixel assertions rely on real payloads; without any, the
+  // canvas must stay clear.
+  if (size === 'compact' && m.status === 'listening') {
+    if (m.meter) {
+      within(m.meter.height, 30, 2, 'spectrum canvas height', scenario);
+      within(m.meter.width, 88, 3, 'spectrum canvas width', scenario);
+      if (m.meterInfo && m.meterInfo.inZone !== null) {
+        if (m.meterInfo.inZone) pass('runtime', `${scenario.name}: spectrum canvas inside center zone`);
+        else fail('runtime', `${scenario.name}: spectrum canvas spills out of center zone`);
+      }
+      if (m.meterInfo && m.meterInfo.visible !== null) {
+        if (m.meterInfo.visible) pass('runtime', `${scenario.name}: spectrum canvas visible in listening`);
+        else fail('runtime', `${scenario.name}: spectrum canvas hidden in listening`);
+      }
+    } else fail('runtime', `${scenario.name}: spectrum canvas missing`);
+  } else if (m.meterInfo && m.meterInfo.painted > 0) {
+    fail('runtime', `${scenario.name}: spectrum painted outside listening (${m.meterInfo.painted} px)`);
   }
   if (m.head) within(m.head.y, m.pill.y, 1, 'head band top', scenario);
   if (m.zone) {
