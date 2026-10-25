@@ -35,22 +35,26 @@
 /* --- Companion: layered character sprite (head/body PNGs, baked art) + vector face SVG --- */
 /* One ratio chain: canvas 538x685 (head 506 + body 189, ~10px neck overlap). --char-h
    drives the character in every state; the pill's leading column follows its width. */
-.companion{display:none;position:absolute;bottom:0;left:50%;height:var(--char-h);width:calc(var(--char-h) * 538 / 685);transform:translateX(-50%);transform-origin:50% 100%;pointer-events:none;--head-tilt:0deg;--look-x:0px;--look-y:0px}
+.companion{display:none;position:absolute;bottom:0;left:50%;height:var(--char-h);width:calc(var(--char-h) * 538 / 685);transform:translateX(-50%);transform-origin:50% 100%;pointer-events:none;--head-tilt:0deg;--look-x:0px;--look-y:0px;--look-x-mult:14;--look-y-mult:12;animation:companion-bob calc(3.6s * var(--motion)) ease-in-out infinite}
 .pill[data-companion=true] .companion{display:block}
 .pill[data-companion=true] .status-icon .glyph,.pill[data-companion=true] .status-icon .dots{display:none!important}
+/* Eye-track strength follows the sprite scale (mult is tuned relative to the
+   116px expanded sprite), so glances stay proportionate in every band. */
+.pill[data-size=compact] .companion{--look-x-mult:10;--look-y-mult:9}
+.pill[data-size=medium] .companion{--look-x-mult:11;--look-y-mult:9}
 /* The companion anchors through --lead-w, not the 20-24px icon box; the icon only
    stretches when the companion is on, leaving the fallback glyph untouched. */
 .pill[data-companion=true] .status-icon{height:100%;width:var(--lead-w)}
 .companion-figure{position:absolute;display:block;width:100%;user-select:none}
-.companion-body-fig{bottom:0;height:27.59%}
-.companion-head{position:absolute;top:0;left:0;width:100%;height:73.87%;transform-origin:50% 100%;transform:rotate(var(--head-tilt));transition:transform calc(.5s * var(--motion)) ease}
+.companion-body-fig{bottom:0;height:27.59%;transform-origin:50% 100%;animation:companion-breathe calc(3.6s * var(--motion)) ease-in-out infinite}
+.companion-head{position:absolute;top:0;left:0;width:100%;height:73.87%;transform-origin:50% 100%;transform:rotate(var(--head-tilt));transition:transform calc(.5s * var(--motion)) cubic-bezier(.25,.8,.3,1)}
 .companion-head-fig,.companion-face-svg{position:absolute;inset:0;width:100%;height:100%;transform-origin:50% 100%;animation:companion-sway calc(5.4s * var(--motion)) ease-in-out infinite}
 .companion-eyes-open,.companion-eyes-closed{transition:opacity calc(.1s * var(--motion)) ease}
 .companion-eyes-closed{opacity:0}
 .companion.is-blinking .companion-eyes-open{opacity:0}
 .companion.is-blinking .companion-eyes-closed{opacity:1}
 .companion-eye-white{fill:#f1eff2;stroke:#231a16;stroke-width:6}
-.companion-iris{transform:translate(calc(var(--look-x,0px) * 14),calc(var(--look-y,0px) * 12));transition:transform calc(.14s * var(--motion)) ease-out}
+.companion-iris{transform:translate(calc(var(--look-x,0px) * var(--look-x-mult)),calc(var(--look-y,0px) * var(--look-y-mult)));transition:transform calc(.14s * var(--motion)) ease-out}
 .companion-pupil{fill:#0c0809}
 .companion-glint{fill:#fdfcff;opacity:.92}
 .companion-glint-small{opacity:.65}
@@ -217,6 +221,12 @@
 @keyframes island-ghost-out{to{opacity:0;filter:blur(4px);transform:scale(.985)}}
 @keyframes island-caret{0%,45%{opacity:1}50%,100%{opacity:.12}}
 @keyframes companion-sway{0%,100%{transform:rotate(0deg)}30%{transform:rotate(1deg)}70%{transform:rotate(-1deg)}}
+/* Idle float: anchored to translateX(-50%) so the horizontal centering survives;
+   amplitude stays inside the harness's ±2px feet-flush tolerance. */
+@keyframes companion-bob{0%,100%{transform:translateX(-50%) translateY(0)}50%{transform:translateX(-50%) translateY(-1.5px)}}
+/* Body breathing: scales from the feet (origin 50% 100%) so they stay flush while
+   the torso lifts a hair. */
+@keyframes companion-breathe{0%,100%{transform:translateY(0) scaleY(1)}50%{transform:translateY(-.4px) scaleY(1.012)}}
 @keyframes companion-wake{0%{opacity:0;transform:translateX(-50%) translateY(-9px) scale(.7)}55%{opacity:1;transform:translateX(-50%) translateY(1.5px) scale(1.05)}100%{opacity:1;transform:translateX(-50%)}}
 @keyframes companion-think{0%,100%{opacity:.3;transform:translateY(0)}40%{opacity:1;transform:translateY(-16px)}}
 @keyframes companion-talk{from{transform:scaleY(.55)}to{transform:scaleY(1.12)}}

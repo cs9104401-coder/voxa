@@ -1077,6 +1077,8 @@ window.addEventListener('unhandledrejection', (event) => {
 });
 window.addEventListener('pagehide', () => {
   clearCompanionBlink();
+  if (companionWakeTimer) { clearTimeout(companionWakeTimer); companionWakeTimer = null; }
+  companion?.classList.remove('is-waking');
   resetCompanionLook();
 });
 
