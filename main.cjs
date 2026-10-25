@@ -1789,7 +1789,11 @@ async function speakReply(turn, text) {
   } catch (error) {
     logger.warn('speech', cleanError(error));
   } finally {
-    if (speechController === controller) speechController = null;
+    if (speechController === controller) {
+      speechController = null;
+      // Playback really ended: tell the island so the companion stops speaking.
+      if (overlay?.state().speaking) overlay.setState({ speaking: false });
+    }
   }
 }
 
@@ -2229,6 +2233,10 @@ function registerIpc() {
   }, ['overlay']);
   listen('overlay:hidden', () => {
     overlay?.acknowledgeHide();
+  }, ['overlay']);
+  listen('overlay:expand', (payload) => {
+    const mode = String(payload?.mode || '');
+    overlay?.setExpand(mode);
   }, ['overlay']);
   listen('overlay:dismiss-pause', () => {
     pauseOverlayHide();

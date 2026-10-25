@@ -11,6 +11,7 @@ const head = $('.pill-head');
 const levelMeter = $('#levelMeter');
 const approvalActions = $('#approvalActions');
 const copyButton = $('#copyButton');
+const collapseButton = $('#collapseButton');
 const progressLine = $('#progressLine');
 const progressFill = progressLine?.querySelector('i');
 const stopButton = $('#stopButton');
@@ -61,6 +62,7 @@ let state = {
   style: 'island',
   slowMotion: false,
   dismiss: null,
+  expand: 'auto',
   chatOpen: false,
   chatStreaming: false,
   chatPreview: false
@@ -167,6 +169,8 @@ function updateCompanion(status) {
   if (companion.dataset.expression !== expression) {
     companion.dataset.expression = expression;
     companionExpression = expression;
+    // Success is a centred celebration: drop any pointer-driven glance.
+    if (expression === 'success') resetCompanionLook();
   }
   syncCompanionMotion();
 }
@@ -589,7 +593,12 @@ function statusLabel(status) {
 }
 
 function sizeFor(status) {
+  if (state.expand === 'collapsed') {
+    const chatMode = status === 'chat' && Boolean(state.chatOpen);
+    if (!chatMode && status !== 'approval') return 'compact';
+  }
   if (EXPANDED_STATES.has(status)) return 'expanded';
+  if (state.expand === 'pinned') return 'expanded';
   if (MEDIUM_STATES.has(status)) return 'medium';
   return 'compact';
 }
@@ -852,6 +861,10 @@ function render() {
     copyTimer = null;
     copyButton.textContent = 'Copy';
   }
+  collapseButton.hidden = !(state.visible
+    && notch.dataset.size === 'expanded'
+    && status !== 'approval'
+    && !openChat);
   card.hidden = openChat;
   chatPanel.hidden = !openChat;
   updateChatHeader();
@@ -862,6 +875,7 @@ function render() {
   else if (state.message) text = state.message;
   else if (status === 'listening') text = 'Speak naturally. Release to send.';
   else if (status === 'done') text = 'Done.';
+  else if (status === 'idle') text = 'Ready.';
   if (!openChat && (text !== lastText || lastStatus !== status)) {
     setCardText(text, status === 'answer' && !state.approval);
     lastStatus = status;
@@ -941,6 +955,18 @@ copyButton.addEventListener('click', () => {
   }, 1400);
 });
 
+collapseButton.addEventListener('click', () => {
+  api.overlay.expand('collapsed');
+});
+
+notch.addEventListener('click', (event) => {
+  if (!state.visible) return;
+  if (event.target?.closest('button, input, textarea, a, .card-text')) return;
+  if (notch.dataset.state === 'approval') return;
+  if (sizeFor(notch.dataset.state) === 'expanded') return;
+  api.overlay.expand('pinned');
+});
+
 function respond(id, allowed, button) {
   if (!id || respondedApprovalId === id) return;
   respondedApprovalId = id;
@@ -1002,6 +1028,11 @@ window.addEventListener('keydown', (event) => {
   if (event.key === 'Escape' && chatVisible() && !state.chatPreview) {
     event.preventDefault();
     api.chat.close();
+    return;
+  }
+  if (event.key === 'Escape' && state.expand === 'pinned') {
+    event.preventDefault();
+    api.overlay.expand('collapsed');
   }
 });
 

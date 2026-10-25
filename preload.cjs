@@ -48,6 +48,7 @@ const SEND_CHANNELS = new Set([
   'overlay:copy',
   'overlay:interactive',
   'overlay:hidden',
+  'overlay:expand',
   'overlay:dismiss-pause',
   'overlay:dismiss-resume',
   'chat:send',
@@ -184,6 +185,7 @@ contextBridge.exposeInMainWorld('voiceAgent', {
     copy: (text) => send('overlay:copy', text),
     interactive: (active) => send('overlay:interactive', Boolean(active)),
     hidden: () => send('overlay:hidden'),
+    expand: (mode) => send('overlay:expand', { mode }),
     pauseDismiss: () => send('overlay:dismiss-pause'),
     resumeDismiss: () => send('overlay:dismiss-resume')
   }
