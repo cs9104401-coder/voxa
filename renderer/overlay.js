@@ -136,6 +136,7 @@ let lastStatus = '';
 let respondedApprovalId = '';
 let copyTimer = null;
 let interactive = false;
+let lastMouse = { x: Number.NaN, y: Number.NaN };
 let hideAckSent = false;
 let raf = 0;
 let lastFrame = 0;
@@ -1119,6 +1120,23 @@ function requestInteractive(next) {
   api.overlay.interactive(wanted);
 }
 
+// The hover demand covers whatever rect the pill actually renders: collapsed
+// and medium bands keep the classic pill ±5px field, while any expanded band
+// (data-size=expanded: answer/approval/error/chat/feed or a pinned idle) uses
+// the full pill rect plus a 6px halo so every part of the panel — not only the
+// hover-gated head — keeps the window interactive. #notch IS the .pill root,
+// so one rect serves both.
+function hoverPadding() {
+  return sizeFor(notch.dataset.state) === 'expanded' ? 6 : 5;
+}
+
+function insideNotch(x, y) {
+  const rect = notch.getBoundingClientRect();
+  const padding = hoverPadding();
+  return x >= rect.left - padding && x <= rect.right + padding
+    && y >= rect.top - padding && y <= rect.bottom + padding;
+}
+
 function updateScrollFade() {
   const max = cardText.scrollHeight - cardText.clientHeight;
   const scrolled = cardText.scrollTop > 4;
@@ -1196,12 +1214,21 @@ function render() {
   const openChat = status === 'chat' && state.chatOpen;
   const interactiveChat = openChat && !state.chatPreview;
   const wasVisible = notch.dataset.visible === 'true';
+  const wasSize = notch.dataset.size;
   // Stage 2 tab model: state patches steer the tab; the user's pinned choice
   // survives only while the pill rests idle-expanded.
   if (size !== 'expanded') pinnedTab = null;
   const tab = islandTabFor(status, size === 'expanded');
   notch.dataset.state = status;
   notch.dataset.size = size;
+  // Growing under a resting cursor must not swallow the first click: every
+  // show() pushes the window back to click-through, so when the pill expands
+  // while the pointer already sits on it, demand interactive right away (last
+  // known position; NaN before the first forwarded move keeps this a no-op).
+  if (state.visible && size === 'expanded' && wasSize !== 'expanded'
+    && insideNotch(lastMouse.x, lastMouse.y)) {
+    requestInteractive(true);
+  }
   notch.dataset.tab = tab;
   notch.dataset.style = style;
   notch.dataset.visible = state.visible ? 'true' : 'false';
@@ -1662,12 +1689,9 @@ cardText.addEventListener('scroll', updateScrollFade, { passive: true });
 
 document.addEventListener('mousemove', (event) => {
   if (!state.visible) return;
-  const rect = notch.getBoundingClientRect();
-  const padding = 5;
-  const over = event.clientX >= rect.left - padding
-    && event.clientX <= rect.right + padding
-    && event.clientY >= rect.top - padding
-    && event.clientY <= rect.bottom + padding;
+  lastMouse.x = event.clientX;
+  lastMouse.y = event.clientY;
+  const over = insideNotch(lastMouse.x, lastMouse.y);
   if (over !== interactive) {
     requestInteractive(over);
     notch.classList.toggle('is-hovered', over);

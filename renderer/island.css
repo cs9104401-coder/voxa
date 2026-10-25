@@ -54,6 +54,13 @@
 .pill[data-size=expanded] .pill-head{height:56px}
 .pill[data-style=notch][data-size=compact] .pill-head{height:88px;padding-top:4px}
 .pill.is-hovered .pill-head{pointer-events:auto}
+/* Expanded island is a real panel: the pill root catches hits for the whole
+   expanded stack (tabs, head, body card/chat/feed). The ID + data-size rule
+   outranks the collapsed .pill blocker above (same !important level, higher
+   specificity); collapsed/medium keep the hover-gated behavior. head-center
+   stays click-through via its own rule. */
+#notch[data-size=expanded]{pointer-events:auto!important}
+#notch[data-size=expanded] .pill-head{pointer-events:auto}
 .status-icon{position:relative;z-index:5;flex:none;display:grid;place-items:center;width:20px;height:20px;color:var(--island-text);transition:color calc(.2s * var(--motion)) ease}
 .pill[data-size=medium] .status-icon{width:24px;height:24px}
 .pill[data-size=expanded] .status-icon{width:22px;height:22px}
