@@ -942,6 +942,7 @@ async function healthChecks() {
     ? { ...ollamaResult, provider: 'local' }
     : remoteChatResult;
   lastHealth = {
+    ...lastHealth,
     ollama: ollamaResult,
     chat: chatResult,
     whisper: whisperResult,
