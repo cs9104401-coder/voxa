@@ -108,9 +108,23 @@ const CHAT_LINGER_MS = 10000;
 let speechController = null;
 let quitting = false;
 
+function userDataDirFromArgv(argv) {
+  for (let index = 0; index < argv.length; index += 1) {
+    const arg = String(argv[index] || '');
+    if (arg === '--user-data-dir') {
+      const value = String(argv[index + 1] || '').trim();
+      if (value && !value.startsWith('--')) return path.resolve(value);
+    } else if (arg.startsWith('--user-data-dir=')) {
+      const value = arg.slice('--user-data-dir='.length).trim();
+      if (value) return path.resolve(value);
+    }
+  }
+  return '';
+}
+
 const USER_DATA_DIR = process.env.VOXA_USER_DATA
   ? path.resolve(process.env.VOXA_USER_DATA)
-  : path.join(app.getPath('appData'), 'my-voice-app');
+  : userDataDirFromArgv(process.argv) || path.join(app.getPath('appData'), 'my-voice-app');
 app.setPath('userData', USER_DATA_DIR);
 app.setPath('sessionData', USER_DATA_DIR);
 app.setName(APP_NAME);
