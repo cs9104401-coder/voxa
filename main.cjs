@@ -801,15 +801,19 @@ async function switchWhisperModel(model) {
     ? currentPreset
     : 'custom';
   saveSettingsPatch({ whisperModel: target, performancePreset: preset });
+  const feedLabel = WHISPER_MODELS.find((item) => item.id === target)?.label || target;
   const existing = await services.whisperHealth(WHISPER_PORT);
   if (existing.status !== 'unreachable') {
     await services.loadWhisperModel(WHISPER_PORT, target);
     startWhisperWatch();
+    // Phase E feed: model swaps are recorded once the new model is serving.
+    pushFeedEvent({ title: 'Whisper model switched', body: `${feedLabel} is now transcribing your voice.`, kind: 'system', tone: 'neutral' });
   } else {
     startWhisperWatch(true);
     ensureWhisper().catch((error) => {
       if (services.whisperStatus().running) return;
       stopWhisperWatch();
+      pushFeedEvent({ title: 'Whisper model switch failed', body: cleanError(error), kind: 'error', tone: 'highlight' });
       publishWhisperHealth({
         ok: false,
         status: 'error',
@@ -1057,6 +1061,13 @@ function showTurnError(turn, message, detail = '') {
     return;
   }
   logger.error('turn', detail || message);
+  // Phase E feed: a failed turn keeps a card after the 6-second banner hides.
+  pushFeedEvent({
+    title: turn.mode === 'dictation' ? 'Dictation failed' : 'Agent turn failed',
+    body: message,
+    kind: 'error',
+    tone: 'highlight'
+  });
   overlay?.show({ status: 'error', message, approval: null, canCopy: false, mode: turn.mode, streaming: false });
   scheduleOverlayHide(6000);
 }
@@ -1108,6 +1119,12 @@ async function beginTurn(mode, origin = 'hotkey') {
   }
   if (chatSession.open) collapseChat({ hide: false });
   else overlay?.setState({ chatOpen: false, chatPreview: false });
+  // Real activity resumes: drop the gallery-preview guard and publish the
+  // live event stack (gallery previews swap in sample cards).
+  galleryPreviewActive = false;
+  clearTimeout(galleryPreviewRevert);
+  galleryPreviewRevert = null;
+  overlay?.setNotifications(overlayEvents, false);
   clearOverlayHideTimer();
   const turn = {
     id: nextTurnId++,
@@ -1819,6 +1836,8 @@ async function processTurn(turn, audio, mime) {
       await desktop.typeText(transcript, target, turn.controller.signal);
       if (!turnAlive(turn)) return;
       addTurn(transcript, 'Dictated into the focused app.');
+      // Phase E feed: completed dictations land in the island feed.
+      pushFeedEvent({ title: 'Dictation typed', body: transcript, kind: 'turn', tone: 'neutral' });
       finishTurn(turn);
       overlay.show({ status: 'answer', mode: 'dictation', message: transcript, canCopy: true, approval: null, streaming: false, speaking: false });
       scheduleOverlayHide(3500);
@@ -1829,6 +1848,8 @@ async function processTurn(turn, audio, mime) {
     if (!turnAlive(turn)) return;
     finishTurn(turn);
     addTurn(transcript, answer);
+    // Phase E feed: finished agent turns surface their first reply sentence.
+    pushFeedEvent({ title: 'Agent finished the task', body: feedSentence(answer), kind: 'turn', tone: 'highlight' });
     const willSpeak = Boolean(settings.spokenReplies && stripForSpeech(answer));
     overlay.show({ status: 'answer', mode: 'agent', message: answer, canCopy: true, approval: null, streaming: false, speaking: willSpeak });
     scheduleOverlayHide(12000);
@@ -1872,11 +1893,69 @@ async function runMicTest() {
     const transcript = await transcribeAudio(audio, result.mime, null);
     if (!transcript) throw new Error(MESSAGES.HEARD_NOTHING);
     sendToDashboard('microphone:test-result', { transcript });
+    // Phase E feed: a passing microphone test is recorded with what it heard.
+    pushFeedEvent({ title: 'Microphone test passed', body: transcript, kind: 'system', tone: 'neutral' });
     logger.info('microphone test', transcript.slice(0, 500));
     return { transcript };
   } finally {
     micTestRunning = false;
   }
+}
+
+/* Phase E feed producers: every island feed card is a real Voxa-internal
+   event (turn results, health checks, tests, downloads) recorded here and
+   published through the existing notifications state. No new channels,
+   settings, or dependencies — and nothing mirrors Windows notifications. */
+const FEED_MAX_EVENTS = 12; // mirrors lib/overlay.cjs MAX_NOTIFICATIONS
+const FEED_KINDS = ['turn', 'download', 'media', 'system', 'error', 'approval'];
+const PROVIDER_FEED_LABELS = {
+  local: 'Local',
+  freellmapi: 'FreeLLMAPI',
+  openai: 'OpenAI',
+  groq: 'Groq',
+  gemini: 'Gemini',
+  anthropic: 'Anthropic',
+  custom: 'Custom'
+};
+let overlayEvents = [];
+let overlayEventSeq = 0;
+let galleryPreviewActive = false;
+let galleryPreviewRevert = null;
+
+// First sentence of a longer reply, markdown stripped, for card bodies.
+function feedSentence(text) {
+  const flat = String(text || '').replace(/[#*_`>|]+/g, ' ').replace(/\s+/g, ' ').trim();
+  if (!flat) return '';
+  return (flat.split(/(?<=[.!?])\s/, 1)[0] || flat).slice(0, 200);
+}
+
+function providerFeedLabel(provider) {
+  return PROVIDER_FEED_LABELS[provider] || String(provider || 'Provider');
+}
+
+function pushFeedEvent({ title, body = '', kind = 'system', tone = 'neutral' } = {}) {
+  const cleanTitle = String(title || '').trim().slice(0, 120);
+  if (!cleanTitle) return;
+  overlayEventSeq += 1;
+  const event = {
+    id: `ev-${Date.now().toString(36)}-${overlayEventSeq.toString(36)}`,
+    title: cleanTitle,
+    body: String(body || '').trim().slice(0, 400),
+    ts: Date.now(),
+    kind: FEED_KINDS.includes(kind) ? kind : 'system',
+    tone: tone === 'highlight' ? 'highlight' : 'neutral'
+  };
+  overlayEvents = [event, ...overlayEvents].slice(0, FEED_MAX_EVENTS);
+  logger.info('feed', `${event.title}${event.body ? ` — ${event.body.slice(0, 120)}` : ''} (${event.id})`);
+  if (!galleryPreviewActive) overlay?.setNotifications(overlayEvents, false);
+}
+
+// Dismissal bookkeeping: drop the id from main's stack so the next push never
+// resurrects a card the user already cleared.
+function forgetFeedEvent(id) {
+  const target = String(id || '').trim();
+  if (!target) return;
+  overlayEvents = overlayEvents.filter((item) => item.id !== target);
 }
 
 function previewOverlay(status, message) {
@@ -1891,6 +1970,11 @@ function previewOverlay(status, message) {
   }
   const isChat = next === 'chat';
   const isFeed = next === 'feed';
+  // While the gallery samples sit on screen, real producers keep recording but
+  // do not repaint the preview; they take over when it expires or a real turn
+  // starts.
+  if (isFeed) galleryPreviewActive = true;
+  else galleryPreviewActive = false;
   const approval = next === 'approval'
     ? { id: 'preview', title: 'Allow this sample action?', detail: message || 'This is a preview; no action will run.', tool: 'preview' }
     : null;
@@ -1909,11 +1993,21 @@ function previewOverlay(status, message) {
   });
   const motionScale = overlay.state().slowMotion ? 4 : 1;
   scheduleOverlayHide((next === 'approval' ? 8000 : next === 'done' ? 3200 : 6000) * motionScale);
+  // Mirror the feed preview's 6-second dwell: when the samples leave, put the
+  // real event stack back (a sooner turn resets this too).
+  if (isFeed) {
+    galleryPreviewRevert = setTimeout(() => {
+      galleryPreviewRevert = null;
+      galleryPreviewActive = false;
+      overlay?.setNotifications(overlayEvents, false);
+    }, 6000 * motionScale);
+  }
   return true;
 }
 
-// Reference 1 feed samples for the gallery. These are Voxa-internal events by
-// design (labels, thumbnails, timestamps); real producers arrive in Phases E/H.
+// Reference 1 feed samples for the gallery. Real producers (Phase E) live in
+// pushFeedEvent; these samples exist only for the dashboard's preview states
+// and are always labeled with the preview badge.
 function galleryNotifications() {
   const now = Date.now();
   return [
@@ -2014,13 +2108,26 @@ function registerIpc() {
     try {
       const result = await services.checkHealth(provider, base, key, null, base.model);
       clearModelCache(provider);
+      const message = result.modelAvailable
+        ? `Connection successful · ${result.model}`
+        : `Connected, but ${result.model} is not in the model list.`;
+      // Phase E feed: health probes produce cards, successful or not — the
+      // missing-model case is a warning tone rather than a hard error.
+      pushFeedEvent({
+        title: result.modelAvailable ? `${providerFeedLabel(provider)} connection passed` : `${providerFeedLabel(provider)} connected, model missing`,
+        body: message,
+        kind: 'system',
+        tone: result.modelAvailable ? 'neutral' : 'highlight'
+      });
       return {
         ok: Boolean(result.modelAvailable),
         connected: true,
-        message: result.modelAvailable ? `Connection successful · ${result.model}` : `Connected, but ${result.model} is not in the model list.`
+        message
       };
     } catch (error) {
-      return { ok: false, message: cleanError(error) };
+      const message = cleanError(error);
+      pushFeedEvent({ title: `${providerFeedLabel(provider)} connection failed`, body: message, kind: 'error', tone: 'highlight' });
+      return { ok: false, message };
     }
   });
   handle('provider:detect', () => services.detectFreeLlmApi());
@@ -2035,7 +2142,12 @@ function registerIpc() {
         sendToDashboard('ollama:pull-progress', progress);
       }, logger);
       await healthChecks().catch((error) => logger.warn('health', cleanError(error)));
+      // Phase E feed: finished model pulls are recorded as download cards.
+      pushFeedEvent({ title: 'Ollama model ready', body: `${model} finished downloading.`, kind: 'download', tone: 'highlight' });
       return result;
+    } catch (error) {
+      pushFeedEvent({ title: 'Ollama model download failed', body: cleanError(error), kind: 'error', tone: 'highlight' });
+      throw error;
     } finally {
       ollamaPullRunning = false;
     }
@@ -2060,7 +2172,10 @@ function registerIpc() {
     try {
       return await runMicTest();
     } catch (error) {
-      sendToDashboard('microphone:test-error', cleanError(error));
+      const reason = cleanError(error);
+      sendToDashboard('microphone:test-error', reason);
+      // Phase E feed: failing tests persist as error cards.
+      pushFeedEvent({ title: 'Microphone test failed', body: reason, kind: 'error', tone: 'highlight' });
       throw error;
     }
   });
@@ -2161,10 +2276,13 @@ function registerIpc() {
         return { ok: false, message: 'Download cancelled.' };
       }
       publishKokoroHealth({ status: 'downloaded', modelReady: true, hasConsent: true, variant });
+      // Phase E feed: voice model staged and ready.
+      pushFeedEvent({ title: 'Voice model downloaded', body: `${spec.filename} is ready for spoken replies.`, kind: 'download', tone: 'highlight' });
       logger.info('kokoro', `Model ${spec.filename} ready.`);
       return { ok: true, message: 'Kokoro model downloaded.' };
     } catch (err) {
       if (!err.cancelled) logger.warn('kokoro', `Download failed: ${cleanError(err)}`);
+      if (!err.cancelled) pushFeedEvent({ title: 'Voice model download failed', body: cleanError(err), kind: 'error', tone: 'highlight' });
       publishKokoroHealth({ status: err.cancelled ? 'not-downloaded' : 'error', modelReady: false, hasConsent: true, variant, error: cleanError(err) });
       if (err.cancelled) return { ok: false, message: 'Download cancelled.' };
       throw new Error(cleanError(err));
@@ -2270,6 +2388,8 @@ function registerIpc() {
     const id = typeof payload?.id === 'string' ? payload.id : '';
     if (!id) return false;
     overlay?.dismissNotification(id);
+    // Keep main's stack in sync so later pushes never resurrect the card.
+    forgetFeedEvent(id);
     return true;
   }, ['overlay']);
   listen('chat:open', () => openChat(), ['overlay']);
