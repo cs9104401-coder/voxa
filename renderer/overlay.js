@@ -42,6 +42,29 @@ const feedCount = $('#feedCount');
 const feedEmpty = $('#feedEmpty');
 const feedPreviewLabel = $('#feedPreviewLabel');
 const companion = $('#companion');
+/* Stage 2 expanded-tab affordances: rail tabs, round settings button, and the
+   Home card grid (preview media + real local time-of-day). */
+const pillTabs = $('#pillTabs');
+const tabButtons = [...document.querySelectorAll('.tab-button[data-tab]')];
+const islandSettingsButton = $('#islandSettings');
+const islandHome = $('#islandHome');
+const homeMediaTitle = $('#homeMediaTitle');
+const homeMediaArtist = $('#homeMediaArtist');
+const homeMediaElapsed = $('#homeMediaElapsed');
+const homeMediaTotal = $('#homeMediaTotal');
+const homeMediaProgressFill = $('#homeMediaProgressFill');
+const homeMediaPlayButton = $('#homeMediaPlay');
+const homeMediaPrevButton = $('#homeMediaPrev');
+const homeMediaNextButton = $('#homeMediaNext');
+const timeCard = $('#timeCard');
+const timeTitle = $('#timeTitle');
+const timeSubtitle = $('#timeSubtitle');
+const timeTemp = $('#timeTemp');
+const timeDot = $('#timeDot');
+const timeDotHalo = $('#timeDotHalo');
+const timeArcPath = $('#timeArcPath');
+const feedClearButton = $('#feedClearButton');
+const retryButton = $('#retryButton');
 const waveBars = [...(levelMeter?.querySelectorAll('i') || [])];
 const spectrumCanvas = levelMeter ? levelMeter.querySelector('canvas') : null;
 const spectrumCtx = spectrumCanvas && typeof spectrumCanvas.getContext === 'function' ? spectrumCanvas.getContext('2d') : null;
@@ -50,16 +73,30 @@ const motionQuery = window.matchMedia('(prefers-reduced-motion: reduce)');
 const MAX_CARD_HEIGHT = 400;
 const MAX_ANIMATED_WORDS = 280;
 // Pill geometry per size — must mirror the [data-size] band rules in island.css
-// (--pad-x shared grid / band heights). scripts/island-capture.cjs cross-checks both at runtime.
+// (--pad-x shared grid / band heights). scripts/island-capture.cjs cross-checks
+// both at runtime. Stage-2 expanded: 640px wide, rail = the 52px tab row,
+// strip = the 56px assistant head band, home = the 2-card Home body total.
 const ISLAND_SIZES = {
   compact: { width: 208, height: 88 },
   medium: { width: 340, height: 104 },
-  expanded: { width: 520, rail: 128 }
+  expanded: { width: 640, rail: 52, strip: 56, home: 190 }
 };
-const NOTCH_WIDTH = 544;
+const NOTCH_WIDTH = 660;
 const MEDIUM_STATES = new Set(['thinking', 'executing', 'verifying', 'done', 'media']);
 const EXPANDED_STATES = new Set(['answer', 'approval', 'error', 'chat', 'feed']);
 const SUPPORTED_STATES = new Set(['idle', 'listening', ...MEDIUM_STATES, ...EXPANDED_STATES]);
+// Stage 2 expanded-tab model: the pill reports the visible tab through
+// data-tab. State patches steer the default (feed -> notifications, voice and
+// answer states -> assistant); named expansions land on Home. The user can pin
+// a different tab only while the pill is idle-expanded.
+const TABS = new Set(['home', 'assistant', 'notifications']);
+let pinnedTab = null;
+function islandTabFor(status, expanded) {
+  if (!expanded) return '';
+  if (status === 'feed') return 'notifications';
+  if (status === 'idle') return TABS.has(pinnedTab) ? pinnedTab : 'home';
+  return 'assistant';
+}
 const CHAT_PREVIEW_MESSAGES = [
   { role: 'user', content: 'Give me a quick summary of my day.' },
   { role: 'assistant', content: 'You have three tasks left. The next one is a 2 pm review, then two short follow-ups.' }
@@ -729,6 +766,28 @@ function measureFeed(contentWidth) {
   return Math.max(96, height);
 }
 
+// Home body is a fixed 2-card grid (preview media + real local time card), so
+// the clone measure stays deterministic; the constant is the fallback when the
+// panel is missing (never in the shipped markup).
+function measureHome(contentWidth) {
+  if (!islandHome) return ISLAND_SIZES.expanded.home - ISLAND_SIZES.expanded.rail - 2;
+  const clone = islandHome.cloneNode(true);
+  clone.removeAttribute('id');
+  clone.hidden = false;
+  clone.querySelectorAll('[id]').forEach((element) => element.removeAttribute('id'));
+  clone.classList.add('measure-home');
+  clone.style.width = `${contentWidth}px`;
+  // The clone leaves the .pill scope, so --pad-x (defined on .pill in island.css)
+  // is unresolved there and the attached padding would compute to 0. Feed the
+  // live computed value so the clone measures with the pill's real shared pad.
+  const padX = getComputedStyle(notch).getPropertyValue('--pad-x').trim();
+  if (padX) clone.style.setProperty('--pad-x', padX);
+  document.body.append(clone);
+  const height = clone.getBoundingClientRect().height;
+  clone.remove();
+  return height;
+}
+
 /* --- Notification feed (Ref 1) -------------------------------------------- */
 /* Items come from main through overlay:state (gallery samples in Phase B;
    real producers arrive in the voice/telemetry phases). Timestamps render
@@ -823,6 +882,7 @@ function renderFeed() {
   feedCount.textContent = items.length ? `${items.length} alert${items.length === 1 ? '' : 's'}` : 'All clear';
   feedPreviewLabel.hidden = !state.feedPreview;
   feedEmpty.hidden = items.length > 0;
+  if (feedClearButton) feedClearButton.hidden = items.length === 0;
   feedList.replaceChildren();
   items.forEach((item, index) => {
     if (index === 0) feedList.append(feedSection('New'));
@@ -847,22 +907,28 @@ function targetGeometry() {
   const status = notch.dataset.state;
   const size = sizeFor(status);
   const expanded = size === 'expanded';
-  const chatMode = status === 'chat' && Boolean(state.chatOpen);
-  const feedMode = status === 'feed';
+  const tab = islandTabFor(status, expanded);
+  const assistantMode = expanded && tab === 'assistant';
+  const chatMode = assistantMode && status === 'chat' && Boolean(state.chatOpen);
+  const feedMode = expanded && tab === 'notifications';
+  const homeMode = expanded && tab === 'home';
   const contentWidth = contentWidthFor(size);
   notch.style.setProperty('--content-width', `${contentWidth}px`);
-  // Head band heights are static CSS dimensions (mirrored in ISLAND_SIZES), so read the
-  // constant instead of probing the DOM — deterministic and matches the rendering rules.
+  // Expanded stacks: tab rail (always) + assistant strip (Assistant tab only,
+  // it carries blob/meter/actions) + the body of the active tab. Head band
+  // heights are static CSS dimensions (mirrored in ISLAND_SIZES), so the
+  // constants drive the math instead of DOM probing.
   const rail = expanded ? ISLAND_SIZES.expanded.rail : ISLAND_SIZES[size].height;
+  const strip = assistantMode ? ISLAND_SIZES.expanded.strip : 0;
   // The main process reports the usable stage height for the active display
   // (window height minus top gap and shadow clearance). Clamp the measured body
   // so the whole pill — including shadow and divider — stays inside the window
   // even on small or heavily scaled displays. Falls back unclamped when absent.
   const stageMax = Number(state.stageMax);
   const bodyLimit = Number.isFinite(stageMax) && stageMax > 0
-    ? Math.max(96, stageMax - rail - 2)
+    ? Math.max(96, stageMax - rail - strip - 2)
     : Number.POSITIVE_INFINITY;
-  const cardHeight = expanded && !chatMode
+  const cardHeight = assistantMode && !chatMode
     ? Math.min(MAX_CARD_HEIGHT, measureCard(contentWidth), bodyLimit)
     : 0;
   const chatHeight = chatMode
@@ -871,25 +937,29 @@ function targetGeometry() {
   const feedHeight = feedMode
     ? Math.min(MAX_CARD_HEIGHT, measureFeed(contentWidth), bodyLimit)
     : 0;
+  const homeHeight = homeMode
+    ? Math.min(MAX_CARD_HEIGHT, measureHome(contentWidth), bodyLimit)
+    : 0;
+  const bodyHeight = chatMode ? chatHeight : feedMode ? feedHeight : homeMode ? homeHeight : cardHeight;
   let width;
   let height;
   let radius;
   if (state.style === 'notch') {
     width = NOTCH_WIDTH;
     height = chatMode
-      ? Math.max(rail + 38, Math.round(rail + chatHeight + 2))
+      ? Math.max(rail + strip + 38, Math.round(rail + strip + chatHeight + 2))
       : expanded
-        ? Math.round(rail + (feedMode ? feedHeight : cardHeight) + 2)
+        ? Math.round(rail + strip + bodyHeight + 2)
         : rail;
     radius = 22;
   } else {
     width = contentWidth;
     height = chatMode
-      ? Math.max(rail + 38, Math.round(rail + chatHeight + 2))
+      ? Math.max(rail + strip + 38, Math.round(rail + strip + chatHeight + 2))
       : expanded
-        ? Math.round(rail + (feedMode ? feedHeight : cardHeight) + 2)
+        ? Math.round(rail + strip + bodyHeight + 2)
         : ISLAND_SIZES[size].height;
-    radius = expanded ? 26 : size === 'medium' ? 24 : height / 2;
+    radius = expanded ? 34 : size === 'medium' ? 24 : height / 2;
   }
   return { width, height, radius };
 }
@@ -1058,6 +1128,67 @@ function updateScrollFade() {
   card.dataset.scrolled = scrolled ? 'true' : 'false';
 }
 
+/* --- Home tab (Stage 2) ----------------------------------------------------- */
+/* Media card runs on the adapter mock and always carries the Preview badge;
+   nothing here touches the real SMTC pipeline (that stays on the medium band).
+   The time card is the honest one: the local clock drives gradient, title and
+   the glowing arc dot, and temperature renders "--" until real weather lands. */
+function formatClock(totalSeconds) {
+  const seconds = Math.max(0, Math.round(Number(totalSeconds) || 0));
+  const minutes = Math.floor(seconds / 60);
+  return `${minutes}:${String(seconds % 60).padStart(2, '0')}`;
+}
+
+function positionTimeDot(minutes) {
+  if (!timeArcPath || !timeDot || typeof timeArcPath.getTotalLength !== 'function') return;
+  const length = timeArcPath.getTotalLength();
+  if (!length) return;
+  const fraction = Math.max(0, Math.min(1, (Number(minutes) || 0) / 1440));
+  const point = timeArcPath.getPointAtLength(fraction * length);
+  timeDot.setAttribute('cx', point.x.toFixed(1));
+  timeDot.setAttribute('cy', point.y.toFixed(1));
+  if (timeDotHalo) {
+    timeDotHalo.setAttribute('cx', point.x.toFixed(1));
+    timeDotHalo.setAttribute('cy', point.y.toFixed(1));
+  }
+}
+
+function renderHome() {
+  if (!islandHome || islandHome.hidden) return;
+  const adapters = window.islandAdapters || null;
+  const media = adapters?.getMedia?.() || null;
+  if (media) {
+    if (homeMediaTitle) homeMediaTitle.textContent = String(media.title || 'Preview track');
+    if (homeMediaArtist) {
+      homeMediaArtist.textContent = [media.artist, media.album].filter(Boolean).join(' · ');
+    }
+    const ratio = Number(media.duration) > 0
+      ? Math.max(0, Math.min(1, Number(media.position) / Number(media.duration)))
+      : 0;
+    if (homeMediaProgressFill) homeMediaProgressFill.style.width = `${Math.round(ratio * 100)}%`;
+    if (homeMediaElapsed) homeMediaElapsed.textContent = formatClock(media.position);
+    if (homeMediaTotal) homeMediaTotal.textContent = formatClock(media.duration);
+    notch.dataset.homePlaying = media.playing ? 'true' : 'false';
+    const locked = media.controls === false;
+    if (homeMediaPlayButton) homeMediaPlayButton.disabled = locked;
+    if (homeMediaPrevButton) homeMediaPrevButton.disabled = locked;
+    if (homeMediaNextButton) homeMediaNextButton.disabled = locked;
+  }
+  const weather = adapters?.getWeather?.() || null;
+  const time = adapters?.getTimeOfDay?.() || null;
+  if (!timeCard || !time) return;
+  timeCard.dataset.phase = time.phase;
+  if (timeTitle) timeTitle.textContent = String(time.label || 'Day');
+  if (timeSubtitle) {
+    const now = new Date();
+    const weekday = now.toLocaleDateString(undefined, { weekday: 'long' });
+    timeSubtitle.textContent = `${weekday} · ${now.toTimeString().slice(0, 5)} local`;
+  }
+  const tempC = weather && weather.tempC != null ? Number(weather.tempC) : null;
+  if (timeTemp) timeTemp.textContent = tempC != null && Number.isFinite(tempC) ? `${Math.round(tempC)}°` : '--';
+  positionTimeDot(time.minutes);
+}
+
 function render() {
   const status = SUPPORTED_STATES.has(state.status) ? state.status : 'thinking';
   const size = sizeFor(status);
@@ -1065,8 +1196,13 @@ function render() {
   const openChat = status === 'chat' && state.chatOpen;
   const interactiveChat = openChat && !state.chatPreview;
   const wasVisible = notch.dataset.visible === 'true';
+  // Stage 2 tab model: state patches steer the tab; the user's pinned choice
+  // survives only while the pill rests idle-expanded.
+  if (size !== 'expanded') pinnedTab = null;
+  const tab = islandTabFor(status, size === 'expanded');
   notch.dataset.state = status;
   notch.dataset.size = size;
+  notch.dataset.tab = tab;
   notch.dataset.style = style;
   notch.dataset.visible = state.visible ? 'true' : 'false';
   notch.dataset.mode = state.mode || 'agent';
@@ -1111,9 +1247,20 @@ function render() {
     && status !== 'approval'
     && !openChat);
   const openFeed = status === 'feed';
-  card.hidden = openChat || openFeed;
+  // Stage 2 expanded tabs: the tab rail shows only when expanded, the head band
+  // (blob strip) only on the Assistant tab, and the Home grid takes the body
+  // whenever it is the active tab.
+  if (pillTabs) pillTabs.hidden = size !== 'expanded';
+  const homeMode = size === 'expanded' && tab === 'home';
+  tabButtons.forEach((button) => {
+    button.classList.toggle('is-active', size === 'expanded' && button.dataset.tab === tab);
+  });
+  if (retryButton) retryButton.hidden = status !== 'error';
+  card.hidden = openChat || openFeed || homeMode;
   chatPanel.hidden = !openChat;
   if (feedPanel) feedPanel.hidden = !openFeed;
+  if (islandHome) islandHome.hidden = !homeMode;
+  if (homeMode) renderHome();
   // Phase F media band: the pill renders real SMTC metadata only when the
   // media status is up; the transport row behaves even without the mascot.
   const media = status === 'media' && state.media && typeof state.media === 'object' ? state.media : null;
@@ -1306,6 +1453,18 @@ function updateSpeech(dt) {
   }
 }
 
+/* --- Stage 2b glow level --------------------------------------------------- */
+/* External intensity knob for the orb's iris band. The realtime driver stays
+   the --level pipeline (applyAudioLevel for the mic, updateSpeech for TTS);
+   this hook only clamps and exposes a multiplier for the settings slider to
+   bind later, without touching behavior. */
+function setGlowLevel(value) {
+  if (!companion) return;
+  const level = Number(value);
+  if (Number.isFinite(level)) companion.style.setProperty('--blob-glow', Math.max(0, Math.min(1.3, level)).toFixed(2));
+  else companion.style.removeProperty('--blob-glow');
+}
+
 /* --- Poke / dizzy (blob interaction) ------------------------------------- */
 function triggerCompanionPoke() {
   if (!companion || !state.visible || state.companionEnabled === false || reducedMotion()) return;
@@ -1380,6 +1539,7 @@ copyButton.addEventListener('click', () => {
 });
 
 collapseButton.addEventListener('click', () => {
+  pinnedTab = null;
   api.overlay.expand('collapsed');
 });
 
@@ -1420,6 +1580,77 @@ document.querySelector('.pill-head')?.addEventListener('click', (event) => {
   if (!state.visible || notch.dataset.state !== 'idle') return;
   api.overlay.feedToggle?.();
 });
+
+/* --- Stage 2 expanded tabs ---------------------------------------------------- */
+/* State patches steer the tab automatically; a manual pin only survives while
+   the pill rests idle-expanded. Approvals and open chat lock the Assistant tab
+   so their controls stay reachable. Clicking a tab on a collapsed pill pins it
+   first, exactly like the head-click expansion. */
+function setPinnedTab(tab, expandNeeded) {
+  if (!TABS.has(tab)) return;
+  const status = notch.dataset.state;
+  if (status === 'approval') return;
+  if (status === 'chat' && state.chatOpen && tab !== 'assistant') return;
+  pinnedTab = tab;
+  if (expandNeeded) api.overlay.expand('pinned');
+  else render();
+}
+
+tabButtons.forEach((button) => {
+  button.addEventListener('click', () => {
+    if (!state.visible) return;
+    if (notch.dataset.size === 'expanded') setPinnedTab(button.dataset.tab, false);
+    else setPinnedTab(button.dataset.tab, true);
+  });
+});
+
+// Round settings button: opens the dashboard settings window. The island pill
+// stays as-is — approvals keep their flow, and the dashboard opens on top.
+islandSettingsButton?.addEventListener('click', () => {
+  if (!state.visible) return;
+  try {
+    api.overlay.openSettings?.();
+  } catch {
+    // Blocked-channel guard in preload; never crashes the pill.
+  }
+});
+
+// Clear all: walks the live stack dismisses every card through the same
+// per-item channel main.cjs already normalizes (and forgets) in order.
+feedClearButton?.addEventListener('click', () => {
+  const items = Array.isArray(state.notifications) ? state.notifications : [];
+  for (const item of items) {
+    if (!item || !item.id) continue;
+    try {
+      api.overlay.dismissNotification(String(item.id));
+    } catch {
+      // Blocked channel guard in preload; the stack re-checks on repaint.
+    }
+  }
+});
+
+// Error state Retry: starts a fresh voice turn (real assistant toggle), so the
+// retry is a real action rather than a decorative reset.
+retryButton?.addEventListener('click', () => {
+  try {
+    api.toggleTalk?.();
+  } catch {
+    // Blocked channel guard in preload; the pill stays in the error state.
+  }
+});
+
+/* Home preview transport: drives the adapter mock only (no real player), the
+   badge stays on until a real source is wired behind the adapter. */
+function previewMedia(action) {
+  const adapters = window.islandAdapters;
+  if (!adapters || typeof adapters.mediaAction !== 'function') return;
+  const next = adapters.mediaAction(action);
+  notch.dataset.homePlaying = next && next.playing ? 'true' : 'false';
+}
+
+homeMediaPlayButton?.addEventListener('click', () => previewMedia('toggle'));
+homeMediaPrevButton?.addEventListener('click', () => previewMedia('previous'));
+homeMediaNextButton?.addEventListener('click', () => previewMedia('next'));
 
 denyButton.addEventListener('click', () => {
   respond(notch.dataset.approvalId, false, denyButton);
@@ -1472,6 +1703,7 @@ window.addEventListener('keydown', (event) => {
   }
   if (event.key === 'Escape' && state.expand === 'pinned') {
     event.preventDefault();
+    pinnedTab = null;
     api.overlay.expand('collapsed');
   }
 });
@@ -1502,6 +1734,7 @@ resizeObserver.observe(card);
 resizeObserver.observe(head);
 resizeObserver.observe(chatInput);
 if (feedList) resizeObserver.observe(feedList);
+if (islandHome) resizeObserver.observe(islandHome);
 
 motionQuery.addEventListener?.('change', () => {
   document.body.dataset.reducedMotion = reducedMotion() ? 'true' : 'false';
@@ -1544,5 +1777,14 @@ api.overlay.onCursor?.((coords) => {
 });
 
 document.fonts?.ready?.then(() => retarget()).catch(() => {});
+
+/* Stage 2b Lite mode: static gradients, no blur layers, no morph. Auto-selected
+   on low-power hardware (<= 4 threads) or when prefers-reduced-motion is on;
+   the reduced-motion media block in island.css already statics the orb there —
+   the class keeps the same look consistent for the hardware-tier path. */
+(() => {
+  const cores = navigator.hardwareConcurrency || 8;
+  if (reducedMotion() || cores <= 4) companion?.classList.add('is-lite');
+})();
 applyGeometry();
 render();

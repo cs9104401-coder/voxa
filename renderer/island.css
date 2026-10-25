@@ -1,39 +1,57 @@
-/* Voxa island overlay. Loaded only by overlay.html after style.css. */
+/* Voxa island overlay. Loaded only by overlay.html, after style.css and
+   tokens.css (island tokens live in tokens.css under .notch-body). */
 
 .notch-body{display:flex;align-items:flex-start;justify-content:center;overflow:hidden;background:transparent;--motion:1}
 .overlay-stage{position:fixed;inset:0;display:flex;align-items:flex-start;justify-content:center;padding-top:10px;pointer-events:none}
 .overlay-stage[data-style=notch]{padding-top:0}
 /* Geometry tokens — the single layout system. Band heights mirror ISLAND_SIZES
    in renderer/overlay.js; scripts/island-capture.cjs cross-checks both.
-   Shared grid: --pad-x pads every row (header, card text, footer) on both sides,
-   --row-gap separates header from body, --item-gap separates blob from label,
-   --blob-w/-h size the avatar slot the companion fills. */
+   Shared grid: --pad-x pads every row (tabs, header, card text, footer) on both
+   sides, --row-gap separates head from body, --item-gap separates blob from
+   label, --blob-w/-h size the avatar slot the companion fills.
+   Stage-2 shape: pure black pill, flat top, bottom radii 34 (expanded) /
+   24 (medium) / full pill (compact); no hairlines anywhere. */
 .pill{position:relative;flex:none;width:208px;height:88px;padding:0;margin:0;max-height:none;background:transparent;border:0;border-radius:44px;box-shadow:none;filter:none;clip-path:none;overflow:visible;pointer-events:none!important;transition:none;transform-origin:50% 44px;will-change:width,height,border-radius,transform,opacity;--pad-x:18px;--row-gap:10px;--item-gap:10px;--blob-w:38px;--blob-h:42px}
 .pill[data-style=notch]{transform-origin:50% 0}
 .pill[data-size=medium]{--pad-x:16px}
 .pill[data-size=expanded]{--pad-x:16px}
-/* Surface: deep charcoal ink over the desktop (--island-surface, Ref-2 dark),
-   hairline ring + top highlight for definition on any wallpaper; shadow unchanged. */
-.pill-surface{position:absolute;inset:0;overflow:hidden;border-radius:inherit;background:var(--island-surface);box-shadow:inset 0 0 0 1px rgba(255,255,255,.05),inset 0 1px 0 rgba(255,255,255,.085),inset 0 -1px 0 rgba(255,255,255,.02),0 24px 64px rgba(0,0,0,.58),0 9px 26px rgba(0,0,0,.42),0 2px 7px rgba(0,0,0,.34)}
-/* Notch style: a clean solid near-black pill — no glow halo, no seam lines across
-   the surface, soft drop shadow only. Island keeps its translucent treatment. */
-.pill[data-style=notch] .pill-surface{background:var(--island-notch-bg);box-shadow:0 14px 34px rgba(0,0,0,.55),0 5px 16px rgba(0,0,0,.32)}
+/* Surface: pure black (#000 token) over the desktop; depth is the drop shadow
+   only — no inset rings, no hairline definition (island-notch ref). */
+.pill-surface{position:absolute;inset:0;overflow:hidden;border-radius:inherit;background:var(--island-surface);box-shadow:var(--island-depth)}
+/* Notch style: clean solid black pill — no glow halo, no seam lines, soft
+   drop shadow only. Island keeps the floating treatment. */
+.pill[data-style=notch] .pill-surface{background:var(--island-notch-bg);box-shadow:var(--island-notch-depth)}
 .pill[data-style=notch] .pill-glow{display:none}
 .pill[data-style=notch] .pill-card,.pill[data-style=notch] .pill-feed,.pill[data-style=notch] .chat-panel{border-top:0}
-.pill-glow{position:absolute;inset:-6px;border-radius:inherit;border:1px solid var(--accent-glow);box-shadow:0 0 30px var(--accent-glow),inset 0 0 18px var(--accent-glow-soft);opacity:0;pointer-events:none;transition:opacity calc(.22s * var(--motion)) ease}
-/* Warm edge-light (Ref 2): reserved for active moments only — live mic, real
-   speech, approval attention. Never decorative on idle or notification states. */
+.pill-glow{position:absolute;inset:-6px;border-radius:inherit;border:0;box-shadow:0 0 30px var(--accent-glow),inset 0 0 18px var(--accent-glow-soft);opacity:0;pointer-events:none;transition:opacity calc(.22s * var(--motion)) ease}
+/* Warm edge-light: reserved for active moments only — live mic, real speech,
+   approval attention. Never decorative on idle or notification states. */
 .pill[data-state=listening][data-visible=true] .pill-glow{animation:island-glow calc(2s * var(--motion)) ease-in-out infinite}
 .pill[data-state=answer][data-speaking=true][data-visible=true] .pill-glow{opacity:.58;animation:island-glow calc(2.6s * var(--motion)) ease-in-out infinite}
 .pill[data-state=approval][data-visible=true] .pill-glow{opacity:.5;animation:island-glow calc(3.4s * var(--motion)) ease-in-out infinite}
 .pill-clip{position:absolute;inset:0;overflow:hidden;border-radius:inherit}
-.pill-content{position:absolute;top:0;bottom:0;left:50%;width:max(var(--content-width,520px),100%);transform:translateX(-50%);display:flex;flex-direction:column;color:var(--island-text)}
+.pill-content{position:absolute;top:0;bottom:0;left:50%;width:max(var(--content-width,640px),100%);transform:translateX(-50%);display:flex;flex-direction:column;color:var(--island-text)}
+/* --- Expanded tab rail (Stage 2): three 36px round tabs left, settings right.
+     The rail replaces the old 128px head band as the expanded top row; the
+     blob moves with the head band into a slim assistant strip below it. --- */
+.pill-tabs{position:relative;z-index:6;flex:none;display:none;align-items:center;gap:8px;padding:0 var(--pad-x);pointer-events:none;transition:opacity var(--island-dur) var(--island-ease),filter var(--island-dur) var(--island-ease)}
+.pill[data-size=expanded] .pill-tabs{height:52px}
+.pill[data-size=expanded] .pill-tabs{display:flex;order:-1;pointer-events:auto;padding-top:8px;animation:island-content-in calc(.3s * var(--motion)) var(--island-ease) both}
+.pill.is-hovered .pill-tabs{pointer-events:auto}
+.tab-button{flex:none;width:var(--island-tab);height:var(--island-tab);padding:0;border:0;border-radius:50%;display:grid;place-items:center;background:var(--island-raised);color:var(--island-text-dim);pointer-events:auto;transition:background var(--island-dur-fast) var(--island-ease),color var(--island-dur-fast) var(--island-ease),transform calc(.14s * var(--motion)) ease,box-shadow var(--island-dur-fast) var(--island-ease)}
+.tab-button svg{width:17px;height:17px;fill:none;stroke:currentColor;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round}
+.tab-button:hover{background:var(--island-raised-hover);color:var(--island-text)}
+.tab-button:active{transform:scale(.92)}
+.tab-button.is-active{background:var(--accent);color:var(--on-accent);box-shadow:0 4px 14px var(--accent-glow)}
+.tab-button.is-active:hover{background:var(--accent2)}
+.tab-settings{margin-left:auto}
+.pill[data-tab=home] .pill-head,.pill[data-tab=notifications] .pill-head{display:none}
 /* Header row: one flex line shared by every state — blob box at --pad-x, the
    center zone as a live flex item, actions flush right at --pad-x. */
 .pill-head{position:relative;flex:none;display:flex;align-items:center;gap:var(--item-gap);padding:0 var(--pad-x)}
 .pill[data-size=compact] .pill-head{height:88px}
 .pill[data-size=medium] .pill-head{height:104px}
-.pill[data-size=expanded] .pill-head{height:128px}
+.pill[data-size=expanded] .pill-head{height:56px}
 .pill[data-style=notch][data-size=compact] .pill-head{height:88px;padding-top:4px}
 .pill.is-hovered .pill-head{pointer-events:auto}
 .status-icon{position:relative;z-index:5;flex:none;display:grid;place-items:center;width:20px;height:20px;color:var(--island-text);transition:color calc(.2s * var(--motion)) ease}
@@ -41,32 +59,91 @@
 .pill[data-size=expanded] .status-icon{width:22px;height:22px}
 .status-icon .glyph{display:none;width:100%;height:100%;fill:none;stroke:currentColor;stroke-width:1.75;stroke-linecap:round;stroke-linejoin:round}
 .pill:not([data-state=thinking]):not([data-state=executing]):not([data-state=verifying]):not([data-state=done]):not([data-state=error]) .glyph-mark{display:block}
-/* --- Companion: CSS blob mascot (pure styling + tiny inline SVG variants; no assets) --- */
+/* --- Companion: CSS activation orb (Siri-style; pure styling + tiny inline SVG
+   variants; no assets, no Apple art — hand-built gradient layers only) --- */
 /* The companion is an avatar in the header grid: it fills the status icon's blob
    box (inset 0 of the 38x42 slot) and the header centers it vertically. Active
    moods scale it to ~47px — still comfortably inside the pill on every band.
    Scale origin is the box center, so the blob stays centered on the band. */
 .companion{display:none;position:absolute;inset:0;transform-origin:50% 50%;pointer-events:none;--look-x:0px;--look-y:0px;--look-x-mult:2.4;--look-y-mult:2.2;--blink-y:1;--act:1;animation:companion-bob calc(3.6s * var(--motion)) ease-in-out infinite}
-.pill[data-companion=true] .companion{display:block}
+.pill[data-companion=true] .companion{display:block;--blob-glow:1;--glow-core:#fff;--glow-green:#3fff96;--glow-gold:#ffd24d;--glow-orange:rgba(255,154,46,.55);--glow-cyan:#26d9ff;--glow-cobalt:rgba(10,140,255,.75);--glow-magenta:rgba(255,79,163,.9);--glow-pool-cold:rgba(44,104,160,.28);--glow-blue-deep:rgba(13,58,110,.16);--glow-ember:rgba(128,84,52,.28)}
 .pill[data-companion=true] .status-icon .glyph,.pill[data-companion=true] .status-icon .dots{display:none!important}
 /* Avatar slot: with the companion on, the status icon becomes the blob box; the
    fallback glyph keeps its 20-24px square when the companion is off. */
 .pill[data-companion=true] .status-icon{width:var(--blob-w);height:var(--blob-h)}
-.blob{position:absolute;inset:0;border-radius:46% 46% 42% 42%/52% 52% 44% 44%;transform:scale(var(--act,1));transform-origin:50% 50%;pointer-events:auto;cursor:pointer}
-.blob-body{position:absolute;inset:0;border-radius:inherit;background:radial-gradient(120% 115% at 30% 22%,#fff 0,#f2f6fc 46%,#dfe8f3 100%);box-shadow:inset -3px -4px 7px rgba(174,192,214,.42),inset 2px 3px 6px rgba(255,255,255,.95),0 3px 8px rgba(6,8,12,.28);transform-origin:50% 50%;animation:companion-breathe calc(3.6s * var(--motion)) ease-in-out infinite}
-.blob-eyes{position:absolute;left:0;right:0;top:15px;height:12px;transition:opacity calc(.12s * var(--motion)) ease}
-.blob-eye{position:absolute;top:1px;width:9px;height:10px;border-radius:50%;background:#171b24;transform:translate(calc(var(--look-x,0px) * var(--look-x-mult)),calc(var(--look-y,0px) * var(--look-y-mult))) scaleY(calc(var(--blink-y,1) * var(--eye-s,1)));transform-origin:50% 62%;transition:transform calc(.15s * var(--motion)) ease}
-.blob-eye::after{content:"";position:absolute;left:1.5px;top:1.4px;width:2.6px;height:2.6px;border-radius:50%;background:#fff;opacity:.94}
-.blob-eye-l{left:7.5px}
-.blob-eye-r{left:21.5px}
+/* Stage 2b silhouette: the orb runs slightly wider than its 38x42 slot
+   (inset 6px -1px → ~40x30, 1.33:1 per siri-blob-ref) and isolates blending so
+   the screen-blended glow layers composite against the orb's own black. */
+.blob{position:absolute;inset:6px -1px;border-radius:47% 53% 52% 48%/57% 53% 45% 44%;transform:scale(var(--act,1));transform-origin:50% 50%;pointer-events:auto;cursor:pointer;isolation:isolate}
+.blob-body{position:absolute;inset:0;border-radius:inherit;background:radial-gradient(115% 135% at 62% -14%,#0b0c12 0%,#040407 40%,#000 70%);transform-origin:50% 50%}
+/* Face restyle: the orb is a dark dome now, so the mascot's face reads in
+   light ink — same eyes/smile/mood machinery, new colors only. */
+.blob-eyes{position:absolute;left:0;right:0;top:2px;height:8px;transition:opacity calc(.12s * var(--motion)) ease}
+.blob-eye{position:absolute;top:0;width:7px;height:8px;border-radius:50%;background:#e6efff;transform:translate(calc(var(--look-x,0px) * var(--look-x-mult)),calc(var(--look-y,0px) * var(--look-y-mult))) scaleY(calc(var(--blink-y,1) * var(--eye-s,1)));transform-origin:50% 62%;transition:transform calc(.15s * var(--motion)) ease}
+.blob-eye::after{content:"";position:absolute;left:1px;top:1px;width:2px;height:2.4px;border-radius:50%;background:#fff;opacity:.9}
+.blob-eye-l{left:8px}
+.blob-eye-r{left:23.5px}
 .companion.is-blinking{--blink-y:.08}
-.blob-face{position:absolute;inset:0;pointer-events:none}
-.blob-cheek{fill:#f0a7b1;opacity:.5;transition:opacity calc(.2s * var(--motion)) ease}
-.blob-smile{fill:none;stroke:#171b24;stroke-width:2;stroke-linecap:round;opacity:.75;transition:opacity calc(.16s * var(--motion)) ease}
-.blob-mouth{fill:#171b24;opacity:0;transform-origin:19px 30px;transition:opacity calc(.16s * var(--motion)) ease}
+.blob-face{position:absolute;inset:0;pointer-events:none;transform:translateY(-5px)}
+.blob-cheek{fill:#f0a7b1;opacity:.3;transition:opacity calc(.2s * var(--motion)) ease}
+.blob-smile{fill:none;stroke:#e3ecff;stroke-width:2;stroke-linecap:round;opacity:.55;transition:opacity calc(.16s * var(--motion)) ease}
+.blob-mouth{fill:#e3ecff;opacity:0;transform-origin:19px 30px;transition:opacity calc(.16s * var(--motion)) ease}
 /* Eye-shape variants: happy arcs (done), X eyes (error), spirals (dizzy). */
-.blob-variant{position:absolute;left:50%;top:14px;width:38px;height:16px;margin-left:-19px;opacity:0;pointer-events:none;transition:opacity calc(.12s * var(--motion)) ease}
-.blob-variant path{fill:none;stroke:#171b24;stroke-width:2.4;stroke-linecap:round;stroke-linejoin:round}
+.blob-variant{position:absolute;left:50%;top:12px;width:38px;height:16px;margin-left:-19px;opacity:0;pointer-events:none;transition:opacity calc(.12s * var(--motion)) ease}
+.blob-variant path{fill:none;stroke:#e3ecff;stroke-width:2.2;stroke-linecap:round;stroke-linejoin:round}
+/* --- Stage 2b activation orb layers (reference/siri-blob-ref.png) -------------
+   Paint order matches the DOM: shape clip (dome, tint pools, iris band, glass
+   lip, light pools, speculars) → rim ring + red/blue chromatic split → the
+   kept SVG face. Band brightness/height follow --level (drive: applyAudioLevel
+   and applySpeechLevel, the realtime glow-level pipeline); setGlowLevel() is
+   the external intensity knob and writes --blob-glow. Loop budget: one 7s
+   morph + one 5-9s transform drift per band — transform / opacity /
+   border-radius / scale longhand only, blur ≤ 12px on tiny layers, and every
+   loop is paused by the existing hidden and idle rules below. */
+.blob-shape{position:absolute;inset:0;border-radius:inherit;overflow:hidden;pointer-events:none;animation:blob-morph calc(7s * var(--motion)) ease-in-out infinite}
+.blob-tint{position:absolute;border-radius:50%;mix-blend-mode:screen;pointer-events:none}
+.tint-cold{left:-8%;top:5%;width:40%;height:50%;background:radial-gradient(closest-side,var(--glow-pool-cold),var(--glow-blue-deep) 62%,transparent 86%);filter:blur(6px)}
+.tint-ember{right:-5%;top:28%;width:36%;height:44%;background:radial-gradient(closest-side,var(--glow-ember),transparent 80%);filter:blur(8px)}
+.blob-band{position:absolute;border-radius:50%;mix-blend-mode:screen;pointer-events:none;opacity:calc(.3 + .7 * var(--blob-glow,1) * var(--level,0));scale:1 calc(1 + var(--level,0) * .4);transform-origin:50% 50%}
+.band-core{left:20%;right:32%;top:48%;height:26%;background:radial-gradient(55% 100% at 45% 50%,#fff 0%,rgba(255,255,255,.98) 55%,rgba(240,248,255,.55) 78%,transparent 95%);filter:blur(5px);animation:band-drift calc(6.4s * var(--motion)) ease-in-out infinite}
+.band-iris-left{left:6%;right:56%;top:48%;height:20%;background:radial-gradient(closest-side,var(--glow-green) 0%,var(--glow-gold) 42%,var(--glow-orange) 64%,transparent 90%);filter:blur(6px);animation:band-drift calc(8.6s * var(--motion)) ease-in-out infinite reverse}
+.band-iris-cyan{left:36%;right:14%;top:56%;height:20%;background:radial-gradient(closest-side,var(--glow-cyan) 0%,var(--glow-cobalt) 48%,transparent 88%);filter:blur(6px);animation:band-drift calc(7.2s * var(--motion)) ease-in-out infinite}
+.band-iris-right{left:64%;right:-4%;top:44%;height:20%;background:radial-gradient(closest-side,var(--glow-magenta) 0%,var(--glow-orange) 54%,transparent 86%);filter:blur(6px);animation:band-drift calc(9.4s * var(--motion)) ease-in-out infinite reverse}
+.blob-glass{position:absolute;left:3%;right:3%;top:76%;bottom:1%;border-radius:46% 46% 48% 48%/100% 100% 24% 24%;pointer-events:none;background:radial-gradient(52% 34% at 55% 6%,rgba(255,255,255,.3),transparent 74%),radial-gradient(15% 70% at 55% 66%,rgba(4,7,12,.42),transparent 80%),linear-gradient(180deg,rgba(2,5,9,.5) 0%,rgba(255,255,255,.02) 12%,rgba(243,249,255,.06) 34%,rgba(244,250,255,.18) 60%,rgba(248,252,255,.32) 82%,rgba(255,255,255,.44) 100%)}
+.blob-pool{position:absolute;mix-blend-mode:screen;pointer-events:none}
+.pool-l{left:14%;top:78%;width:30%;height:20%;border-radius:62% 72% 64% 58%/74% 78% 58% 62%;background:radial-gradient(closest-side,rgba(255,255,255,.66),rgba(213,237,255,.28) 58%,transparent 92%);filter:blur(3px)}
+.pool-r{left:54%;top:74%;width:36%;height:24%;border-radius:66% 60% 62% 70%/72% 66% 64% 70%;background:radial-gradient(closest-side,rgba(255,255,255,.58),rgba(205,231,246,.3) 56%,transparent 92%);filter:blur(4px)}
+.blob-dots{position:absolute;left:21%;top:80%;width:20%;height:16%;pointer-events:none}
+.blob-dots::before,.blob-dots::after{content:"";position:absolute;width:1.7px;height:2.1px;border-radius:50%;background:#22b6ff;box-shadow:0 0 1.5px rgba(34,182,255,.7)}
+.blob-dots::before{left:8%;top:22%}
+.blob-dots::after{left:38%;top:40%;width:1.4px;height:1.7px}
+.blob-spec{position:absolute;mix-blend-mode:screen;pointer-events:none}
+.spec-top{left:10%;top:10%;width:32%;height:15%;border-radius:50%;background:radial-gradient(closest-side,rgba(255,255,255,.85),transparent 78%);filter:blur(2.5px);transform:rotate(-16deg)}
+.spec-arc{right:4%;bottom:7%;width:38%;height:12%;border-radius:50%;background:radial-gradient(50% 50% at 50% 50%,transparent 44%,rgba(255,255,255,.5) 52%,transparent 62%);filter:blur(2px);transform:rotate(9deg)}
+/* Rim: 1.5px masked gradient ring, strongest left and bottom-right, fading to
+   nothing at the top; the red/blue duplicates offset ±1px for the chromatic
+   split. mask-composite keeps it a ring, not a fill. */
+.blob-rim{position:absolute;inset:-1px;border-radius:inherit;padding:1.5px;pointer-events:none;mix-blend-mode:screen;opacity:calc(.8 * var(--blob-glow,1));-webkit-mask:linear-gradient(#000 0 0) content-box,linear-gradient(#000 0 0);-webkit-mask-composite:xor;mask:linear-gradient(#000 0 0) content-box,linear-gradient(#000 0 0);mask-composite:exclude}
+.rim-main{background:linear-gradient(148deg,rgba(255,170,72,.95) 0%,rgba(255,236,158,.9) 10%,rgba(184,255,204,.8) 18%,#fff 30%,rgba(196,230,255,.8) 44%,rgba(255,255,255,.22) 56%,rgba(255,214,160,.14) 66%,rgba(255,150,196,.85) 78%,rgba(255,255,255,.9) 94%,rgba(186,238,255,.9) 100%)}
+.rim-red{inset:-2.5px;padding:1px;background:linear-gradient(198deg,rgba(255,44,72,.6),rgba(255,140,94,.4) 42%,rgba(255,60,64,.65) 88%);transform:translate(.5px,.8px);opacity:calc(.32 * var(--blob-glow,1))}
+.rim-blue{inset:-2.5px;padding:1px;background:linear-gradient(338deg,rgba(64,142,255,.6),transparent 42%,rgba(94,182,255,.5) 90%);transform:translate(-.7px,-.6px);opacity:calc(.3 * var(--blob-glow,1))}
+/* Soft ground shadow; solid gradients only (no backdrop-filter — invisible in
+   a transparent OSR window anyway). */
+.blob-shadow{position:absolute;left:6%;right:6%;bottom:-12%;height:18%;border-radius:50%;background:radial-gradient(closest-side,rgba(1,3,7,.5),transparent 74%);pointer-events:none}
+/* Voxa palette option: white core, amber → orange → red → pink fringes, warm
+   rim. Rainbow stays the default; this maps through the same band variables. */
+#notch[data-glow-palette=voxa] .companion{--glow-green:rgba(255,196,107,.92);--glow-gold:#ffb14d;--glow-orange:rgba(255,118,48,.8);--glow-cyan:#ff5a45;--glow-cobalt:rgba(198,34,52,.8);--glow-magenta:rgba(255,111,179,.95);--glow-pool-cold:rgba(150,96,52,.3);--glow-blue-deep:rgba(120,64,36,.2)}
+#notch[data-glow-palette=voxa] .rim-main{background:linear-gradient(148deg,rgba(255,124,44,1) 0%,rgba(255,190,120,.75) 10%,rgba(255,255,255,.9) 26%,rgba(255,170,90,.5) 42%,rgba(255,255,255,.06) 54%,rgba(255,120,120,.05) 66%,rgba(255,150,110,.55) 82%,rgba(255,96,150,.9) 93%,rgba(255,70,70,1) 100%)}
+@keyframes band-drift{0%,100%{transform:translateX(-2%) rotate(-1.6deg) scaleY(1)}50%{transform:translateX(2%) rotate(1.3deg) scaleY(1.07)}}
+@keyframes blob-morph{0%,100%{border-radius:47% 53% 52% 48%/57% 53% 45% 44%}33%{border-radius:51% 49% 54% 46%/52% 57% 43% 46%}66%{border-radius:49% 51% 48% 52%/57% 51% 45% 49%}}
+/* Lite mode: static gradients, no blur layers, no morph, no chromatic split —
+   picked automatically on the low hardware tier or reduced motion (overlay.js
+   bootstrap); prefer-reduced-motion gets the same look via the media block
+   at the end of this file. */
+.companion.is-lite .blob-shape{animation:none}
+.companion.is-lite .blob-band{animation:none;opacity:.5;scale:1 1;filter:none}
+.companion.is-lite .blob-tint,.companion.is-lite .blob-pool,.companion.is-lite .blob-spec{filter:none}
+.companion.is-lite .rim-red,.companion.is-lite .rim-blue{display:none}
 /* Expression states, driven by the existing data-expression attribute. */
 .companion[data-expression=listening]{--act:1.13;--eye-s:1.18}
 .companion[data-expression=listening] .blob-body{animation:blob-listen calc(1.05s * var(--motion)) ease-in-out infinite}
@@ -94,6 +171,9 @@
 .companion.is-dizzy .blob-smile{opacity:0}
 .companion.is-waking{animation:companion-wake calc(.8s * var(--motion)) ease both}
 .pill[data-visible=false] .companion,.pill[data-visible=false] .companion *{animation-play-state:paused!important}
+/* Low-power rule: a resting, un-hovered pill never animates idle drift — the
+   mascot pauses entirely while idle and collapsed unless the pointer is on it. */
+.pill[data-state=idle][data-visible=true]:not(.is-hovered) .companion,.pill[data-state=idle][data-visible=true]:not(.is-hovered) .blob-body,.pill[data-state=idle][data-visible=true]:not(.is-hovered) .blob-shape,.pill[data-state=idle][data-visible=true]:not(.is-hovered) .blob-band{animation-play-state:paused!important}
 .pill[data-state=done] .glyph-check{display:block;color:var(--good)}
 .pill[data-state=error] .glyph-alert{display:block;color:var(--bad)}
 .pill[data-state=error] .status-icon{color:var(--bad)}
@@ -131,15 +211,62 @@
    listening centerpiece; the slot band rules above stay first for syncCheck. */
 .pill .level-meter .meter-canvas{display:none;width:88px;height:30px}
 .pill[data-size=compact][data-state=listening] .level-meter .meter-canvas{display:block}
-.stop-button{position:relative;z-index:3;flex:none;margin-left:auto;width:26px;height:26px;padding:0;border:0;border-radius:50%;display:grid;place-items:center;background:rgba(255,255,255,.06);box-shadow:inset 0 0 0 1px rgba(255,255,255,.08);pointer-events:auto;transition:background calc(.16s * var(--motion)) ease,transform calc(.14s * var(--motion)) ease,opacity calc(.18s * var(--motion)) ease}
+.stop-button{position:relative;z-index:3;flex:none;margin-left:auto;width:26px;height:26px;padding:0;border:0;border-radius:50%;display:grid;place-items:center;background:rgba(255,255,255,.06);pointer-events:auto;transition:background calc(.16s * var(--motion)) ease,transform calc(.14s * var(--motion)) ease,opacity calc(.18s * var(--motion)) ease}
 .pill[data-size=medium] .stop-button,.pill[data-size=expanded] .stop-button{width:28px;height:28px}
 .stop-button:hover{background:rgba(255,255,255,.15);transform:scale(1.06)}
 .stop-button:active{background:rgba(255,255,255,.24);transform:scale(.88)}
 .stop-glyph{width:8px;height:8px;border-radius:2px;background:#f5f7fa;transition:transform calc(.14s * var(--motion)) ease}
 .pill[data-state=done] .stop-button{opacity:0;pointer-events:none}
-.pill-body{position:relative;flex:1 1 auto;min-height:0;opacity:0;transform:translateY(-4px) scale(.97);filter:blur(4px);pointer-events:none;transition:opacity calc(.24s * var(--motion)) ease,transform calc(.32s * var(--motion)) cubic-bezier(.2,.9,.25,1),filter calc(.24s * var(--motion)) ease}
+.pill-body{position:relative;flex:1 1 auto;min-height:0;opacity:0;transform:translateY(-4px) scale(.97);filter:blur(4px);pointer-events:none;transition:opacity var(--island-dur) var(--island-ease),transform var(--island-dur) var(--island-ease),filter var(--island-dur) var(--island-ease)}
 .pill[data-size=expanded] .pill-body{opacity:1;transform:none;filter:none;pointer-events:auto}
-.pill-card{position:absolute;inset:0;display:flex;flex-direction:column;overflow:hidden;padding:var(--row-gap) var(--pad-x) 12px;border-top:1px solid var(--island-hairline)}
+/* --- Home tab (Stage 2): 2-column card grid — media player + time of day.
+     Preview data carries a small badge; the time card is real local clock. --- */
+.island-home{position:absolute;inset:0;display:grid;grid-template-columns:1fr 1fr;gap:var(--island-grid-gap);min-height:0;padding:0 var(--pad-x) 12px;pointer-events:auto}
+.island-card{position:relative;display:flex;min-height:var(--island-card-h);min-width:0;border-radius:20px;background:var(--island-raised);overflow:hidden;animation:island-card-in calc(.3s * var(--motion)) var(--island-ease) both}
+.island-card:nth-child(2){animation-delay:calc(.06s * var(--motion))}
+.pill[data-tab=home] .island-card{pointer-events:auto}
+.media-card{align-items:center;gap:12px;padding:12px 14px}
+.media-art{flex:none;width:var(--island-art);height:var(--island-art);border-radius:var(--island-art-radius);display:grid;place-items:center;background:linear-gradient(150deg,var(--island-raised-hover),#2c2118);color:#b7ae9d;box-shadow:var(--time-bezel)}
+.media-art svg{width:26px;height:26px;fill:none;stroke:currentColor;stroke-width:1.6;stroke-linecap:round;stroke-linejoin:round}
+.media-info{flex:1 1 auto;min-width:0;display:flex;flex-direction:column;gap:5px}
+.media-card-title{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:15px;font-weight:600;line-height:1.2;color:var(--island-text)}
+.media-card-artist{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px;line-height:1.2;color:var(--island-muted)}
+.media-progress{flex:none;height:3px;border-radius:2px;background:rgba(255,255,255,.14);overflow:hidden}
+.media-progress i{display:block;width:0%;height:100%;border-radius:inherit;background:var(--accent)}
+.media-times{display:flex;justify-content:space-between;font-size:9.5px;color:var(--island-muted);font-variant-numeric:tabular-nums}
+.media-card-controls{display:flex;align-items:center;gap:8px}
+.island-icon-button{flex:none;width:27px;height:27px;padding:0;border:0;border-radius:50%;display:grid;place-items:center;background:rgba(255,255,255,.07);color:var(--island-text-dim);pointer-events:auto;transition:background var(--island-dur-fast) var(--island-ease),color var(--island-dur-fast) var(--island-ease),transform calc(.14s * var(--motion)) ease}
+.island-icon-button svg{width:14px;height:14px;fill:none;stroke:currentColor;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round}
+.island-icon-button:hover{background:rgba(255,255,255,.16);color:var(--island-text)}
+.island-icon-button:active{transform:scale(.9)}
+.island-icon-button.home-play{width:31px;height:31px;background:var(--accent);color:var(--on-accent)}
+.island-icon-button.home-play:hover{background:var(--accent2);color:var(--on-accent)}
+.media-card .glyph-home-play{display:block}
+.media-card .glyph-home-pause{display:none}
+.pill[data-home-playing=true] .media-card .glyph-home-play{display:none}
+.pill[data-home-playing=true] .media-card .glyph-home-pause{display:block}
+.card-preview-badge{position:absolute;z-index:2;top:9px;right:9px;padding:2px 7px;border-radius:999px;background:rgba(255,255,255,.09);color:var(--island-text-dim);font-size:9px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;pointer-events:none}
+/* Time-of-day card (island-weather ref): soft light bezel, real local clock
+   picks day / evening / night gradients; the glowing dot travels the arc. */
+.time-card{flex-direction:column;justify-content:space-between;gap:6px;padding:12px 14px 6px;box-shadow:var(--time-bezel)}
+.time-card[data-phase=day]{background:var(--time-grad-day)}
+.time-card[data-phase=evening]{background:var(--time-grad-evening)}
+.time-card[data-phase=night]{background:var(--time-grad-night)}
+.time-head{display:flex;align-items:flex-start;justify-content:space-between;gap:8px}
+.time-titles{display:flex;flex-direction:column;gap:2px;min-width:0}
+.time-title{font-size:15px;font-weight:600;line-height:1.15;color:#fffdf9}
+.time-subtitle{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:10.5px;line-height:1.2;color:rgba(255,255,255,.82)}
+.time-temp{flex:none;font-size:15px;font-weight:650;line-height:1.15;color:#fffdf9;font-variant-numeric:tabular-nums}
+.time-arc{display:block;width:100%;height:44px}
+.time-arc-path{stroke:rgba(255,255,255,.24);stroke-width:1.4;stroke-linecap:round}
+.time-dot-halo{opacity:.4;filter:blur(5px)}
+.time-dot,.time-dot-halo{fill:var(--time-dot-day)}
+.time-card[data-phase=evening] .time-dot,.time-card[data-phase=evening] .time-dot-halo{fill:var(--time-dot-evening)}
+.time-card[data-phase=night] .time-dot,.time-card[data-phase=night] .time-dot-halo{fill:var(--time-dot-night)}
+/* The card container is the third absolute body panel (next to chat and feed):
+   inset-0 filling .pill-body, column flex, and — the part the harness checks —
+   it hands --pad-x down to card text and footer actions on the shared grid. */
+.pill-card{position:absolute;inset:0;display:flex;flex-direction:column;overflow:hidden;padding:4px var(--pad-x) 12px;pointer-events:auto}
 .card-text{flex:1 1 auto;min-height:0;max-height:300px;overflow-y:auto;overscroll-behavior:contain;padding:2px 0 8px;font-size:14px;line-height:1.5;color:var(--text);scrollbar-width:thin;scrollbar-color:rgba(255,255,255,.2) transparent;pointer-events:auto}
 .pill[data-scrolled=true] .card-text{-webkit-mask-image:linear-gradient(to bottom,transparent 0,#000 18px);mask-image:linear-gradient(to bottom,transparent 0,#000 18px)}
 .pill[data-more-below=true] .card-text{-webkit-mask-image:linear-gradient(to bottom,#000 calc(100% - 16px),transparent);mask-image:linear-gradient(to bottom,#000 calc(100% - 16px),transparent)}
@@ -161,10 +288,10 @@
 .card-ghost .word{animation:none;opacity:1;transform:none;filter:none}
 .card-actions{flex:none;display:flex;align-items:center;justify-content:flex-end;gap:8px;min-height:0;padding-top:4px}
 .approval-actions{display:flex;gap:8px;width:100%;justify-content:flex-end}
-.notch-button,.copy-button{display:inline-flex;align-items:center;justify-content:center;gap:6px;height:30px;padding:0 12px;border-radius:999px;border:1px solid rgba(255,255,255,.13);background:rgba(255,255,255,.07);color:var(--island-text);font-size:12.5px;line-height:1;pointer-events:auto;transition:transform calc(.14s * var(--motion)) ease,background calc(.16s * var(--motion)) ease,filter calc(.16s * var(--motion)) ease}
-.notch-button.primary{background:var(--accent);border-color:transparent;color:var(--on-accent);font-weight:600}
+.notch-button,.copy-button{display:inline-flex;align-items:center;justify-content:center;gap:6px;height:30px;padding:0 12px;border-radius:999px;border:0;background:var(--island-raised);color:var(--island-text);font-size:12.5px;line-height:1;pointer-events:auto;transition:transform calc(.14s * var(--motion)) ease,background calc(.16s * var(--motion)) ease,filter calc(.16s * var(--motion)) ease}
+.notch-button.primary{background:var(--accent);color:var(--on-accent);font-weight:600}
 .notch-button.secondary{color:var(--island-text-dim)}
-.notch-button:hover,.copy-button:hover{background:rgba(255,255,255,.14)}
+.notch-button:hover,.copy-button:hover{background:var(--island-raised-hover)}
 .notch-button.primary:hover{background:var(--accent2);filter:brightness(1.04)}
 .notch-button:active,.copy-button:active,.notch-button.is-pressed{transform:scale(.93);filter:brightness(1.12)}
 .notch-button kbd{padding:1px 5px;border-radius:5px;border:1px solid rgba(255,255,255,.16);background:rgba(255,255,255,.06);font-family:inherit;font-size:10px;color:inherit;opacity:.72}
@@ -177,13 +304,13 @@
 .progress-line i{display:block;width:100%;height:100%;border-radius:inherit;background:linear-gradient(90deg,var(--accent-deep),var(--accent2));transform:scaleX(0);transform-origin:left center}
 .head-actions{position:relative;z-index:3;display:flex;align-items:center;gap:4px;margin-left:auto}
 .head-actions .stop-button{margin-left:0}
-.head-button{flex:none;width:26px;height:26px;padding:0;border:0;border-radius:50%;display:grid;place-items:center;background:rgba(255,255,255,.06);box-shadow:inset 0 0 0 1px rgba(255,255,255,.08);color:var(--island-text-dim);pointer-events:auto;transition:background calc(.16s * var(--motion)) ease,transform calc(.14s * var(--motion)) ease,opacity calc(.18s * var(--motion)) ease}
+.head-button{flex:none;width:26px;height:26px;padding:0;border:0;border-radius:50%;display:grid;place-items:center;background:rgba(255,255,255,.06);color:var(--island-text-dim);pointer-events:auto;transition:background calc(.16s * var(--motion)) ease,transform calc(.14s * var(--motion)) ease,opacity calc(.18s * var(--motion)) ease}
 .pill[data-size=medium] .head-button,.pill[data-size=expanded] .head-button{width:28px;height:28px}
 .head-button svg{width:15px;height:15px;fill:none;stroke:currentColor;stroke-width:1.6;stroke-linecap:round;stroke-linejoin:round}
 .head-button:hover{background:rgba(255,255,255,.15);transform:scale(1.05)}
 .head-button:active{background:rgba(255,255,255,.24);transform:scale(.9)}
-.head-button:focus-visible,.chat-input:focus-visible,.chat-send:focus-visible,.chat-stop:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
-.chat-panel{position:absolute;inset:0;display:flex;flex-direction:column;gap:8px;min-height:0;padding:var(--row-gap) var(--pad-x) 12px;color:var(--text);border-top:1px solid var(--island-hairline);pointer-events:auto}
+.head-button:focus-visible,.chat-input:focus-visible,.chat-send:focus-visible,.chat-stop:focus-visible,.tab-button:focus-visible,.island-icon-button:focus-visible,.feed-clear:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.chat-panel{position:absolute;inset:0;display:flex;flex-direction:column;gap:8px;min-height:0;padding:4px var(--pad-x) 12px;color:var(--text);pointer-events:auto}
 .chat-preview-label{flex:none;align-self:flex-start;padding:3px 8px;border:1px solid var(--accent-line);border-radius:999px;background:var(--accent-glow-soft);color:var(--accent-soft);font-size:10px;font-weight:600;letter-spacing:.05em;text-transform:uppercase}
 .chat-log{flex:1 1 auto;min-height:0;max-height:220px;display:flex;flex-direction:column;gap:10px;overflow-y:auto;overscroll-behavior:contain;padding:2px 2px 4px;scrollbar-width:thin;scrollbar-color:rgba(255,255,255,.18) transparent}
 .chat-log::-webkit-scrollbar{width:6px}
@@ -209,15 +336,15 @@
 .chat-note{padding:0 4px;color:var(--island-muted);font-size:10px}
 .chat-note.is-error{color:var(--bad)}
 .chat-caret{display:inline-block;width:6px;height:13px;margin-left:2px;border-radius:2px;background:var(--accent-soft);vertical-align:-2px;animation:island-caret .9s steps(2,end) infinite}
-.chat-composer{flex:none;display:flex;flex-direction:column;gap:6px;padding:8px 8px 7px;border:1px solid rgba(255,255,255,.09);border-radius:16px;background:rgba(255,255,255,.035)}
+.chat-composer{flex:none;display:flex;flex-direction:column;gap:6px;padding:8px 8px 7px;border-radius:16px;background:var(--island-raised)}
 .chat-label{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
 .chat-input{width:100%;min-height:24px;max-height:96px;padding:2px 4px;border:0;border-radius:8px;background:transparent;color:#f1f5fb;font-size:13px;line-height:1.45;resize:none;outline:none;overflow-y:hidden;scrollbar-width:thin}
 .chat-input::placeholder{color:var(--island-muted)}
 .chat-input:disabled{opacity:.7;cursor:default}
 .chat-actions{display:flex;align-items:center;gap:8px}
 .chat-hint{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--island-muted);font-size:10px;line-height:1.2}
-.chat-stop{flex:none;height:26px;padding:0 10px;border:1px solid rgba(255,255,255,.12);border-radius:999px;background:rgba(255,255,255,.06);color:#e6edf5;font-size:11px;font-weight:600;pointer-events:auto;transition:background calc(.16s * var(--motion)) ease}
-.chat-stop:hover{background:rgba(255,255,255,.12)}
+.chat-stop{flex:none;height:26px;padding:0 10px;border:0;border-radius:999px;background:rgba(255,255,255,.08);color:#e6edf5;font-size:11px;font-weight:600;pointer-events:auto;transition:background calc(.16s * var(--motion)) ease}
+.chat-stop:hover{background:rgba(255,255,255,.14)}
 .chat-stop:disabled{opacity:.5;cursor:not-allowed}
 .chat-send{flex:none;width:28px;height:28px;padding:0;border:0;border-radius:50%;display:grid;place-items:center;background:var(--accent);color:var(--on-accent);pointer-events:auto;transition:background calc(.16s * var(--motion)) ease,transform calc(.14s * var(--motion)) ease,opacity calc(.16s * var(--motion)) ease}
 .chat-send svg{width:15px;height:15px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
@@ -227,22 +354,26 @@
 .chat-error{flex:none;padding:0 4px;color:var(--bad);font-size:11px;line-height:1.4}
 .chat-panel[data-preview=true] .chat-composer{opacity:.72}
 .chat-panel[data-preview=true] .chat-input,.chat-panel[data-preview=true] .chat-send,.chat-panel[data-preview=true] .chat-stop{pointer-events:none}
-/* --- Notification feed (Ref 1): stacked Voxa-internal alerts --------------- */
-/* The feed is an expanded-state body panel, like chat. Items are always Voxa
-   events (turn results, downloads, health) — never mirrored Windows
-   notifications. The newest item wears the warm gradient highlight; the rest
-   stay neutral; NEW/OLD section labels split the stack. Every card carries a
-   timestamp and a working dismiss control. */
-.pill-feed{position:absolute;inset:0;display:flex;flex-direction:column;gap:8px;min-height:0;padding:var(--row-gap) var(--pad-x) 12px;border-top:1px solid var(--island-hairline);color:var(--island-text);pointer-events:auto}
+/* --- Notification feed: stacked pills for Voxa-internal alerts --------------- */
+/* The feed is the Notifications tab body. Items are always Voxa events (turn
+   results, downloads, health) — never mirrored Windows notifications. The
+   newest item wears the warm gradient highlight; the rest stay neutral;
+   NEW/OLD section labels split the stack; every card carries a timestamp, a
+   working dismiss control, and Clear all empties the stack. */
+.pill-feed{position:absolute;inset:0;display:flex;flex-direction:column;gap:8px;min-height:0;padding:4px var(--pad-x) 12px;color:var(--island-text);pointer-events:auto}
 .feed-head{flex:none;display:flex;align-items:baseline;justify-content:space-between;gap:8px}
 .feed-title{font-size:12px;font-weight:650;letter-spacing:.09em;text-transform:uppercase;color:var(--island-text-dim)}
+.feed-head-actions{display:flex;align-items:baseline;gap:10px;min-width:0}
 .feed-count{font-size:11px;font-weight:600;color:var(--accent-soft);white-space:nowrap}
+.feed-clear{flex:none;border:0;background:transparent;padding:2px 7px;border-radius:8px;color:var(--accent-soft);font-size:11px;font-weight:600;font-family:inherit;pointer-events:auto;transition:background var(--island-dur-fast) var(--island-ease),color var(--island-dur-fast) var(--island-ease)}
+.feed-clear:hover{background:var(--accent-tint);color:#ffe4cd}
+.feed-clear:active{transform:scale(.94)}
 .feed-preview-label{flex:none;align-self:flex-start;padding:3px 8px;border:1px solid var(--accent-line);border-radius:999px;background:var(--accent-glow-soft);color:var(--accent-soft);font-size:10px;font-weight:600;letter-spacing:.05em;text-transform:uppercase}
 .feed-list{flex:1 1 auto;min-height:0;display:flex;flex-direction:column;gap:8px;overflow-y:auto;overscroll-behavior:contain;padding:0;scrollbar-width:none}
 .feed-list::-webkit-scrollbar{display:none}
 .feed-section{flex:none;padding-left:2px;font-size:9.5px;font-weight:700;letter-spacing:.14em;text-transform:uppercase;color:var(--island-muted)}
 .feed-empty{margin:auto 8px;color:var(--island-muted);font-size:12.5px;line-height:1.5;text-align:center}
-.feed-item{flex:none;display:flex;align-items:flex-start;gap:10px;padding:10px 9px 10px 11px;border:1px solid rgba(255,255,255,.07);border-radius:16px;background:var(--island-raised)}
+.feed-item{flex:none;display:flex;align-items:flex-start;gap:10px;padding:10px 9px 10px 11px;border-radius:14px;background:var(--island-raised)}
 /* Ref 1 cascade: new cards drop into the stack with a short stagger. Only
    freshly rendered items carry .feed-enter (set in renderFeed), so dismissing
    one alert re-groups the stack without replaying every entrance. */
@@ -250,12 +381,12 @@
 @keyframes feed-in{0%{opacity:0;transform:translateY(-8px) scale(.985);filter:blur(3px)}100%{opacity:1;transform:none;filter:blur(0)}}
 body[data-reduced-motion=true] .pill .feed-item.feed-enter{animation-name:feed-fade-in}
 @keyframes feed-fade-in{0%{opacity:0}100%{opacity:1}}
-.feed-item.is-highlight{border-color:var(--accent-line);background:linear-gradient(135deg,rgba(226,87,30,.24),rgba(255,138,76,.1) 46%,rgba(255,255,255,.02));box-shadow:0 6px 22px rgba(226,87,30,.16)}
-.feed-item:hover{border-color:rgba(255,255,255,.12)}
-.feed-item.is-highlight:hover{border-color:var(--accent-glow)}
-.feed-thumb{flex:none;display:grid;place-items:center;width:44px;height:44px;border-radius:12px;background:rgba(255,255,255,.05);box-shadow:inset 0 0 0 1px rgba(255,255,255,.07);color:var(--island-text-dim)}
+.feed-item.is-highlight{background:linear-gradient(135deg,rgba(242,106,46,.26),rgba(255,138,85,.1) 46%,var(--island-raised) 120%)}
+.feed-item:hover{background:var(--island-raised-hover)}
+.feed-item.is-highlight:hover{background:linear-gradient(135deg,rgba(242,106,46,.32),rgba(255,138,85,.14) 46%,var(--island-raised) 120%)}
+.feed-thumb{flex:none;display:grid;place-items:center;width:44px;height:44px;border-radius:12px;background:rgba(255,255,255,.05);color:var(--island-text-dim)}
 .feed-thumb svg{width:20px;height:20px;fill:none;stroke:currentColor;stroke-width:1.6;stroke-linecap:round;stroke-linejoin:round}
-.feed-item.is-highlight .feed-thumb{background:linear-gradient(140deg,var(--accent-deep),var(--accent2));color:var(--on-accent);box-shadow:inset 0 1px 0 rgba(255,255,255,.28),0 4px 14px rgba(226,87,30,.38)}
+.feed-item.is-highlight .feed-thumb{background:linear-gradient(140deg,var(--accent-deep),var(--accent2));color:var(--on-accent);box-shadow:inset 0 1px 0 rgba(255,255,255,.28),0 4px 14px rgba(242,106,46,.38)}
 .feed-main{flex:1 1 auto;min-width:0;display:flex;flex-direction:column;gap:2px;padding-top:1px}
 .feed-item-title{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px;font-weight:600;color:var(--island-text)}
 .feed-item-body{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;overflow-wrap:anywhere;font-size:12px;line-height:1.42;color:var(--island-text-dim)}
@@ -266,11 +397,10 @@ body[data-reduced-motion=true] .pill .feed-item.feed-enter{animation-name:feed-f
 .feed-x:hover{background:rgba(255,255,255,.1);color:var(--island-text)}
 .feed-x:active{transform:scale(.88)}
 .feed-x:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
-
-/* --- Media pill (Phase F): real SMTC metadata + transport on the medium band.
-   Left-flush like the expanded head: kicker label, title/artist column, then
-   the transport row flush right. Playback state drives the play/pause glyphs
-   and a warm accent ring — the accent rules stay: real activity only. --- */
+/* --- Media pill (real SMTC metadata + transport on the medium band).
+     Left-flush like the expanded head: kicker label, title/artist column, then
+     the transport row flush right. Playback state drives the play/pause glyphs
+     and a warm accent ring — the accent rules stay: real activity only. --- */
 .pill[data-state=media] .glyph-media{display:block}
 .pill[data-state=media] .head-center{justify-content:flex-start}
 .pill[data-state=media] .state-label{position:absolute;left:0;top:22px;font-size:8.5px;font-weight:700;letter-spacing:.13em;text-transform:uppercase;color:var(--island-text-dim);opacity:1;transform:none;filter:none}
@@ -285,9 +415,9 @@ body[data-reduced-motion=true] .pill .feed-item.feed-enter{animation-name:feed-f
 .media-btn .glyph-media-pause{display:none}
 .pill[data-media-playing=true] .media-btn .glyph-media-play{display:none}
 .pill[data-media-playing=true] .media-btn .glyph-media-pause{display:block}
-.pill[data-media-playing=true] .media-play{color:var(--accent-soft);box-shadow:inset 0 0 0 1px var(--accent),inset 0 0 12px rgba(226,87,30,.22)}
+.pill[data-media-playing=true] .media-play{color:var(--accent-soft);box-shadow:inset 0 0 0 1px var(--accent),inset 0 0 12px rgba(242,106,46,.22)}
 .pill[data-state=error] .pill-surface,.pill[data-state=error] .pill-clip,.pill[data-state=error] .pill-glow{animation:island-shake calc(.38s * var(--motion)) cubic-bezier(.36,.07,.19,.97)}
-.measure-card,.measure-chat,.measure-feed{position:fixed!important;left:-100000px!important;top:0!important;right:auto!important;bottom:auto!important;height:auto!important;max-height:none!important;visibility:hidden!important;pointer-events:none!important;overflow:visible!important}
+.measure-card,.measure-chat,.measure-feed,.measure-home{position:fixed!important;left:-100000px!important;top:0!important;right:auto!important;bottom:auto!important;height:auto!important;max-height:none!important;visibility:hidden!important;pointer-events:none!important;overflow:visible!important}
 .measure-chat .chat-log{max-height:220px}
 .measure-card .card-text{flex:0 0 auto;overflow:visible;max-height:300px}
 .measure-feed .feed-list{flex:0 0 auto;max-height:none;overflow:visible}
@@ -300,6 +430,8 @@ body[data-reduced-motion=true] .pill .feed-item.feed-enter{animation-name:feed-f
 @keyframes island-label-out{to{opacity:0;filter:blur(3px);transform:translate(-50%,-50%) scale(1.04)}}
 .pill[data-size=expanded] .label-ghost{animation-name:island-label-out-left}
 @keyframes island-label-out-left{to{opacity:0;filter:blur(3px);transform:translateY(-50%) scale(1.04)}}
+@keyframes island-content-in{from{opacity:0;filter:blur(4px);transform:translateY(-3px)}to{opacity:1;filter:blur(0);transform:none}}
+@keyframes island-card-in{from{opacity:0;filter:blur(4px);transform:translateY(6px) scale(.985)}to{opacity:1;filter:blur(0);transform:none}}
 @keyframes island-text-in{from{opacity:0;filter:blur(3px);transform:scale(.985)}to{opacity:1;filter:blur(0);transform:none}}
 @keyframes island-word-in{from{opacity:0;filter:blur(3px);transform:translateY(2px)}to{opacity:1;filter:blur(0);transform:none}}
 @keyframes island-ghost-out{to{opacity:0;filter:blur(4px);transform:scale(.985)}}
@@ -321,11 +453,15 @@ body[data-reduced-motion=true] .pill .feed-item.feed-enter{animation-name:feed-f
 @keyframes blob-talk{from{transform:scaleY(.55)}to{transform:scaleY(1.12)}}
 body.slow-motion{--motion:4}
 @media(prefers-reduced-motion:reduce){
-  .pill .word,.pill .card-text,.pill .state-label,.pill .pill-body,.pill .level-meter,.pill .status-icon{transform:none!important;filter:none!important}
+  .pill .word,.pill .card-text,.pill .state-label,.pill .pill-body,.pill .level-meter,.pill .status-icon,.pill .pill-tabs,.pill .island-home,.pill .island-card{transform:none!important;filter:none!important;animation:none!important;transition:none!important}
   .pill-glow,.pill[data-state=error] .pill-surface,.pill[data-state=error] .pill-clip,.pill[data-state=error] .pill-glow,.dots i{animation:none!important}
   .companion,.companion *{animation:none!important;transition:none!important}
   .companion .blob-eye{transform:translate(0,0) scaleY(1)!important}
   .companion .blob,body.slow-motion .companion .blob{transform:scale(1)!important}
+  .pill .blob-shape,.pill .blob-band{animation:none!important}
+  .pill .blob-band{opacity:.5!important;scale:1 1!important}
+  .pill .blob-tint,.pill .blob-band,.pill .blob-spec{filter:none!important}
+  .pill .rim-red,.pill .rim-blue{display:none!important}
   .glyph-check path{animation:none!important;stroke-dashoffset:0}
   .word{animation-name:island-fade-in!important}
   .pill .card-ghost,.pill .label-ghost{animation-name:island-fade-out!important}

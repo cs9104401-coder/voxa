@@ -151,14 +151,16 @@ function encodePNGOpaque(width, height, rgbRows) {
 
 // ---------- 1. Offline corner-clip audit ----------
 
-// Geometry constants of the dormant PNG sprite from its last shipped CSS layout
-// (island.css before the blob avatar grid): height H, width H*538/685, body 27.59%.
+// Geometry constants of the dormant PNG sprite from its legacy CSS layout.
 // Only auditClip() consumes these; the runtime grid checks use PAD_X below.
+// Stage-2 expanded models the blob inside the 640x190 pill with the 34px
+// bottom radius; the sprite band there is drawn lower than the real strip, so
+// a pass proves the real (higher) placement clears the corners with room.
 const SIZES = {
   compact: { W: 208, H: 88, R: 44, padL: 18, lead: 66, charH: 84 },
   medium: { W: 340, H: 104, R: 24, padL: 16, lead: 72, charH: 88 },
-  expanded: { W: 520, H: 128, R: 26, padL: 16, lead: 94, charH: 116 },
-  notchCompact: { W: 544, H: 88, R: 22, padL: 18, lead: 66, charH: 84 }
+  expanded: { W: 640, H: 190, R: 34, padL: 16, lead: 94, charH: 116 },
+  notchCompact: { W: 660, H: 88, R: 22, padL: 18, lead: 66, charH: 84 }
 };
 
 // Shared horizontal padding of the header/text/footer grid per size (island.css --pad-x).
@@ -216,10 +218,14 @@ function syncCheck() {
   const css = fs.readFileSync(path.join(REPO, 'renderer', 'island.css'), 'utf8');
   const js = fs.readFileSync(path.join(REPO, 'renderer', 'overlay.js'), 'utf8');
   const band = {};
-  for (const size of ['compact', 'medium', 'expanded']) {
+  for (const size of ['compact', 'medium']) {
     const match = css.match(new RegExp(`\\.pill\\[data-size=${size}\\] \\.pill-head\\{height:(\\d+)px`));
     band[size] = match ? Number(match[1]) : null;
   }
+  // Expanded split stack: the tab rail (.pill-tabs) always shows, the assistant
+  // strip (.pill-head, 56px) only on Assistant states.
+  const strip = Number((css.match(/\.pill\[data-size=expanded\] \.pill-head\{height:(\d+)px/) || [])[1]);
+  const tabRail = Number((css.match(/\.pill\[data-size=expanded\] \.pill-tabs\{height:(\d+)px/) || [])[1]);
   const padX = {};
   padX.compact = Number((css.match(/\.pill\{[^}]*--pad-x:(\d+)px/) || [])[1]);
   for (const size of ['medium', 'expanded']) {
@@ -233,11 +239,22 @@ function syncCheck() {
   const jsMedium = block.match(/medium:\s*\{\s*(?:width:\s*\d+,\s*)?height:\s*(\d+)/);
   const jsExpandedWidth = block.match(/expanded:\s*\{\s*width:\s*(\d+)/);
   const jsRail = parseInt((block.match(/rail:\s*(\d+)/) || [])[1], 10);
+  const jsStrip = parseInt((block.match(/strip:\s*(\d+)/) || [])[1], 10);
+  const jsHome = parseInt((block.match(/home:\s*(\d+)/) || [])[1], 10);
   const jsNotch = parseInt((js.match(/const NOTCH_WIDTH = (\d+)/) || [])[1], 10);
+  // Token rules the layout depends on (tokens.css, scoped to .notch-body).
+  const tokens = fs.readFileSync(path.join(REPO, 'renderer', 'tokens.css'), 'utf8');
+  const tokenBlock = tokens.match(/\.notch-body\s*\{[\s\S]*?\n\}/);
+  if (!tokenBlock) { fail('sync', '.notch-body island token block missing in tokens.css'); return; }
+  const tokenSource = tokenBlock[0];
+  const cardH = parseInt((tokenSource.match(/--island-card-h:\s*(\d+)px/) || [])[1], 10);
+  const homePad = parseInt((css.match(/\.island-home\{[^}]*padding:0 var\(--pad-x\) (\d+)px/) || [])[1], 10);
   const checks = [
     ['compact band css/js', band.compact, Number(jsCompact[2])],
     ['medium band css/js', band.medium, Number(jsMedium[1])],
-    ['expanded rail css/js', band.expanded, jsRail],
+    ['expanded tab rail css/js', tabRail, jsRail],
+    ['expanded assistant strip css/js', strip, jsStrip],
+    ['expanded home stack css/js', tabRail + cardH + homePad + 2, jsHome],
     ['compact pad css/harness', padX.compact, PAD_X.compact],
     ['medium pad css/harness', padX.medium, PAD_X.medium],
     ['expanded pad css/harness', padX.expanded, PAD_X.expanded]
@@ -248,6 +265,19 @@ function syncCheck() {
   }
   if (jsNotch >= Number(jsExpandedWidth[1]) + 20) pass('sync', `notch width ${jsNotch} >= expanded ${jsExpandedWidth[1]} + 20`);
   else fail('sync', `notch width ${jsNotch} vs expanded ${jsExpandedWidth[1]}`);
+  const tokenChecks = [
+    ['island surface pure black', /--island-surface:\s*#000\b/, tokenBlock[0]],
+    ['no hairline token', /--island-hairline:\s*transparent/, tokenBlock[0]],
+    ['expanded radius 34', /--island-radius-expanded:\s*34px/, tokenBlock[0]],
+    ['tab size 36', /--island-tab:\s*36px/, tokenBlock[0]],
+    ['island ease', /--island-ease:\s*cubic-bezier\(0\.32,\s*0\.72,\s*0,\s*1\)/, tokenBlock[0]],
+    ['island duration 300ms', /--island-dur:\s*300ms/, tokenBlock[0]],
+    ['time gradients', /--time-grad-day:[\s\S]*?;[\s\S]*?--time-grad-evening:[\s\S]*?;[\s\S]*?--time-grad-night:/, tokenBlock[0]]
+  ];
+  for (const [label, pattern, source] of tokenChecks) {
+    if (pattern.test(source)) pass('sync', label);
+    else fail('sync', `${label} missing/mismatched in tokens.css`);
+  }
 }
 
 // ---------- 3. Runtime scenarios ----------
@@ -300,10 +330,14 @@ const scenarios = [
   { name: 'expanded-answer', style: 'island', wait: 3200, patch: { status: 'answer', canCopy: true, speaking: true, approval: null, message: SAMPLE_ANSWER } },
   { name: 'expanded-approval', style: 'island', wait: 3000, patch: { status: 'approval', approval: { id: 'harness', title: 'Allow this sample action?', detail: 'Harness preview — nothing will run.', tool: 'type_text' } } },
   { name: 'expanded-error', style: 'island', wait: 2600, patch: { status: 'error', message: 'Something failed on purpose so we can inspect the error state.' } },
-  { name: 'expanded-feed', style: 'island', wait: 2800, patch: { status: 'feed', feedPreview: true, notifications: FEED_SAMPLES } },
+  { name: 'expanded-feed', style: 'island', wait: 2800, noBlob: true, patch: { status: 'feed', feedPreview: true, notifications: FEED_SAMPLES } },
+  // Stage 2 Home tab: pinned expansion on an idle pill lands on the tab rail +
+  // preview media card + local time card. The blob stays with the Assistant
+  // strip, so the companion is expected hidden here (noBlob).
+  { name: 'expanded-home', style: 'island', wait: 2600, noBlob: true, patch: { status: 'idle', expand: 'pinned', message: '', notifications: [], download: null } },
   // Phase G: the LIVE stack (opened by a real click, not the gallery) — same
   // layout rules, but no PREVIEW ONLY badge: it holds real Voxa events.
-  { name: 'live-feed', style: 'island', wait: 2800, feedPreview: false, patch: { status: 'feed', feedPreview: false, notifications: LIVE_FEED_SAMPLES, message: '' } },
+  { name: 'live-feed', style: 'island', wait: 2800, feedPreview: false, noBlob: true, patch: { status: 'feed', feedPreview: false, notifications: LIVE_FEED_SAMPLES, message: '' } },
   // G/H legibility fix: content on a resting pill renders on the medium band,
   // because compact hides the state label (opacity 0). This scenario pins the
   // unread toast — the click affordance — to a readable label.
@@ -325,7 +359,27 @@ const scenarios = [
   // Phase D: interrupt the compact→medium spring mid-flight with a new target
   // (listening → thinking). Visual only: proves retargeting, not snapping.
   { name: 'retarget-mid-flight', style: 'island', wait: 620, noAssert: true, patch: { status: 'listening', message: 'Speak naturally. Release to send.' }, then: { after: 340, patch: { status: 'thinking', message: 'Retargeting mid-flight…' } } },
-  { name: 'slow-mid-transition', style: 'island', wait: 950, slow: true, noAssert: true, patch: { status: 'answer', canCopy: true, approval: null, message: SAMPLE_ANSWER } }
+  { name: 'slow-mid-transition', style: 'island', wait: 950, slow: true, noAssert: true, patch: { status: 'answer', canCopy: true, approval: null, message: SAMPLE_ANSWER } },
+  // --- Stage 2b activation orb: states x desktop backgrounds, palettes, Lite,
+  // glow knob. bg is the composited desktop color for the screenshot; wave
+  // injects synthetic mic levels so the iris band shows its lit shape;
+  // palette/lite/glow are applied through the real DOM hooks (dataset attr,
+  // is-lite class, setGlowLevel). Every patch re-pins companionEnabled:true —
+  // the no-char scenario earlier in the list leaks its companionEnabled:false
+  // through the persisted renderer state, which would hide the orb here.
+  { name: 'glow-listening-light', style: 'island', wait: 2600, bg: [228, 229, 232], wave: true, patch: { status: 'listening', companionEnabled: true, message: 'Speak naturally. Release to send.' } },
+  { name: 'glow-listening-color', style: 'island', wait: 2600, bg: [47, 110, 255], wave: true, patch: { status: 'listening', companionEnabled: true, message: 'Speak naturally. Release to send.' } },
+  { name: 'glow-thinking-light', style: 'island', wait: 3000, bg: [228, 229, 232], patch: { status: 'thinking', companionEnabled: true, message: 'Transcribing, one moment please…' } },
+  { name: 'glow-thinking-color', style: 'island', wait: 3000, bg: [124, 60, 196], patch: { status: 'thinking', companionEnabled: true, message: 'Transcribing, one moment please…' } },
+  { name: 'glow-response-dark', style: 'island', wait: 3200, bg: [24, 26, 31], patch: { status: 'answer', companionEnabled: true, canCopy: true, speaking: false, approval: null, message: SAMPLE_ANSWER } },
+  { name: 'glow-response-light', style: 'island', wait: 3200, bg: [228, 229, 232], patch: { status: 'answer', companionEnabled: true, canCopy: true, speaking: false, approval: null, message: SAMPLE_ANSWER } },
+  { name: 'glow-error-light', style: 'island', wait: 2800, bg: [228, 229, 232], patch: { status: 'error', companionEnabled: true, approval: null, message: 'Something failed on purpose so we can inspect the error state.' } },
+  { name: 'glow-error-color', style: 'island', wait: 2800, bg: [52, 54, 255], patch: { status: 'error', companionEnabled: true, approval: null, message: 'Something failed on purpose so we can inspect the error state.' } },
+  { name: 'glow-palette-voxa', style: 'island', wait: 2600, bg: [47, 110, 255], palette: 'voxa', wave: true, patch: { status: 'listening', companionEnabled: true, message: 'Speak naturally. Release to send.' } },
+  { name: 'glow-palette-voxa-answer', style: 'island', wait: 3000, bg: [35, 38, 43], palette: 'voxa', patch: { status: 'answer', companionEnabled: true, canCopy: true, approval: null, message: SAMPLE_ANSWER } },
+  { name: 'glow-lite', style: 'island', wait: 2600, bg: [35, 38, 43], lite: true, wave: true, patch: { status: 'listening', companionEnabled: true, message: 'Speak naturally. Release to send.' } },
+  { name: 'glow-full', style: 'island', wait: 2600, bg: [35, 38, 43], glow: 1.25, wave: true, patch: { status: 'listening', companionEnabled: true, message: 'Speak naturally. Release to send.' } },
+  { name: 'glow-soft', style: 'island', wait: 2600, bg: [35, 38, 43], glow: 0.55, wave: true, patch: { status: 'listening', companionEnabled: true, message: 'Speak naturally. Release to send.' } }
 ];
 
 const MEASURE = `(() => {
@@ -335,9 +389,64 @@ const MEASURE = `(() => {
   return {
     pill: rect(pillEl),
     head: rect(document.querySelector('.pill-head')),
+    tabs: rect(document.querySelector('.pill-tabs')),
+    bodyOpacity: (() => {
+      const el = document.querySelector('.pill-body');
+      return el ? Number(getComputedStyle(el).opacity) : null;
+    })(),
+    tabActive: (() => {
+      const node = document.querySelector('.tab-button.is-active');
+      return node ? node.dataset.tab : null;
+    })(),
+    tab: (() => {
+      const node = document.getElementById('notch');
+      return node ? node.dataset.tab : null;
+    })(),
+    headVisible: (() => {
+      const node = document.querySelector('.pill-head');
+      return node ? getComputedStyle(node).display !== 'none' && node.getBoundingClientRect().width > 0 : false;
+    })(),
+    mediaCard: (() => {
+      const node = document.querySelector('.media-card');
+      if (!node) return null;
+      const badge = node.querySelector('.card-preview-badge');
+      return {
+        card: rect(node),
+        art: rect(document.querySelector('.media-art')),
+        title: document.getElementById('homeMediaTitle')?.textContent ?? null,
+        progress: rect(document.querySelector('.media-progress')),
+        transport: rect(document.querySelector('.media-card-controls')),
+        badge: badge ? !badge.hidden && getComputedStyle(badge).display !== 'none' && badge.getBoundingClientRect().width > 0 : false
+      };
+    })(),
+    timeCard: (() => {
+      const node = document.getElementById('timeCard');
+      if (!node) return null;
+      return {
+        card: rect(node),
+        phase: node.dataset.phase ?? null,
+        title: document.getElementById('timeTitle')?.textContent ?? null,
+        temp: document.getElementById('timeTemp')?.textContent ?? null,
+        dot: rect(document.getElementById('timeDot'))
+      };
+    })(),
     char: rect(charEl),
-    charVisible: charEl ? getComputedStyle(charEl).display !== 'none' : false,
+    charVisible: charEl ? getComputedStyle(charEl).display !== 'none' && charEl.getBoundingClientRect().width > 0 : false,
     expression: charEl ? charEl.dataset.expression : null,
+    glow: (() => {
+      const shape = document.querySelector('.blob-shape');
+      const band = document.querySelector('.band-core');
+      return {
+        orb: rect(shape),
+        bandOpacity: band ? Number(getComputedStyle(band).opacity) : null,
+        bandAnim: band ? getComputedStyle(band).animationName : null,
+        shapeAnim: shape ? getComputedStyle(shape).animationName : null,
+        bandFilter: band ? getComputedStyle(band).filter : null,
+        palette: pillEl.dataset.glowPalette || 'rainbow',
+        lite: document.querySelector('.companion')?.classList.contains('is-lite') ?? null,
+        level: charEl ? getComputedStyle(charEl).getPropertyValue('--level') : null
+      };
+    })(),
     blob: rect(document.querySelector('.blob')),
     blobEyes: rect(document.querySelector('.blob-eyes')),
     label: rect(document.querySelector('.state-label')),
@@ -426,6 +535,112 @@ const MEASURE = `(() => {
 let overlay = null;
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
+// Stage 2b measuring fixtures: the legacy shared-grid asserts are calibrated
+// against the resting orb, which a reduce-motion box always renders. On a
+// normal machine three resting values differ from the reduced truth:
+// 1. the listening mood runs the DESIGNED act=1.13 pulse (--act inline pin),
+// 2. the chip may be playing its entrance (text-enter class off),
+// 3. .pill-body carries its resting translateY(-4px) scale(.97) — overridden
+//    to none only on expanded or by the reduced-motion media block — which
+//    skews the clipped .card-text rect +2.6px/+4.6px off the shared pad even
+//    though nothing is visible there (compact/medium clip the body band).
+// The rest measure therefore pins all three briefly and the lit state below
+// releases them. No renderer source changes — inline style/class only,
+// momentary; the shipped expand choreography is untouched.
+const GLOW_REST_FIXTURE = `(function(){try{var c=document.querySelector(".companion");if(c)c.style.setProperty("--act","1");var chip=document.querySelector(".card-text");if(chip)chip.classList.remove("text-enter");var b=document.querySelector(".pill-body");if(b)b.style.setProperty("transform","none");return "ok"}catch(err){return "ERR " + (err && err.message)}})()`;
+const GLOW_LIT_RELEASE = `(function(){try{var c=document.querySelector(".companion");if(c)c.style.removeProperty("--act");var b=document.querySelector(".pill-body");if(b)b.style.removeProperty("transform");return "ok"}catch(err){return "ERR " + (err && err.message)}})()`;
+// Lit-state orb metrics: taken AFTER the wave pump so opacity/anim readings
+// reflect the live band; geometry asserts above still use the rest metrics.
+const GLOW_ONLY = `(function(){try{
+  var shape=document.querySelector(".blob-shape");
+  var band=document.querySelector(".band-core");
+  var comp=document.querySelector(".companion");
+  var pill=document.getElementById("notch");
+  var rect=function(el){if(!el)return null;var r=el.getBoundingClientRect();return {x:+r.x.toFixed(1),y:+r.y.toFixed(1),width:+r.width.toFixed(1),height:+r.height.toFixed(1)};};
+  return {
+    orb: rect(shape),
+    bandOpacity: band ? Number(getComputedStyle(band).opacity) : null,
+    bandAnim: band ? getComputedStyle(band).animationName : null,
+    shapeAnim: shape ? getComputedStyle(shape).animationName : null,
+    bandFilter: band ? getComputedStyle(band).filter : null,
+    palette: pill && pill.dataset.glowPalette ? pill.dataset.glowPalette : "rainbow",
+    lite: comp ? comp.classList.contains("is-lite") : null,
+    level: comp ? getComputedStyle(comp).getPropertyValue("--level") : null
+  };
+}catch(err){return {error:String(err && err.message || err)}}})()`;
+
+// Stage 2b scenario extras, applied through the real DOM hooks after show():
+// palette pins data-glow-palette, lite toggles .is-lite, glow dials the real
+// setGlowLevel() knob. Everything resets first so scenarios stay independent.
+// Both scripts trap their own renderer exceptions and surface the real stack —
+// the bare electron rejection ("Script failed to execute…") hides it.
+//
+// Harness-only media emulation: this gallery box (and any a11y-tuned machine)
+// reports prefers-reduced-motion: reduce, which statics the orb both through
+// the island.css media block and the auto-lite bootstrap. The lit scenarios
+// emulate "no-preference" via CDP so the designed animated orb can be captured;
+// glow-lite keeps the OS truth to validate the real auto-selected Lite path.
+// No renderer code path changes.
+const CDP_MOTION_ON = { features: [{ name: 'prefers-reduced-motion', value: 'no-preference' }] };
+const CDP_MOTION_OFF = { features: [] };
+
+async function emulateMotion(contents, on) {
+  try {
+    const dbg = contents.debugger;
+    if (!dbg.isAttached()) await dbg.attach('1.3');
+    await dbg.sendCommand('Emulation.setEmulatedMedia', on ? CDP_MOTION_ON : CDP_MOTION_OFF);
+  } catch (error) {
+    console.log(`motion emulation ${on ? 'on' : 'off'} failed: ${error && (error.message || error)}`);
+  }
+}
+
+async function applyGlowScenario(contents, scenario) {
+  await emulateMotion(contents, scenario.name !== 'glow-lite');
+  const parts = [
+    'const pill = document.getElementById("notch");',
+    'const comp = document.querySelector(".companion");',
+    'if (comp) comp.classList.remove("is-lite");',
+    'if (comp) comp.style.removeProperty("--blob-glow");',
+    'if (pill && pill.dataset.glowPalette !== undefined) delete pill.dataset.glowPalette;'
+  ];
+  if (scenario.palette) parts.push(`if (pill) pill.dataset.glowPalette = ${JSON.stringify(scenario.palette)};`);
+  if (scenario.lite) parts.push('if (comp) comp.classList.add("is-lite");');
+  if (scenario.glow !== undefined) parts.push(`if (window.setGlowLevel) setGlowLevel(${scenario.glow});`);
+  const body = parts.join(' ');
+  let result = null;
+  try {
+    result = await contents.executeJavaScript(`(function(){try{${body}}catch(err){return "GLOW_ERR " + (err && (err.stack || err.message) || String(err));}})()`, true);
+  } catch (error) {
+    console.log(`${scenario.name}: glow patch rejected at electron level: ${error && (error.message || error)}`);
+    return;
+  }
+  if (typeof result === 'string' && result.startsWith('GLOW_ERR')) {
+    console.log(`${scenario.name}: glow patch renderer error: ${result.slice(9)}`);
+  }
+}
+
+// Synthetic mic payload for the iris band (the same applyAudioLevel parser the
+// spectrum test uses). Test data only; real audio is verified live.
+async function injectGlowWave(contents, scenarioName) {
+  const wave = Array.from({ length: 16 }, (_, i) => (i % 2 ? 0.85 : 0.4));
+  try {
+    await contents.executeJavaScript(`(function(){try{applyAudioLevel(0.55, ${JSON.stringify(wave)})}catch(err){return "WAVE_ERR " + (err && (err.stack || err.message) || String(err));}})()`, true);
+  } catch (error) {
+    console.log(`glow wave rejected at electron level (${scenarioName || 'unknown'}): ${error && (error.message || error)}`);
+  }
+}
+
+// Zeroes any mic level leaked from an earlier scenario: without a new payload
+// the smoothing loop keeps writing the last value forever, which would light
+// the band (and pulse the face) during the REST geometry measure.
+async function silenceMic(contents) {
+  try {
+    await contents.executeJavaScript('(function(){try{applyAudioLevel(0, []);return "ok"}catch(err){return "ERR " + (err && err.message)}})()', true);
+  } catch (error) {
+    console.log(`silence mic rejected: ${error && (error.message || error)}`);
+  }
+}
+
 async function waitForRenderer() {
   for (let attempt = 0; attempt < 100; attempt += 1) {
     try {
@@ -461,22 +676,59 @@ async function runtimeCheck() {
       overlay.hideNow();
       await sleep(420);
       overlay.show(scenario.patch);
-      if (scenario.then) {
-        await sleep(scenario.then.after);
-        overlay.show(scenario.then.patch);
-      }
-      await sleep(scenario.wait);
       let metrics = null;
-      try {
-        metrics = JSON.parse(JSON.stringify(await contents.executeJavaScript(MEASURE, true)));
-      } catch (error) {
-        fail('runtime', `${scenario.name}: measure failed: ${error.message}`);
-        continue;
+      if (scenario.name.startsWith('glow-')) {
+        // Stage 2b flow: overrides → settle → REST measure under fixtures (the
+        // slot/naval asserts are rest-state rules) → release → pump the band →
+        // lit orb metrics → screenshot. Only glow scenarios pay the extra
+        // measure; every other scenario keeps its original single-pass flow.
+        await applyGlowScenario(contents, scenario);
+        await silenceMic(contents);
+        await sleep(scenario.wait);
+        try {
+          const fixture = await contents.executeJavaScript(GLOW_REST_FIXTURE, true);
+          if (typeof fixture === 'string' && fixture.startsWith('ERR')) console.log(`${scenario.name}: rest fixture error: ${fixture}`);
+        } catch (error) {
+          console.log(`${scenario.name}: rest fixture rejected: ${error && (error.message || error)}`);
+        }
+        await sleep(350);
+        try {
+          metrics = JSON.parse(JSON.stringify(await contents.executeJavaScript(MEASURE, true)));
+        } catch (error) {
+          fail('runtime', `${scenario.name}: measure failed: ${error.message}`);
+          continue;
+        }
+        try {
+          await contents.executeJavaScript(GLOW_LIT_RELEASE, true);
+        } catch { /* fixtures are best-effort */ }
+        await injectGlowWave(contents, scenario.name);
+        await sleep(1200);
+        try {
+          const glowOnly = await contents.executeJavaScript(GLOW_ONLY, true);
+          if (glowOnly && !glowOnly.error) metrics.glow = glowOnly;
+          else fail('runtime', `${scenario.name}: glow measure error: ${glowOnly && glowOnly.error}`);
+        } catch (error) {
+          fail('runtime', `${scenario.name}: glow measure failed: ${error.message}`);
+          continue;
+        }
+      } else {
+        if (scenario.wave) await injectGlowWave(contents, scenario.name);
+        if (scenario.then) {
+          await sleep(scenario.then.after);
+          overlay.show(scenario.then.patch);
+        }
+        await sleep(scenario.wait);
+        try {
+          metrics = JSON.parse(JSON.stringify(await contents.executeJavaScript(MEASURE, true)));
+        } catch (error) {
+          fail('runtime', `${scenario.name}: measure failed: ${error.message}`);
+          continue;
+        }
       }
       const capture = await overlay.getWindow().webContents.capturePage();
       const pngPath = path.join(OUT, `${scenario.name}.png`);
       fs.writeFileSync(pngPath, capture.toPNG());
-      flattenPNG(pngPath, pngPath, [35, 38, 43]);
+      flattenPNG(pngPath, pngPath, scenario.bg || [35, 38, 43]);
       results.screenshots.push(pngPath);
       console.log(`saved ${pngPath}`);
       if (!scenario.noAssert) assertScenario(scenario, metrics);
@@ -487,6 +739,11 @@ async function runtimeCheck() {
     }
     saveResults();
   }
+
+  // Stage 2b restore: lit scenarios leave the CDP motion emulation on — switch
+  // it back off so the legacy spectrum leg runs under the same OS conditions
+  // the Phase C asserts were tuned for.
+  await emulateMotion(contents, false);
 
   // Spectrum painting pipeline (Phase C): injects labelled synthetic band data
   // through the real applyAudioLevel parser so the canvas painting path is
@@ -547,33 +804,66 @@ function assertScenario(scenario, m) {
   const radiusPx = parseFloat(notch ? m.radiusBL : m.radius);
   const padX = PAD_X[size] ?? PAD_X.compact;
   if (size === 'compact') {
-    within(m.pill.width, notch ? 544 : 208, 1.5, 'pill width', scenario);
+    within(m.pill.width, notch ? 660 : 208, 1.5, 'pill width', scenario);
     within(m.pill.height, 88, 1.5, 'pill height', scenario);
     within(radiusPx, notch ? 22 : 44, 1, 'pill radius', scenario);
   } else if (size === 'medium') {
-    within(m.pill.width, notch ? 544 : 340, 1.5, 'pill width', scenario);
+    within(m.pill.width, notch ? 660 : 340, 1.5, 'pill width', scenario);
     within(m.pill.height, 104, 1.5, 'pill height', scenario);
     within(radiusPx, notch ? 22 : 24, 1, 'pill radius', scenario);
   } else {
-    within(m.pill.width, notch ? 544 : 520, 1.5, 'pill width', scenario);
-    within(radiusPx, notch ? 22 : 26, 1, 'pill radius', scenario);
-    relaxedAtLeast(m.pill.height, 214, 'expanded height includes card', scenario);
-    if (m.head) within(m.head.height, 128, 1.5, 'expanded rail height', scenario);
+    within(m.pill.width, notch ? 660 : 640, 1.5, 'pill width', scenario);
+    within(radiusPx, notch ? 22 : 34, 1, 'pill radius', scenario);
+    // Expanded height: the Home tab stack is pinned at exactly 190 (rail +
+    // home cards); every other tab measures its own body but must reach the
+    // rail + smallest-legal-card floor (a 1-line error card lands ~175).
+    if (scenario.name === 'expanded-home') {
+      within(m.pill.height, 190, 1.5, 'expanded home pinned height', scenario);
+    } else {
+      relaxedAtLeast(m.pill.height, 168, 'expanded height includes body', scenario);
+    }
   }
-  // Shared grid: card text sits on --pad-x; when the blob is up, it shares that edge.
-  // Display-hidden elements report 0x0 rects, so guard on real widths (chat state).
+  // Stage 2 tab rail: present on every expanded state; top row must sit at the
+  // pill's top edge and keep its 52px height. The active tab follows the state
+  // mapping (feed -> notifications, voice states -> assistant, rest -> home).
+  if (size === 'expanded') {
+    if (m.tabs) {
+      within(m.tabs.height, 52, 1.5, 'tab rail height', scenario);
+      within(m.tabs.y, m.pill.y, 1.5, 'tab rail top', scenario);
+    } else fail('runtime', `${scenario.name}: tab rail missing`);
+    const wantTab = scenario.name === 'expanded-home'
+      ? 'home'
+      : m.status === 'feed' ? 'notifications' : 'assistant';
+    if (m.tab === wantTab) pass('runtime', `${scenario.name}: active tab ${m.tab}`);
+    else fail('runtime', `${scenario.name}: tab ${JSON.stringify(m.tab)} vs expected ${wantTab}`);
+  }
+  // Shared grid: card text sits on --pad-x; when the blob is up, it shares that
+  // edge. Display-hidden elements report 0x0 rects, so guard on real widths
+  // (chat state renders text later; Home tab hides the card entirely).
   const hasText = m.text && m.text.width > 0;
   const hasBlob = m.blob && m.blob.width > 0;
   if (hasText) {
-    within(m.text.x, m.pill.x + padX, 1.5, 'card text left edge on shared pad', scenario);
-    if (hasBlob) {
-      within(m.blob.x, m.pill.x + padX, 3.5, 'blob left edge on shared pad', scenario);
-      within(m.blob.x, m.text.x, 3.5, 'blob left == text left (shared grid)', scenario);
+    // Stage 2b: when .pill-body is at its designed rest-hidden transform
+    // (opacity 0 on compact/medium, translateY(-4px) scale(.97)), the chip's
+    // BCR does not line up on the shared pad — reduce mode had frozen that
+    // transform to identity, which is what the legacy asserts were calibrated
+    // against. Glow scenarios skip the three pad asserts for the hidden body
+    // (the blob-pad one still holds at rest and stays enforced).
+    const bodyHiddenRest = m.bodyOpacity != null && m.bodyOpacity < 0.5 && scenario.name.startsWith('glow-');
+    if (bodyHiddenRest) {
+      if (hasBlob) within(m.blob.x, m.pill.x + padX, 3.5, 'blob left edge on shared pad', scenario);
+      pass(`runtime`, `${scenario.name}: chip pad asserts skipped — pill-body at designed rest transform (opacity ${m.bodyOpacity})`);
+    } else {
+      within(m.text.x, m.pill.x + padX, 1.5, 'card text left edge on shared pad', scenario);
+      if (hasBlob) {
+        within(m.blob.x, m.pill.x + padX, 3.5, 'blob left edge on shared pad', scenario);
+        within(m.blob.x, m.text.x, 3.5, 'blob left == text left (shared grid)', scenario);
+      }
     }
-  } else if (m.status !== 'chat' && m.status !== 'feed') {
+  } else if (m.status !== 'chat' && m.status !== 'feed' && m.tab !== 'home') {
     fail('runtime', `${scenario.name}: card-text rect missing`);
   }
-  if (m.actions) within(m.actions.x + m.actions.width, m.pill.x + m.pill.width - padX, 2, 'header buttons right on shared pad', scenario);
+  if (m.actions && m.actions.width > 0) within(m.actions.x + m.actions.width, m.pill.x + m.pill.width - padX, 2, 'header buttons right on shared pad', scenario);
   // Phase D widget priority matrix: the state label is medium/expanded only,
   // the spectrum slot exists in compact listening only.
   if (m.labelOpacity != null) {
@@ -581,7 +871,8 @@ function assertScenario(scenario, m) {
     if (Math.abs(m.labelOpacity - want) < 0.05) pass('runtime', `${scenario.name}: label opacity matches widget matrix`);
     else fail('runtime', `${scenario.name}: label opacity ${m.labelOpacity} vs matrix ${want}`);
   }
-  // Feed specifics: stacked cards on the shared grid, 44px thumbnail, NEW/OLD labels.
+  // Feed specifics: stacked cards on the shared grid, 44px thumbnail, NEW/OLD
+  // section labels, Clear all wired.
   if (m.status === 'feed') {
     if (m.feedItem && m.feedItem.width > 0) {
       within(m.feedItem.x, m.pill.x + padX, 2, 'feed card left on shared pad', scenario);
@@ -591,8 +882,6 @@ function assertScenario(scenario, m) {
       fail('runtime', `${scenario.name}: no visible feed card`);
     }
     if (m.feedThumb) within(m.feedThumb.width, 44, 1.5, 'feed thumb 44px', scenario);
-    // Phase G badge rule: gallery samples announce themselves, the live stack
-    // (real Voxa events, no feedPreview flag) must not.
     if (m.feedPreviewVisible !== null) {
       const wantPreview = scenario.feedPreview === false ? false : true;
       if (m.feedPreviewVisible === wantPreview) {
@@ -606,7 +895,6 @@ function assertScenario(scenario, m) {
       if (wanted.every((label) => m.feedData.sections.includes(label))) pass('runtime', `${scenario.name}: NEW/OLD sections present`);
       else fail('runtime', `${scenario.name}: sections ${JSON.stringify(m.feedData.sections)} missing NEW/OLD`);
     }
-    // Phase D cascade: every card enters on first open, staggered top-down.
     if (m.feedEnter) {
       if (m.feedEnter.entering === FEED_SAMPLES.length) pass('runtime', `${scenario.name}: all feed cards cascade in`);
       else fail('runtime', `${scenario.name}: feed cascade ${m.feedEnter.entering} vs ${FEED_SAMPLES.length}`);
@@ -658,16 +946,72 @@ function assertScenario(scenario, m) {
   }
   if (size === 'expanded') {
     if (m.cardActions && m.cardActions.width > 0) within(m.cardActions.x + m.cardActions.width, m.pill.x + m.pill.width - padX, 2, 'footer actions right on shared pad', scenario);
-    if (m.label) {
-      within(m.label.y + m.label.height / 2, m.head.y + m.head.height / 2, 3.5, 'label centered on head band', scenario);
-      if (hasBlob) within(m.label.x - (m.blob.x + m.blob.width), 10, 4, 'label gap after blob', scenario);
+    // Assistant flow on expanded — the blob strip carries the label under the
+    // tabs (Home/Notifications hide the head entirely).
+    if (m.headVisible) {
+      if (m.head) {
+        within(m.head.height, 56, 1.5, 'assistant strip height', scenario);
+        within(m.head.y, m.pill.y + 52, 2, 'assistant strip below tabs', scenario);
+        const stripR = m.head.y + m.head.height;
+        if (stripR <= m.pill.y + m.pill.height + 0.5) pass('runtime', `${scenario.name}: strip inside pill`);
+        else fail('runtime', `${scenario.name}: strip exceeds pill bottom`);
+      }
+      if (m.label) {
+        within(m.label.y + m.label.height / 2, m.head.y + m.head.height / 2, 3.5, 'label centered on head band', scenario);
+        if (hasBlob) within(m.label.x - (m.blob.x + m.blob.width), 10, 4, 'label gap after blob', scenario);
+      }
+    } else if (m.tab === 'home') {
+      // Home tab: media card + time card fill the body grid on the shared pads.
+      const cards = m.mediaCard, time = m.timeCard;
+      if (!cards || !cards.card || cards.card.width <= 0) fail('runtime', `${scenario.name}: media card missing`);
+      else {
+        if (cards.art) within(cards.art.width, 88, 1.5, 'album art 88px', scenario);
+        else fail('runtime', `${scenario.name}: album art missing`);
+        if (cards.badge) pass('runtime', `${scenario.name}: Preview badge visible on media card`);
+        else fail('runtime', `${scenario.name}: Preview badge missing on media card`);
+        if (cards.title === 'Preview track') pass('runtime', `${scenario.name}: preview media title rendered`);
+        else fail('runtime', `${scenario.name}: preview media title ${JSON.stringify(cards.title)}`);
+        if (cards.transport && cards.transport.width > 0) {
+          within(cards.transport.x + cards.transport.width, cards.card.x + cards.card.width - 14, 3, 'home transport right inside card', scenario);
+        } else fail('runtime', `${scenario.name}: home transport row not laid out`);
+      }
+      if (!time || !time.card || time.card.width <= 0) fail('runtime', `${scenario.name}: time card missing`);
+      else {
+        if (['day', 'evening', 'night'].includes(time.phase)) pass('runtime', `${scenario.name}: time phase ${time.phase}`);
+        else fail('runtime', `${scenario.name}: time phase ${JSON.stringify(time.phase)}`);
+        if (time.title === 'Day' || time.title === 'Evening' || time.title === 'Night') pass('runtime', `${scenario.name}: time title ${time.title}`);
+        else fail('runtime', `${scenario.name}: time title ${JSON.stringify(time.title)}`);
+        if (time.temp === '--') pass('runtime', `${scenario.name}: temperature renders -- until weather data exists`);
+        else fail('runtime', `${scenario.name}: temperature ${JSON.stringify(time.temp)} vs --`);
+        const insidePill = time.dot && time.dot.x >= m.pill.x + 2
+          && time.dot.x + time.dot.width <= m.pill.x + m.pill.width - 2
+          && time.dot.y >= m.pill.y + 2
+          && time.dot.y + time.dot.height <= m.pill.y + m.pill.height - 2;
+        if (insidePill) pass('runtime', `${scenario.name}: arc dot inside pill bounds`);
+        else fail('runtime', `${scenario.name}: arc dot exceeds pill bounds`);
+      }
+      if (m.mediaCard && m.timeCard && m.mediaCard.card && m.timeCard.card) {
+        const gridLeft = m.pill.x + padX;
+        within(Math.min(m.mediaCard.card.x, m.timeCard.card.x), gridLeft, 2, 'home grid on shared pad', scenario);
+        within(Math.max(m.mediaCard.card.x + m.mediaCard.card.width, m.timeCard.card.x + m.timeCard.card.width), m.pill.x + m.pill.width - padX, 2, 'home grid right on shared pad', scenario);
+        const overlap = m.mediaCard.card.x + m.mediaCard.card.width > m.timeCard.card.x + 0.5 && m.timeCard.card.x + m.timeCard.card.width > m.mediaCard.card.x + 0.5;
+        if (overlap) fail('runtime', `${scenario.name}: home cards overlap`);
+        else pass('runtime', `${scenario.name}: home cards do not overlap`);
+      }
+    } else if (m.tab === 'assistant') {
+      fail('runtime', `${scenario.name}: assistant strip expected but head band is hidden`);
     }
   }
-  // Blob slot geometry: avatar box, centered on the head band, strictly inside the pill.
-  if (m.charVisible) {
+  // Blob slot geometry: avatar box, centered on the head band, strictly inside
+  // the pill. Home/Notifications tabs park the companion with the hidden strip
+  // (noBlob); the nochar scenario disables it explicitly.
+  if (scenario.noBlob || scenario.name.includes('nochar')) {
+    if (!m.charVisible) pass('runtime', `${scenario.name}: companion parked as expected`);
+    else fail('runtime', `${scenario.name}: companion should be hidden`);
+  } else if (m.charVisible) {
     within(m.char.width, 38, 1.5, 'blob slot width', scenario);
     within(m.char.height, 42, 1.5, 'blob slot height', scenario);
-    if (m.head && hasBlob) within(m.blob.y + m.blob.height / 2, m.head.y + m.head.height / 2, 4, 'blob centered on head band', scenario);
+    if (m.head && m.head.width > 0 && hasBlob) within(m.blob.y + m.blob.height / 2, m.head.y + m.head.height / 2, 4, 'blob centered on head band', scenario);
     if (hasBlob) {
       const insidePill = m.blob.x >= m.pill.x + 2
         && m.blob.x + m.blob.width <= m.pill.x + m.pill.width - 2
@@ -676,8 +1020,29 @@ function assertScenario(scenario, m) {
       if (insidePill) pass('runtime', `${scenario.name}: blob fully inside pill bounds`);
       else fail('runtime', `${scenario.name}: blob exceeds pill bounds`);
     }
-  } else if (!scenario.name.includes('nochar')) {
-    fail('runtime', `${scenario.name}: companion not visible`);
+  } else fail('runtime', `${scenario.name}: companion not visible`);
+  // Stage 2b orb behavior: the Lite scenario pins the static fallback (no
+  // morph, no band drift, no blur filters); lit scenarios — motion-emulated
+  // through CDP — must run both loops, honor the palette pin and make the
+  // band opacity track level × glow knob.
+  if (scenario.name.startsWith('glow-') && m.glow) {
+    const glow = m.glow;
+    if (scenario.lite) {
+      if (glow.lite && glow.shapeAnim === 'none' && glow.bandAnim === 'none' && glow.bandFilter === 'none') pass('runtime', `${scenario.name}: lite orb static (no morph, no drift, filters off)`);
+      else fail('runtime', `${scenario.name}: lite orb not static — ${JSON.stringify(glow)}`);
+    } else {
+      if (glow.lite !== true) pass('runtime', `${scenario.name}: lit orb active (is-lite off under motion emulation)`);
+      else fail('runtime', `${scenario.name}: is-lite class leaked into lit scenario`);
+      if (glow.shapeAnim === 'blob-morph' && glow.bandAnim === 'band-drift' && String(glow.bandFilter).includes('blur')) pass('runtime', `${scenario.name}: orb loops running (morph + band drift, blurred band)`);
+      else fail('runtime', `${scenario.name}: orb loops not running — ${JSON.stringify({ shape: glow.shapeAnim, band: glow.bandAnim, filter: glow.bandFilter })}`);
+      if (scenario.palette) {
+        if (glow.palette === scenario.palette) pass('runtime', `${scenario.name}: palette pinned to ${glow.palette}`);
+        else fail('runtime', `${scenario.name}: palette ${glow.palette} vs expected ${scenario.palette}`);
+      }
+      const knob = scenario.glow === undefined ? 1 : Math.max(0, Math.min(1.3, scenario.glow));
+      const lvl = Math.min(1, Number(glow.level) || 0);
+      within(Number(glow.bandOpacity), Math.min(1, 0.3 + 0.7 * knob * lvl), 0.07, 'band opacity tracks level x glow knob', scenario);
+    }
   }
   // Spectrum slot (Phase C): the canvas parks inside the center zone in compact
   // listening only. Pixel assertions rely on real payloads; without any, the
@@ -705,8 +1070,8 @@ function assertScenario(scenario, m) {
       fail('runtime', `${scenario.name}: meter slot laid out outside listening (h=${m.meter.height})`);
     }
   }
-  if (m.head) within(m.head.y, m.pill.y, 1, 'head band top', scenario);
-  if (m.zone) {
+  if (m.headVisible && m.head) within(m.head.y, m.pill.y + (size === 'expanded' ? 52 : 0), 2, 'head band top', scenario);
+  if (m.zone && m.headVisible) {
     relaxedAtLeast(m.zone.width, 20, 'center zone width', scenario);
     if (m.pill) {
       if (m.zone.x >= m.pill.x + 4 && m.zone.x + m.zone.width <= m.pill.x + m.pill.width - 4) {

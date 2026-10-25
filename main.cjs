@@ -2600,6 +2600,11 @@ function registerIpc() {
     // Phase I: the live feed dwell is a real setting.
     scheduleOverlayHide(settings.feedDwellSeconds * 1000);
   }, ['overlay']);
+  // Stage 2: the expanded tab rail carries a round settings button that opens
+  // the dashboard settings window. The overlay pill keeps its own state.
+  listen('overlay:open-settings', () => {
+    showDashboard();
+  }, ['overlay']);
   listen('chat:open', () => openChat(), ['overlay']);
   listen('chat:close', () => closeChat(), ['overlay']);
   listen('chat:request-history', () => sendChatHistory(), ['overlay']);

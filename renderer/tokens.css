@@ -1,0 +1,187 @@
+/* ============================================================================
+   Voxa dashboard design tokens ("warm loft").
+   Single source for the dashboard reskin: all color, spacing, radius, type,
+   blur, shadow, motion values live here and are consumed ONLY by
+   renderer/dashboard.css. Scoped under .dashboard-body so the shared
+   style.css tokens (and the overlay/recorder windows) are untouched.
+   Linked by settings.html in this order: style.css -> tokens.css -> dashboard.css
+   ============================================================================ */
+
+@font-face {
+  font-family: "Syne";
+  src: url("./assets/fonts/syne-latin-700.woff2") format("woff2");
+  font-weight: 700;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Syne";
+  src: url("./assets/fonts/syne-latin-800.woff2") format("woff2");
+  font-weight: 800;
+  font-style: normal;
+  font-display: swap;
+}
+
+.dashboard-body {
+  /* ---- Palette: stage + panel -------------------------------------------- */
+  --vx-stage: #120f11;            /* page background around the app panel     */
+  --vx-stage-rgb: 18, 15, 17;     /* #120f11 as rgb triplet                   */
+  --vx-rail: #0e0d0e;             /* floating near-black icon rail            */
+  --vx-panel-a: #4a4150;          /* muted purple-grey (top-left)             */
+  --vx-panel-b: #372b33;          /* deep mid mauve                           */
+  --vx-panel-warm: #55362a;       /* warm base under the glow                 */
+  --vx-glow: 164, 95, 58;         /* #a45f3a burnt orange as rgb triplet      */
+  --vx-glow-strong: rgba(var(--vx-glow), .40);
+  --vx-glow-soft: rgba(var(--vx-glow), .20);
+
+  /* ---- Glass (frosted card layer) ----------------------------------------- */
+  --vx-frost-hi: rgba(255, 255, 255, .10);
+  --vx-frost-lo: rgba(255, 255, 255, .05);
+  --vx-frost-hover-hi: rgba(255, 255, 255, .14);
+  --vx-frost-hover-lo: rgba(255, 255, 255, .075);
+  --vx-ink-rgb: 21, 16, 19;
+  --vx-ink: rgba(var(--vx-ink-rgb), .34);   /* smoked core so text stays WCAG AA     */
+  --vx-card: linear-gradient(180deg, var(--vx-frost-hi), var(--vx-frost-lo)), var(--vx-ink);
+  --vx-card-hover: linear-gradient(180deg, var(--vx-frost-hover-hi), var(--vx-frost-hover-lo)), var(--vx-ink);
+  --vx-pop: #171217;              /* opaque popovers (dropdown/modal/toast)   */
+  --vx-pop-soft: #1d161c;
+
+  /* ---- Hairlines / borders ------------------------------------------------- */
+  --vx-line-soft: rgba(255, 255, 255, .05);
+  --vx-line: rgba(255, 255, 255, .08);
+  --vx-line-strong: rgba(255, 255, 255, .16);
+  --vx-line-accent: rgba(var(--vx-glow), .34);
+
+  /* ---- Text ---------------------------------------------------------------- */
+  --vx-text: #f5f2ee;
+  --vx-text-muted: #ded7d2;       /* >= 4.5:1 on the darkest glass zone       */
+  --vx-text-faint: #cdc5c0;       /* disabled / decorative only               */
+  --vx-on-bright: #191210;        /* dark text on white pill                  */
+
+  /* ---- Accents -------------------------------------------------------------- */
+  --vx-accent: #f26a2e;           /* primary orange accent                    */
+  --vx-accent-bright: #ff8a55;
+  --vx-accent-text: #ffcf9e;      /* AA-safe orange for small text            */
+  --vx-accent-soft: rgba(var(--vx-glow), .16);
+  --vx-lime: #e6e04a;             /* chart lines / data highlights            */
+  --vx-good: #8fd6ac;
+  --vx-bad: #ff8f95;
+  --vx-warn: #f0c286;
+  --vx-outline: rgba(255, 244, 236, .88);  /* focus-visible rings              */
+
+  /* ---- Spacing scale -------------------------------------------------------- */
+  --vx-sp-1: 4px;
+  --vx-sp-2: 8px;
+  --vx-sp-3: 12px;
+  --vx-sp-4: 16px;
+  --vx-sp-5: 24px;
+  --vx-sp-6: 32px;
+
+  /* ---- Radii scale ----------------------------------------------------------- */
+  --vx-r-sm: 12px;
+  --vx-r-md: 20px;
+  --vx-r-lg: 28px;
+  --vx-r-xl: 36px;
+  --vx-r-btn: 14px;
+  --vx-r-pill: 999px;
+
+  /* ---- Type ------------------------------------------------------------------ */
+  --vx-font-display: "Syne", "Segoe UI Variable Display", "Segoe UI", sans-serif;
+  --vx-font-body: "Inter", "Segoe UI Variable Text", "Segoe UI", sans-serif;
+  --vx-font-mono: ui-monospace, Consolas, monospace;
+  --vx-fs-tiny: 10px;
+  --vx-fs-small: 11px;
+  --vx-fs-label: 12px;
+  --vx-fs-body: 13px;
+  --vx-fs-mid: 15px;
+  --vx-fs-h3: 18px;
+  --vx-fs-title: clamp(26px, 3.4vw, 36px);
+  --vx-fs-hero: clamp(28px, 4vw, 42px);
+  --vx-fs-stat: clamp(30px, 3.4vw, 44px);
+
+  /* ---- Frost filter (card layer only, never nested) -------------------------- */
+  --vx-blur: blur(20px) saturate(140%);
+
+  /* ---- Shadows ---------------------------------------------------------------- */
+  --vx-shadow-card: 0 18px 44px rgba(10, 7, 9, .35);
+  --vx-shadow-float: 0 26px 64px rgba(10, 7, 9, .5);
+  --vx-shadow-rail: 0 10px 30px rgba(10, 7, 9, .45);
+  --vx-shadow-pop: 0 24px 56px rgba(10, 7, 9, .55);
+  --vx-inset-hi: inset 0 1px 0 rgba(255, 255, 255, .07);
+
+  /* ---- Motion ------------------------------------------------------------------ */
+  --vx-ease: cubic-bezier(0.32, 0.72, 0, 1);
+  --vx-dur-fast: 150ms;
+  --vx-dur: 200ms;
+  --vx-dur-slow: 250ms;
+
+  /* ---- Layout constants ---------------------------------------------------------- */
+  --vx-rail-w: 84px;
+  --vx-frame-pad: 12px;        /* stage inset between window edge and panel   */
+  --vx-topbar-h: 56px;
+  --vx-drag-h: 44px;
+}
+
+/* ============================================================================
+   Voxa island tokens (Stage 2 notch restyle).
+   Scoped under .notch-body so ONLY the overlay window consumes them: the
+   .dashboard-body block above and the shared :root tokens in style.css stay
+   untouched. Accent values mirror the dashboard palette (--vx-accent family)
+   and the brief: pure black pill, no hairlines, orange accents for active
+   states only. Consumed by renderer/island.css, which loads this file first.
+   ============================================================================ */
+
+.notch-body {
+  /* ---- Surface + depth -------------------------------------------------------
+     Pure black pill (island-notch ref): no hairline rings, no border lines.
+     Depth comes from the drop shadow only. */
+  --island-surface: #000;
+  --island-notch-bg: #000;
+  --island-raised: #16140f;      /* dark grey cards / buttons */
+  --island-raised-hover: #211e17;
+  --island-hairline: transparent; /* borders render transparent everywhere */
+  --island-text: #f5f2ee;
+  --island-text-dim: #d7d3cd;    /* >= 4.5:1 on black */
+  --island-muted: #a5a09a;
+  --island-depth: 0 30px 70px rgba(0, 0, 0, .62), 0 12px 30px rgba(0, 0, 0, .5), 0 2px 8px rgba(0, 0, 0, .45);
+  --island-notch-depth: 0 14px 34px rgba(0, 0, 0, .55), 0 5px 16px rgba(0, 0, 0, .32);
+
+  /* ---- Accents (island mirror of --vx-accent family; active states only) ----- */
+  --accent: #f26a2e;             /* == --vx-accent */
+  --accent2: #ff8a55;            /* == --vx-accent-bright */
+  --accent-soft: #ffcf9e;        /* == --vx-accent-text (AA-safe orange text) */
+  --accent-deep: #c9551f;
+  --on-accent: #1c0f07;
+  --accent-line: rgba(242, 106, 46, .3);
+  --accent-glow: rgba(242, 106, 46, .34);
+  --accent-glow-soft: rgba(242, 106, 46, .12);
+  --accent-tint: rgba(242, 106, 46, .15);
+
+  /* ---- Geometry ---------------------------------------------------------------
+     36px round tabs, 2-col body grid, 88px album art (brief numbers).
+     Band heights are written as literal px rules in island.css — the
+     island-capture harness regex-parses those rules and cross-checks them
+     against ISLAND_SIZES in overlay.js, so they must NOT move in here. */
+  --island-radius-expanded: 34px;
+  --island-radius-medium: 24px;
+  --island-tab: 36px;
+  --island-grid-gap: 10px;
+  --island-card-h: 124px;
+  --island-art: 88px;
+  --island-art-radius: 14px;
+
+  /* ---- Motion (brief: island-style cubic ease ~300ms) -------------------------- */
+  --island-ease: cubic-bezier(0.32, 0.72, 0, 1);
+  --island-dur: 300ms;
+  --island-dur-fast: 160ms;
+
+  /* ---- Time-of-day card gradients (island-weather ref; one per local phase) ---- */
+  --time-grad-day: linear-gradient(140deg, #2f5da8 0%, #4d7ec6 48%, #8fb4e2 100%);
+  --time-grad-evening: linear-gradient(140deg, #3b2f68 0%, #6a4a8c 42%, #c96b45 100%);
+  --time-grad-night: linear-gradient(140deg, #0b0d12 0%, #151b27 55%, #1d2536 100%);
+  --time-bezel: inset 0 0 0 1px rgba(255, 255, 255, .18);  /* soft light bezel (weather ref) */
+  --time-dot-day: #ffd27d;       /* sun */
+  --time-dot-evening: #ff9d5e;
+  --time-dot-night: #dfe6ff;     /* moon */
+}
