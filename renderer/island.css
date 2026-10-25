@@ -15,15 +15,19 @@
 .pill[data-style=notch]{transform-origin:50% 0}
 .pill[data-size=medium]{--pad-x:16px}
 .pill[data-size=expanded]{--pad-x:16px}
-/* Surface: pure black (#000 token) over the desktop; depth is the drop shadow
-   only — no inset rings, no hairline definition (island-notch ref). */
-.pill-surface{position:absolute;inset:0;overflow:hidden;border-radius:inherit;background:var(--island-surface);box-shadow:var(--island-depth)}
-/* Notch style: clean solid black pill — no glow halo, no seam lines, soft
-   drop shadow only. Island keeps the floating treatment. */
-.pill[data-style=notch] .pill-surface{background:var(--island-notch-bg);box-shadow:var(--island-notch-depth)}
+/* Surface: pure black (#000 token) over the desktop; no drop shadow — the
+   window region (setShape) clips anything painted outside the pill rect, so a
+   shadow would only show as a hard cut edge. */
+.pill-surface{position:absolute;inset:0;overflow:hidden;border-radius:inherit;background:var(--island-surface)}
+/* Notch style: clean solid black pill — no glow halo, no seam lines,
+   no drop shadow (region clip would cut it). */
+.pill[data-style=notch] .pill-surface{background:var(--island-notch-bg)}
 .pill[data-style=notch] .pill-glow{display:none}
 .pill[data-style=notch] .pill-card,.pill[data-style=notch] .pill-feed,.pill[data-style=notch] .chat-panel{border-top:0}
-.pill-glow{position:absolute;inset:-6px;border-radius:inherit;border:0;box-shadow:0 0 30px var(--accent-glow),inset 0 0 18px var(--accent-glow-soft);opacity:0;pointer-events:none;transition:opacity calc(.22s * var(--motion)) ease}
+/* The glow element stays for the state animations that toggle it, but the
+   outer box-shadow is gone: SetWindowRgn clips painting at the region border
+   and a 30px outer halo is exactly what becomes a hard rectangle edge. */
+.pill-glow{position:absolute;inset:0;border-radius:inherit;border:0;opacity:0;pointer-events:none;transition:opacity calc(.22s * var(--motion)) ease}
 /* Warm edge-light: reserved for active moments only — live mic, real speech,
    approval attention. Never decorative on idle or notification states. */
 .pill[data-state=listening][data-visible=true] .pill-glow{animation:island-glow calc(2s * var(--motion)) ease-in-out infinite}

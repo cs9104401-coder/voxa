@@ -1023,6 +1023,18 @@ function applyGeometry() {
 
 function retarget(immediate = false) {
   const target = targetGeometry();
+  // One shape union per size target — never per frame. The signature covers
+  // everything the final band depends on (state, size tier, measured body).
+  // Commit the signature only when the union is actually sent: a retarget
+  // that runs while the pill is detached (fade-out states, hide/show races)
+  // must not consume it, or the next visible render would see an unchanged
+  // signature and skip the region update — leaving the pill painted outside
+  // a stale, smaller region with dead buttons.
+  const signature = `${notch.dataset.state}|${sizeFor(notch.dataset.state)}|${state.style}|${Math.round(target.width)}x${Math.round(target.height)}r${Math.round(target.radius)}`;
+  if (signature !== hitTargetSignature && state.visible) {
+    hitTargetSignature = signature;
+    sendMorphHitRect();
+  }
   const instant = immediate || reducedMotion();
   springs.width.setTarget(target.width, instant);
   springs.height.setTarget(target.height, instant);
@@ -1096,7 +1108,14 @@ function frame(now) {
   updateSpeech(rawDt);
   updateProgress();
   applyGeometry();
-  if (!state.visible && !hideAckSent && settled()) {
+  const isSettled = settled();
+  if (isSettled && !hitWasSettled && hitMorphPending) {
+    // Morph done: replace the wide union region with the exact final band.
+    hitMorphPending = false;
+    sendHitRect();
+  }
+  hitWasSettled = isSettled;
+  if (!state.visible && !hideAckSent && isSettled) {
     hideAckSent = true;
     api.overlay.hidden();
   }
@@ -1139,40 +1158,80 @@ function insideNotch(x, y) {
 
 /* --- Shape-based hit testing (replaces hover-driven click-through) ---------- */
 /* The window accepts native input whenever the pill is visible; main applies
-   window-relative window.setShape regions from this renderer, so clicks on the
-   pill land here and clicks anywhere else pass to whatever is under the
-   island. Sends are rAF-coalesced (fires after layout, covers spring morph
-   frames) and deduped by integer rect so repeated renders never flood IPC. */
+   window.setShape regions from rects reported by this renderer. Sends are
+   rare by design: exactly one UNION (current ∪ target) the moment a size
+   target changes — wide enough for every morph frame so painting is never
+   clipped mid-spring — and exactly one FINAL rect once the springs settle.
+   Everything is rAF-coalesced and deduped by integer rect; nothing per-frame
+   (per-frame ResizeObserver setShape IPC was the visible source of the
+   region lag/stutter after every question). */
 const HIT_RECT_PAD = 6;
-let hitRectQueued = false;
-let hitRectSignature = null;
+const HIT_MORPH_PAD = 12;
+let hitQueued = false;
+let hitPending = null;
+let hitSignature = '';
+let hitTargetSignature = '';
+let hitMorphPending = false;
+let hitWasSettled = true;
 
-function hitRectPayload() {
-  const rect = notch.getBoundingClientRect();
-  if (!rect.width && !rect.height) return null;
-  const left = Math.floor(rect.left);
-  const top = Math.floor(rect.top);
+function paddedHitRect(clientRect, pad) {
+  const left = Math.floor(clientRect.left - pad);
+  const top = Math.floor(clientRect.top - pad);
   return {
-    x: left - HIT_RECT_PAD,
-    y: top - HIT_RECT_PAD,
-    width: Math.ceil(rect.right) + HIT_RECT_PAD - (left - HIT_RECT_PAD),
-    height: Math.ceil(rect.bottom) + HIT_RECT_PAD - (top - HIT_RECT_PAD)
+    x: left,
+    y: top,
+    width: Math.ceil(clientRect.right + pad) - left,
+    height: Math.ceil(clientRect.bottom + pad) - top
   };
 }
 
-function sendHitRect() {
-  if (hitRectQueued) return;
-  hitRectQueued = true;
+// Union of the pill's current rect with its target-size rect at the window
+// center (the stage centers the pill horizontally; the top gap is fixed).
+// HIT_MORPH_PAD covers spring overshoot (~1.3% of the delta) minus the
+// punch-through risk mid-morph, so no painted pixel can be clipped.
+function morphHitRect() {
+  const rect = notch.getBoundingClientRect();
+  const target = targetGeometry();
+  const viewWidth = document.documentElement.clientWidth;
+  const targetLeft = Math.max(0, Math.round((viewWidth - target.width) / 2));
+  const targetTop = rect.top;
+  return paddedHitRect({
+    left: Math.min(rect.left, targetLeft),
+    right: Math.max(rect.right, targetLeft + target.width),
+    top: Math.min(rect.top, targetTop),
+    bottom: Math.max(rect.bottom, targetTop + target.height)
+  }, HIT_MORPH_PAD);
+}
+
+function queueHitRect(payload) {
+  if (!state.visible || !payload) return;
+  hitPending = payload;
+  if (hitQueued) return;
+  hitQueued = true;
   requestAnimationFrame(() => {
-    hitRectQueued = false;
-    if (!state.visible) return;
-    const payload = hitRectPayload();
-    if (!payload) return;
-    const signature = `${payload.x},${payload.y},${payload.width},${payload.height}`;
-    if (signature === hitRectSignature) return;
-    hitRectSignature = signature;
-    try { api.overlay.hitRect(payload); } catch { /* send failures stay isolated */ }
+    hitQueued = false;
+    const rect = hitPending;
+    hitPending = null;
+    if (!rect || !state.visible) return;
+    const signature = `${rect.x},${rect.y},${rect.width},${rect.height}`;
+    if (signature === hitSignature) return;
+    hitSignature = signature;
+    try { api.overlay.hitRect(rect); } catch { /* send failures stay isolated */ }
   });
+}
+
+// Resting/final region: current pill bounds + the small click halo.
+function sendHitRect() {
+  if (!state.visible) return;
+  const rect = notch.getBoundingClientRect();
+  if (!rect.width && !rect.height) return;
+  queueHitRect(paddedHitRect(rect, HIT_RECT_PAD));
+}
+
+// Morph-start region: called by retarget() when the geometry target changes.
+function sendMorphHitRect() {
+  hitMorphPending = true;
+  queueHitRect(morphHitRect());
 }
 
 function updateScrollFade() {
@@ -1392,7 +1451,11 @@ function render() {
   }
   updateScrollFade();
   retarget();
-  sendHitRect();
+  // The resting-band refresh must not share a frame with the morph union:
+  // queueHitRect keeps only the newest payload per rAF, so a same-frame
+  // sendHitRect would overwrite the (wider) union and leave the expanding
+  // pill painted outside the region until it finished settling.
+  if (!hitMorphPending) sendHitRect();
 }
 
 function applyAudioLevel(peak, bins) {
@@ -1794,7 +1857,6 @@ window.addEventListener('pagehide', () => {
 
 const resizeObserver = new ResizeObserver(() => {
   updateScrollFade();
-  sendHitRect();
   if (!state.visible || !settled()) return;
   retarget();
 });
@@ -1839,6 +1901,10 @@ api.overlay.onState((next) => {
     springs.blur.value = reducedMotion() ? 0 : 6;
     springs.blur.velocity = 0;
     applyGeometry();
+    // Appear lands the pill at its final size instantly (springs jump), so the
+    // resting band is the one rect the region needs; the default main-process
+    // shape covers the interval before this reporter runs.
+    sendHitRect();
     startLoop();
   }
 });

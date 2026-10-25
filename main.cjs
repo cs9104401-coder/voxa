@@ -96,6 +96,14 @@ let hideDeadline = 0;
 let hideRemaining = 0;
 let hideDuration = 0;
 let hidePaused = false;
+// What the settle of the hide timer does by default: hide the overlay ('hide')
+// or fold an open chat back to the idle pill ('chat'). Hover pause/resume only
+// applies to the disposition that is actually counting down.
+let hideDisposition = 'hide';
+// The chevron / a finished chat reply never closes the island outright: the
+// pill folds back to the compact idle band and lingers this long before any
+// real hide starts (reset by new messages, replies or speech).
+const CHAT_LINGER_MS = 10000;
 let speechController = null;
 let quitting = false;
 
@@ -1018,13 +1026,15 @@ function clearOverlayHideTimer() {
   hideRemaining = 0;
   hideDuration = 0;
   hidePaused = false;
+  hideDisposition = 'hide';
   overlay?.setDismiss(null);
 }
 
-function scheduleOverlayHide(delay) {
-  if (chatSession.open) return;
+function scheduleOverlayHide(delay, chatLinger = false) {
+  if (chatSession.open && !chatLinger) return;
   clearTimeout(hideTimer);
   hidePaused = false;
+  hideDisposition = chatLinger ? 'chat' : 'hide';
   hideDuration = Math.max(0, Number(delay) || 0);
   hideRemaining = hideDuration;
   hideDeadline = Date.now() + hideRemaining;
@@ -1032,7 +1042,15 @@ function scheduleOverlayHide(delay) {
     hideTimer = null;
     hidePaused = false;
     hideRemaining = 0;
-    if (currentTurn || chatSession.open) return;
+    if (currentTurn) return;
+    if (chatSession.open) {
+      // The chat countdown never hides the window while chat is open; it folds
+      // the island back to the compact idle pill first (which starts a fresh,
+      // ordinary dismiss round that hover can pause).
+      chatLingerFold();
+      return;
+    }
+    hideDisposition = 'hide';
     // While media plays, turns end on the now-playing pill instead of leaving
     // the desktop bare; stop presses set mediaSnoozeUntil to opt out. If the
     // status is still media, that is an expiring gallery sample — hand the
@@ -1050,7 +1068,8 @@ function scheduleOverlayHide(delay) {
 }
 
 function pauseOverlayHide() {
-  if (chatSession.open || hidePaused || (!hideTimer && !hideRemaining)) return;
+  if (hidePaused || (!hideTimer && !hideRemaining)) return;
+  if (chatSession.open && hideDisposition !== 'chat') return;
   clearTimeout(hideTimer);
   hideTimer = null;
   hideRemaining = Math.max(0, hideDeadline - Date.now());
@@ -1064,13 +1083,19 @@ function pauseOverlayHide() {
 }
 
 function resumeOverlayHide() {
-  if (chatSession.open || !hidePaused) return;
+  if (!hidePaused) return;
+  if (chatSession.open && hideDisposition !== 'chat') return;
   hidePaused = false;
   hideDeadline = Date.now() + hideRemaining;
   hideTimer = setTimeout(() => {
     hideTimer = null;
     hideRemaining = 0;
-    if (currentTurn || chatSession.open) return;
+    if (currentTurn) return;
+    if (chatSession.open) {
+      chatLingerFold();
+      return;
+    }
+    hideDisposition = 'hide';
     if (mediaLast) showMediaOverlay();
     else overlay?.hide();
   }, hideRemaining);
@@ -1081,6 +1106,33 @@ function resumeOverlayHide() {
     paused: false,
     remaining: hideRemaining
   });
+}
+
+// Shared close path for the chat: the session ends but the island stays on
+// screen as the compact idle pill under a fresh (linger) dismiss round.
+function foldChatToIdle() {
+  if (!chatSession.open) return false;
+  chatSession.open = false;
+  overlay?.setState({
+    chatOpen: false,
+    chatPreview: false,
+    status: 'idle',
+    message: '',
+    approval: null,
+    canCopy: false,
+    streaming: false,
+    chatStreaming: false,
+    speaking: false
+  });
+  overlay?.setKeyboardFocus(false);
+  scheduleOverlayHide(CHAT_LINGER_MS);
+  return true;
+}
+
+// Fires when the chat-linger round runs out with chat still open.
+function chatLingerFold() {
+  if (!chatSession.open || overlay?.state().status !== 'chat') return;
+  foldChatToIdle();
 }
 
 function showTurnError(turn, message, detail = '') {
@@ -1373,8 +1425,14 @@ function collapseChat({ hide = true } = {}) {
 }
 
 function closeChat() {
-  if (!collapseChat({ hide: true })) return false;
-  logger.info('chat', 'Chat collapsed');
+  // The chevron ("up-arrow") folds the island back to the compact idle pill
+  // and leaves it visible under the standard dismiss window — it no longer
+  // closes the island outright. The 10s countdown pauses on hover through the
+  // existing overlay:dismiss-pause/resume path and resets when chat reopens,
+  // a new message/reply lands, or a voice turn starts (its callers all
+  // clear/re-schedule the timer).
+  if (!foldChatToIdle()) return false;
+  logger.info('chat', 'Chat collapsed to the idle pill.');
   return true;
 }
 
@@ -1388,38 +1446,48 @@ function cancelChat() {
   return true;
 }
 
+// A rejected send leaves the pill on screen: start (or restart) the
+// chat-linger countdown so the island folds back to the idle band on its own
+// schedule instead of stranding the user under a chat view that cannot send.
+// With the session already closed the countdown still expires the visible
+// shell under the ordinary hide disposition.
+function rejectChat(message) {
+  sendToOverlay('chat:error', { message });
+  scheduleOverlayHide(CHAT_LINGER_MS, chatSession.open);
+}
+
 async function sendChat(payload) {
   if (!chatSession.open) {
     logger.warn('chat', 'A typed message was ignored because chat is closed.');
-    sendToOverlay('chat:error', { message: 'Chat was closed before the message could be sent.' });
+    rejectChat('Chat was closed before the message could be sent.');
     return;
   }
   if (currentTurn) {
-    sendToOverlay('chat:error', { message: 'Finish the voice turn before typing.' });
+    rejectChat('Finish the voice turn before typing.');
     return;
   }
   if (chatSession.controller) {
-    sendToOverlay('chat:error', { message: 'Please wait for the current reply to finish.' });
+    rejectChat('Please wait for the current reply to finish.');
     return;
   }
   const text = typeof payload?.text === 'string' ? payload.text.trim() : '';
   if (!text) {
-    sendToOverlay('chat:error', { message: 'Type a message first.' });
+    rejectChat('Type a message first.');
     return;
   }
   if (text.length > LIMITS.MAX_CHAT_CHARS) {
-    sendToOverlay('chat:error', { message: `Messages are limited to ${LIMITS.MAX_CHAT_CHARS} characters.` });
+    rejectChat(`Messages are limited to ${LIMITS.MAX_CHAT_CHARS} characters.`);
     return;
   }
   const providerName = settings.chatProvider;
   const config = settings.providers?.[providerName];
   if (!config) {
-    sendToOverlay('chat:error', { message: `Unknown chat provider: ${providerName}` });
+    rejectChat(`Unknown chat provider: ${providerName}`);
     return;
   }
   const key = providerNeedsKey(providerName) ? secrets[providerName] : '';
   if (providerNeedsKey(providerName) && !key) {
-    sendToOverlay('chat:error', { message: `Add an API key for ${providerName} in the dashboard.` });
+    rejectChat(`Add an API key for ${providerName} in the dashboard.`);
     return;
   }
 
@@ -1429,6 +1497,8 @@ async function sendChat(payload) {
   chatSession.requestId = id;
   chatSession.messages.push({ role: 'user', content: text }, { role: 'assistant', content: '', streaming: true });
   if (chatSession.messages.length > 40) chatSession.messages.splice(0, chatSession.messages.length - 40);
+  // A new message voids any countdown (chat linger or plain hide).
+  clearOverlayHideTimer();
   overlay?.setState({ chatStreaming: true });
   sendToOverlay('chat:started', { id, text });
   logger.info('chat', `Sending ${text.length} characters to ${providerName}/${config.model || 'default'}`);
@@ -1458,6 +1528,9 @@ async function sendChat(payload) {
     }
     addTurn(text, clean);
     sendToOverlay('chat:done', { id, text: clean });
+    // Reply finished: start the chat-linger countdown (10s, hover-pausable,
+    // folds to the idle pill — never an instant hide).
+    scheduleOverlayHide(CHAT_LINGER_MS, true);
     logger.info('chat', `Reply received from ${providerName}`);
   } catch (error) {
     const last = chatSession.messages[chatSession.messages.length - 1];
@@ -1467,6 +1540,7 @@ async function sendChat(payload) {
         last.cancelled = true;
       }
       sendToOverlay('chat:done', { id, text: last?.content || '', cancelled: true });
+      scheduleOverlayHide(CHAT_LINGER_MS, true);
       logger.info('chat', 'Reply stopped');
     } else {
       const message = cleanError(error);
@@ -1477,6 +1551,8 @@ async function sendChat(payload) {
         chatSession.messages.push({ role: 'assistant', content: '', error: message });
       }
       sendToOverlay('chat:error', { id, message });
+      // A failed reply still ends the turn: linger, then fold to idle.
+      scheduleOverlayHide(CHAT_LINGER_MS, true);
       logger.warn('chat', message);
     }
   } finally {
