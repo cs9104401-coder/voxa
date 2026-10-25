@@ -35,12 +35,14 @@ const motionQuery = window.matchMedia('(prefers-reduced-motion: reduce)');
 
 const MAX_CARD_HEIGHT = 400;
 const MAX_ANIMATED_WORDS = 280;
+// Pill geometry per size — must stay in sync with the [data-size] rules in island.css
+// (companion = character slot height; expanded.rail = head band height).
 const ISLAND_SIZES = {
-  compact: { width: 150, height: 36 },
-  medium: { width: 300, height: 56 },
-  expanded: { width: 420 }
+  compact: { width: 184, height: 64 },
+  medium: { width: 320, height: 88 },
+  expanded: { width: 440, rail: 112 }
 };
-const NOTCH_WIDTH = 440;
+const NOTCH_WIDTH = 464;
 const MEDIUM_STATES = new Set(['thinking', 'executing', 'verifying', 'done']);
 const EXPANDED_STATES = new Set(['answer', 'approval', 'error', 'chat']);
 const SUPPORTED_STATES = new Set(['idle', 'listening', ...MEDIUM_STATES, ...EXPANDED_STATES]);
@@ -662,25 +664,28 @@ function targetGeometry() {
   notch.style.setProperty('--content-width', `${contentWidth}px`);
   const cardHeight = expanded && !chatMode ? Math.min(MAX_CARD_HEIGHT, measureCard(contentWidth)) : 0;
   const chatHeight = chatMode ? Math.min(MAX_CARD_HEIGHT, measureChat(contentWidth)) : 0;
+  // Head band heights are static CSS dimensions (mirrored in ISLAND_SIZES), so read the
+  // constant instead of probing the DOM — deterministic and matches the rendering rules.
+  const rail = expanded ? ISLAND_SIZES.expanded.rail : ISLAND_SIZES[size].height;
   let width;
   let height;
   let radius;
   if (state.style === 'notch') {
     width = NOTCH_WIDTH;
     height = chatMode
-      ? Math.max(150, Math.round((head.offsetHeight || 48) + chatHeight + 2))
+      ? Math.max(150, Math.round(rail + chatHeight + 2))
       : expanded
-        ? Math.max(86, Math.round((head.offsetHeight || 48) + cardHeight + 2))
-        : size === 'medium' ? 60 : 48;
+        ? Math.max(112, Math.round(rail + cardHeight + 2))
+        : rail;
     radius = 22;
   } else {
     width = contentWidth;
     height = chatMode
-      ? Math.max(150, Math.min(MAX_CARD_HEIGHT, Math.round((head.offsetHeight || 48) + chatHeight + 2)))
+      ? Math.max(150, Math.round(rail + chatHeight + 2))
       : expanded
-        ? Math.max(84, Math.round((head.offsetHeight || 48) + cardHeight + 2))
+        ? Math.max(112, Math.round(rail + cardHeight + 2))
         : ISLAND_SIZES[size].height;
-    radius = expanded ? 28 : size === 'medium' ? 24 : height / 2;
+    radius = expanded ? 26 : size === 'medium' ? 24 : height / 2;
   }
   return { width, height, radius };
 }
