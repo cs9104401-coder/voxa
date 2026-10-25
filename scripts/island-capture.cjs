@@ -261,6 +261,13 @@ const SAMPLE_ANSWER = [
   '`inline code` and **bold text** render, plus a sentence long enough to wrap around the card width twice without any trouble at all.'
 ].join('\n');
 
+// Notification feed samples (Phase B): same shape main.cjs galleryNotifications() sends.
+const FEED_SAMPLES = [
+  { id: 'feed-a', title: 'Agent finished the task', body: 'Opened Notepad and typed the review notes. Everything went through the approval you allowed.', ts: Date.now(), kind: 'turn', tone: 'highlight' },
+  { id: 'feed-b', title: 'Whisper model downloaded', body: 'Voice recognition model staged and ready to transcribe.', ts: Date.now() - 14 * 60000, kind: 'download', tone: 'neutral' },
+  { id: 'feed-c', title: 'Media controls connected', body: 'Playback info and controls are wired to the island.', ts: Date.now() - 52 * 60000, kind: 'media', tone: 'neutral' }
+];
+
 const scenarios = [
   { name: 'compact-idle', style: 'island', wait: 2300, patch: { status: 'idle' } },
   { name: 'compact-listening', style: 'island', wait: 2300, patch: { status: 'listening', message: 'Speak naturally. Release to send.' } },
@@ -269,6 +276,7 @@ const scenarios = [
   { name: 'expanded-answer', style: 'island', wait: 3200, patch: { status: 'answer', canCopy: true, speaking: true, approval: null, message: SAMPLE_ANSWER } },
   { name: 'expanded-approval', style: 'island', wait: 3000, patch: { status: 'approval', approval: { id: 'harness', title: 'Allow this sample action?', detail: 'Harness preview — nothing will run.', tool: 'type_text' } } },
   { name: 'expanded-error', style: 'island', wait: 2600, patch: { status: 'error', message: 'Something failed on purpose so we can inspect the error state.' } },
+  { name: 'expanded-feed', style: 'island', wait: 2800, patch: { status: 'feed', feedPreview: true, notifications: FEED_SAMPLES } },
   { name: 'expanded-chat', style: 'island', wait: 3200, patch: { status: 'chat', chatOpen: true, chatPreview: true } },
   { name: 'back-compact', style: 'island', wait: 2600, patch: { status: 'idle' } },
   { name: 'notch-compact-idle', style: 'notch', wait: 2400, patch: { status: 'idle' } },
@@ -297,6 +305,14 @@ const MEASURE = `(() => {
     cardActions: rect(document.querySelector('.card-actions')),
     text: rect(document.querySelector('.card-text')),
     zone: rect(document.querySelector('.head-center')),
+    feed: rect(document.getElementById('feedPanel')),
+    feedItem: rect(document.querySelector('.feed-item')),
+    feedThumb: rect(document.querySelector('.feed-thumb')),
+    feedData: (() => {
+      const items = document.querySelectorAll('.feed-item').length;
+      const sections = [...document.querySelectorAll('.feed-section')].map((node) => node.textContent.toLowerCase());
+      return { items, sections };
+    })(),
     radius: getComputedStyle(pillEl).borderRadius,
     radiusBL: getComputedStyle(pillEl).borderBottomLeftRadius,
     inline: { width: pillEl.style.width, height: pillEl.style.height, radius: pillEl.style.borderRadius, transform: pillEl.style.transform, filter: pillEl.style.filter, opacity: pillEl.style.opacity },
@@ -413,10 +429,28 @@ function assertScenario(scenario, m) {
       within(m.blob.x, m.pill.x + padX, 3.5, 'blob left edge on shared pad', scenario);
       within(m.blob.x, m.text.x, 3.5, 'blob left == text left (shared grid)', scenario);
     }
-  } else if (m.status !== 'chat') {
+  } else if (m.status !== 'chat' && m.status !== 'feed') {
     fail('runtime', `${scenario.name}: card-text rect missing`);
   }
   if (m.actions) within(m.actions.x + m.actions.width, m.pill.x + m.pill.width - padX, 2, 'header buttons right on shared pad', scenario);
+  // Feed specifics: stacked cards on the shared grid, 44px thumbnail, NEW/OLD labels.
+  if (m.status === 'feed') {
+    if (m.feedItem && m.feedItem.width > 0) {
+      within(m.feedItem.x, m.pill.x + padX, 2, 'feed card left on shared pad', scenario);
+      within(m.feedItem.x + m.feedItem.width, m.pill.x + m.pill.width - padX, 2, 'feed card right on shared pad', scenario);
+      if (m.feed) relaxedAtLeast(m.feedItem.y + m.feedItem.height, m.feed.y + 4, 'feed card inside panel', scenario);
+    } else {
+      fail('runtime', `${scenario.name}: no visible feed card`);
+    }
+    if (m.feedThumb) within(m.feedThumb.width, 44, 1.5, 'feed thumb 44px', scenario);
+    if (m.feedData) {
+      if (m.feedData.items === FEED_SAMPLES.length) pass('runtime', `${scenario.name}: all feed cards rendered`);
+      else fail('runtime', `${scenario.name}: feed card count ${m.feedData.items} vs ${FEED_SAMPLES.length}`);
+      const wanted = ['new', 'old'];
+      if (wanted.every((label) => m.feedData.sections.includes(label))) pass('runtime', `${scenario.name}: NEW/OLD sections present`);
+      else fail('runtime', `${scenario.name}: sections ${JSON.stringify(m.feedData.sections)} missing NEW/OLD`);
+    }
+  }
   if (size === 'expanded') {
     if (m.cardActions && m.cardActions.width > 0) within(m.cardActions.x + m.cardActions.width, m.pill.x + m.pill.width - padX, 2, 'footer actions right on shared pad', scenario);
     if (m.label) {

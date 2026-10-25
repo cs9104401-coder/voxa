@@ -29,6 +29,11 @@ const chatStopButton = $('#chatStopButton');
 const chatSendButton = $('#chatSendButton');
 const chatError = $('#chatError');
 const chatPreviewLabel = $('#chatPreviewLabel');
+const feedPanel = $('#feedPanel');
+const feedList = $('#feedList');
+const feedCount = $('#feedCount');
+const feedEmpty = $('#feedEmpty');
+const feedPreviewLabel = $('#feedPreviewLabel');
 const companion = $('#companion');
 const waveBars = [...(levelMeter?.querySelectorAll('i') || [])];
 const motionQuery = window.matchMedia('(prefers-reduced-motion: reduce)');
@@ -36,7 +41,7 @@ const motionQuery = window.matchMedia('(prefers-reduced-motion: reduce)');
 const MAX_CARD_HEIGHT = 400;
 const MAX_ANIMATED_WORDS = 280;
 // Pill geometry per size — must mirror the [data-size] band rules in island.css
-// (--char-h / band heights). scripts/island-capture.cjs cross-checks both at runtime.
+// (--pad-x shared grid / band heights). scripts/island-capture.cjs cross-checks both at runtime.
 const ISLAND_SIZES = {
   compact: { width: 208, height: 88 },
   medium: { width: 340, height: 104 },
@@ -44,7 +49,7 @@ const ISLAND_SIZES = {
 };
 const NOTCH_WIDTH = 544;
 const MEDIUM_STATES = new Set(['thinking', 'executing', 'verifying', 'done']);
-const EXPANDED_STATES = new Set(['answer', 'approval', 'error', 'chat']);
+const EXPANDED_STATES = new Set(['answer', 'approval', 'error', 'chat', 'feed']);
 const SUPPORTED_STATES = new Set(['idle', 'listening', ...MEDIUM_STATES, ...EXPANDED_STATES]);
 const CHAT_PREVIEW_MESSAGES = [
   { role: 'user', content: 'Give me a quick summary of my day.' },
@@ -68,7 +73,9 @@ let state = {
   stageMax: 0,
   chatOpen: false,
   chatStreaming: false,
-  chatPreview: false
+  chatPreview: false,
+  notifications: [],
+  feedPreview: false
 };
 let chat = {
   requestId: 0,
@@ -619,7 +626,8 @@ function statusLabel(status) {
     approval: 'Approval needed',
     error: 'Needs attention',
     done: 'Done',
-    chat: state.chatPreview ? 'Chat preview' : chat.streaming ? 'Replying…' : 'Ask Voxa'
+    chat: state.chatPreview ? 'Chat preview' : chat.streaming ? 'Replying…' : 'Ask Voxa',
+    feed: 'Alerts'
   };
   return mapping[status] || status;
 }
@@ -641,8 +649,7 @@ function contentWidthFor(size) {
 }
 
 function measureCard(contentWidth) {
-  const clone = card.cloneNode(true);
-  clone.removeAttribute('id');
+  const clone = card.cloneNode(true);  clone.removeAttribute('id');
   clone.removeAttribute('aria-live');
   clone.removeAttribute('data-scrolled');
   clone.querySelectorAll('[id]').forEach((element) => element.removeAttribute('id'));
@@ -672,11 +679,129 @@ function measureChat(contentWidth) {
   return height;
 }
 
+function measureFeed(contentWidth) {
+  if (!feedPanel) return 140;
+  const clone = feedPanel.cloneNode(true);
+  clone.removeAttribute('id');
+  clone.querySelectorAll('[id]').forEach((element) => element.removeAttribute('id'));
+  clone.classList.add('measure-feed');
+  clone.hidden = false;
+  clone.style.width = `${contentWidth}px`;
+  document.body.append(clone);
+  const height = clone.getBoundingClientRect().height;
+  clone.remove();
+  return Math.max(96, height);
+}
+
+/* --- Notification feed (Ref 1) -------------------------------------------- */
+/* Items come from main through overlay:state (gallery samples in Phase B;
+   real producers arrive in the voice/telemetry phases). Timestamps render
+   relative to "now" at paint time. Build with DOM APIs only — textContent
+   everywhere, no innerHTML from state data. */
+const FEED_ICON_PATHS = {
+  turn: ['m5 12.6 4.5 4.5L19 7.4'],
+  download: ['M12 4v10m0 0-4-4m4 4 4-4', 'M5 20h14'],
+  media: ['M10.2 9.2v5.6l4.6-2.8z', 'M12 4a8 8 0 1 0 0 16 8 8 0 0 0 0-16Z'],
+  system: ['M4 7h9', 'M4 12h14', 'M4 17h7'],
+  error: ['M12 3.8 2.9 20.2h18.2z', 'M12 9v5.2m0 2.9v.1']
+};
+
+function feedGlyph(kind) {
+  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  svg.setAttribute('viewBox', '0 0 24 24');
+  svg.setAttribute('aria-hidden', 'true');
+  for (const d of FEED_ICON_PATHS[kind] || FEED_ICON_PATHS.system) {
+    const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    path.setAttribute('d', d);
+    svg.append(path);
+  }
+  return svg;
+}
+
+function relTime(ts) {
+  const stamp = Number(ts);
+  if (!stamp) return '';
+  const diff = Math.max(0, Date.now() - stamp);
+  if (diff < 60000) return 'just now';
+  if (diff < 3600000) return `${Math.round(diff / 60000)}m ago`;
+  if (diff < 86400000) return `${Math.round(diff / 3600000)}h ago`;
+  return new Date(stamp).toLocaleDateString();
+}
+
+function feedSection(label) {
+  const section = document.createElement('span');
+  section.className = 'feed-section';
+  section.setAttribute('aria-hidden', 'true');
+  section.textContent = label;
+  return section;
+}
+
+function feedItem(item) {
+  const node = document.createElement('article');
+  node.className = `feed-item ${item.tone === 'highlight' ? 'is-highlight' : ''}`;
+  node.setAttribute('role', 'listitem');
+  const thumb = document.createElement('span');
+  thumb.className = 'feed-thumb';
+  thumb.append(feedGlyph(item.kind));
+  const main = document.createElement('div');
+  main.className = 'feed-main';
+  const title = document.createElement('span');
+  title.className = 'feed-item-title';
+  title.textContent = String(item.title || 'Alert');
+  const body = document.createElement('span');
+  body.className = 'feed-item-body';
+  const bodyText = String(item.body || '');
+  if (bodyText) body.textContent = bodyText;
+  else body.hidden = true;
+  const meta = document.createElement('span');
+  meta.className = 'feed-meta';
+  const when = relTime(item.ts);
+  meta.textContent = `${api.appName || 'Voxa'}${when ? ` · ${when}` : ''}`;
+  main.append(title, body, meta);
+  const dismiss = document.createElement('button');
+  dismiss.className = 'feed-x';
+  dismiss.type = 'button';
+  dismiss.setAttribute('aria-label', `Dismiss alert: ${title.textContent}`);
+  const glyph = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  glyph.setAttribute('viewBox', '0 0 24 24');
+  glyph.setAttribute('aria-hidden', 'true');
+  const cross = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+  cross.setAttribute('d', 'M6 6l12 12M18 6 6 18');
+  glyph.append(cross);
+  dismiss.append(glyph);
+  dismiss.addEventListener('click', () => {
+    if (!item.id) return;
+    try {
+      api.overlay.dismissNotification(String(item.id));
+    } catch {
+      // Blocked channel guard in preload; the feed stays until repaint.
+    }
+  });
+  node.append(thumb, main, dismiss);
+  return node;
+}
+
+function renderFeed() {
+  if (!feedPanel) return;
+  const items = Array.isArray(state.notifications) ? state.notifications : [];
+  feedCount.textContent = items.length ? `${items.length} alert${items.length === 1 ? '' : 's'}` : 'All clear';
+  feedPreviewLabel.hidden = !state.feedPreview;
+  feedEmpty.hidden = items.length > 0;
+  feedList.replaceChildren();
+  items.forEach((item, index) => {
+    if (index === 0) feedList.append(feedSection('New'));
+    else if (index === 1) feedList.append(feedSection('Old'));
+    feedList.append(feedItem(item));
+  });
+  feedList.scrollTop = 0;
+}
+
 function targetGeometry() {
   const status = notch.dataset.state;
   const size = sizeFor(status);
   const expanded = size === 'expanded';
   const chatMode = status === 'chat' && Boolean(state.chatOpen);
+  const feedMode = status === 'feed';
   const contentWidth = contentWidthFor(size);
   notch.style.setProperty('--content-width', `${contentWidth}px`);
   // Head band heights are static CSS dimensions (mirrored in ISLAND_SIZES), so read the
@@ -696,6 +821,9 @@ function targetGeometry() {
   const chatHeight = chatMode
     ? Math.min(MAX_CARD_HEIGHT, measureChat(contentWidth), bodyLimit)
     : 0;
+  const feedHeight = feedMode
+    ? Math.min(MAX_CARD_HEIGHT, measureFeed(contentWidth), bodyLimit)
+    : 0;
   let width;
   let height;
   let radius;
@@ -704,7 +832,7 @@ function targetGeometry() {
     height = chatMode
       ? Math.max(rail + 38, Math.round(rail + chatHeight + 2))
       : expanded
-        ? Math.round(rail + cardHeight + 2)
+        ? Math.round(rail + (feedMode ? feedHeight : cardHeight) + 2)
         : rail;
     radius = 22;
   } else {
@@ -712,7 +840,7 @@ function targetGeometry() {
     height = chatMode
       ? Math.max(rail + 38, Math.round(rail + chatHeight + 2))
       : expanded
-        ? Math.round(rail + cardHeight + 2)
+        ? Math.round(rail + (feedMode ? feedHeight : cardHeight) + 2)
         : ISLAND_SIZES[size].height;
     radius = expanded ? 26 : size === 'medium' ? 24 : height / 2;
   }
@@ -890,6 +1018,7 @@ function render() {
   notch.dataset.style = style;
   notch.dataset.visible = state.visible ? 'true' : 'false';
   notch.dataset.mode = state.mode || 'agent';
+  notch.dataset.speaking = state.speaking ? 'true' : 'false';
   notch.dataset.scrolled = cardText.scrollTop > 4 ? 'true' : 'false';
   stage.dataset.style = style;
   updateCompanion(status);
@@ -914,11 +1043,14 @@ function render() {
     && notch.dataset.size === 'expanded'
     && status !== 'approval'
     && !openChat);
-  card.hidden = openChat;
+  const openFeed = status === 'feed';
+  card.hidden = openChat || openFeed;
   chatPanel.hidden = !openChat;
+  if (feedPanel) feedPanel.hidden = !openFeed;
   updateChatHeader();
   updateChatComposer();
   if (openChat) renderChatLog();
+  if (openFeed) renderFeed();
   let text = '';
   if (state.approval) text = `${state.approval.title}\n\n${state.approval.detail || ''}`;
   else if (state.message) text = state.message;
@@ -1142,6 +1274,7 @@ resizeObserver.observe(cardText);
 resizeObserver.observe(card);
 resizeObserver.observe(head);
 resizeObserver.observe(chatInput);
+if (feedList) resizeObserver.observe(feedList);
 
 motionQuery.addEventListener?.('change', () => {
   document.body.dataset.reducedMotion = reducedMotion() ? 'true' : 'false';

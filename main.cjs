@@ -1882,7 +1882,7 @@ async function runMicTest() {
 function previewOverlay(status, message) {
   if (currentTurn) throw new Error('Finish the current turn before previewing the overlay.');
   if (chatSession.open) throw new Error('Close chat before previewing the overlay.');
-  const allowed = ['idle', 'listening', 'thinking', 'executing', 'verifying', 'answer', 'approval', 'error', 'done', 'chat'];
+  const allowed = ['idle', 'listening', 'thinking', 'executing', 'verifying', 'answer', 'approval', 'error', 'done', 'chat', 'feed'];
   const next = allowed.includes(String(status).toLowerCase()) ? String(status).toLowerCase() : 'listening';
   if (next === 'idle') {
     clearOverlayHideTimer();
@@ -1890,14 +1890,17 @@ function previewOverlay(status, message) {
     return true;
   }
   const isChat = next === 'chat';
+  const isFeed = next === 'feed';
   const approval = next === 'approval'
     ? { id: 'preview', title: 'Allow this sample action?', detail: message || 'This is a preview; no action will run.', tool: 'preview' }
     : null;
   overlay.show({
     status: next,
     mode: settings.mode,
-    message: isChat ? '' : message || `Overlay preview · ${next}`,
+    message: isChat || isFeed ? '' : message || `Overlay preview · ${next}`,
     approval,
+    notifications: isFeed ? galleryNotifications() : [],
+    feedPreview: isFeed,
     canCopy: next === 'answer',
     chatOpen: isChat,
     chatPreview: isChat,
@@ -1907,6 +1910,17 @@ function previewOverlay(status, message) {
   const motionScale = overlay.state().slowMotion ? 4 : 1;
   scheduleOverlayHide((next === 'approval' ? 8000 : next === 'done' ? 3200 : 6000) * motionScale);
   return true;
+}
+
+// Reference 1 feed samples for the gallery. These are Voxa-internal events by
+// design (labels, thumbnails, timestamps); real producers arrive in Phases E/H.
+function galleryNotifications() {
+  const now = Date.now();
+  return [
+    { id: 'sample-turn', title: 'Agent finished the task', body: 'Opened Notepad and typed the review notes. Everything went through the approval you allowed.', ts: now, kind: 'turn', tone: 'highlight' },
+    { id: 'sample-download', title: 'Whisper model downloaded', body: 'Voice recognition model staged and ready to transcribe.', ts: now - 14 * 60000, kind: 'download', tone: 'neutral' },
+    { id: 'sample-media', title: 'Media controls connected', body: 'Playback info and controls are wired to the island.', ts: now - 52 * 60000, kind: 'media', tone: 'neutral' }
+  ];
 }
 
 function senderRole(event) {
@@ -2251,6 +2265,12 @@ function registerIpc() {
   }, ['overlay']);
   listen('overlay:copy', (text) => {
     clipboard.writeText(String(text || '').slice(0, 20000));
+  }, ['overlay']);
+  listen('overlay:notification-dismiss', (payload) => {
+    const id = typeof payload?.id === 'string' ? payload.id : '';
+    if (!id) return false;
+    overlay?.dismissNotification(id);
+    return true;
   }, ['overlay']);
   listen('chat:open', () => openChat(), ['overlay']);
   listen('chat:close', () => closeChat(), ['overlay']);
