@@ -289,6 +289,8 @@ const MEASURE = `(() => {
     zone: rect(document.querySelector('.head-center')),
     radius: getComputedStyle(pillEl).borderRadius,
     radiusBL: getComputedStyle(pillEl).borderBottomLeftRadius,
+    inline: { width: pillEl.style.width, height: pillEl.style.height, radius: pillEl.style.borderRadius, transform: pillEl.style.transform, filter: pillEl.style.filter, opacity: pillEl.style.opacity },
+    dpr: window.devicePixelRatio,
     charH: charEl ? getComputedStyle(charEl).height : null,
     size: pillEl.dataset.size,
     status: pillEl.dataset.state
@@ -309,37 +311,47 @@ async function waitForRenderer() {
 }
 
 async function runtimeCheck() {
-  const { app } = require('electron');
+  const { app, ipcMain } = require('electron');
   const { createOverlay } = require(path.join(REPO, 'lib', 'overlay.cjs'));
+  // The real main.cjs answers this once; the harness stubs it so labels show the
+  // actual app name instead of the no-listener fallback.
+  ipcMain.removeAllListeners('brand:name');
+  ipcMain.on('brand:name', (event) => { event.returnValue = 'Voxa'; });
   overlay = createOverlay({ log: { info: () => {}, warn: (tag, text) => console.log(`[warn:${tag}] ${text}`), error: (tag, text) => console.log(`[error:${tag}] ${text}`) } });
   await app.whenReady();
   overlay.create();
   await waitForRenderer();
   const contents = overlay.getWindow().webContents;
 
+  const saveResults = () => fs.writeFileSync(path.join(OUT, 'island-metrics.json'), JSON.stringify(results, null, 2));
   for (const scenario of scenarios) {
-    overlay.setStyle(scenario.style);
-    if (scenario.slow) overlay.setPreviewOptions({ slowMotion: true });
-    overlay.hideNow();
-    await sleep(420);
-    overlay.show(scenario.patch);
-    await sleep(scenario.wait);
-    let metrics = null;
     try {
-      metrics = JSON.parse(JSON.stringify(await contents.executeJavaScript(MEASURE, true)));
+      overlay.setStyle(scenario.style);
+      if (scenario.slow) overlay.setPreviewOptions({ slowMotion: true });
+      overlay.hideNow();
+      await sleep(420);
+      overlay.show(scenario.patch);
+      await sleep(scenario.wait);
+      let metrics = null;
+      try {
+        metrics = JSON.parse(JSON.stringify(await contents.executeJavaScript(MEASURE, true)));
+      } catch (error) {
+        fail('runtime', `${scenario.name}: measure failed: ${error.message}`);
+        continue;
+      }
+      const capture = await overlay.getWindow().webContents.capturePage();
+      const pngPath = path.join(OUT, `${scenario.name}.png`);
+      fs.writeFileSync(pngPath, capture.toPNG());
+      flattenPNG(pngPath, pngPath, [35, 38, 43]);
+      results.screenshots.push(pngPath);
+      console.log(`saved ${pngPath}`);
+      if (!scenario.noAssert) assertScenario(scenario, metrics);
+      if (scenario.slow) overlay.setPreviewOptions({ slowMotion: false });
+      results.runtime.push({ name: scenario.name, metrics });
     } catch (error) {
-      fail('runtime', `${scenario.name}: measure failed: ${error.message}`);
-      continue;
+      fail('runtime', `${scenario.name}: scenario crashed: ${error && error.stack || error}`);
     }
-    const capture = await overlay.getWindow().webContents.capturePage();
-    const pngPath = path.join(OUT, `${scenario.name}.png`);
-    fs.writeFileSync(pngPath, capture.toPNG());
-    flattenPNG(pngPath, pngPath, [35, 38, 43]);
-    results.screenshots.push(pngPath);
-    console.log(`saved ${pngPath}`);
-    if (!scenario.noAssert) assertScenario(scenario, metrics);
-    if (scenario.slow) overlay.setPreviewOptions({ slowMotion: false });
-    results.runtime.push({ name: scenario.name, metrics });
+    saveResults();
   }
 
   overlay.hideNow();
@@ -414,6 +426,14 @@ function assertScenario(scenario, m) {
 
 auditClip();
 syncCheck();
+process.on('uncaughtException', (error) => {
+  console.error('harness uncaught:', error && error.stack || error);
+  try { fs.writeFileSync(path.join(OUT, 'island-metrics.json'), JSON.stringify(results, null, 2)); } catch { /* best effort */ }
+  setTimeout(() => process.exit(1), 200);
+});
+process.on('unhandledRejection', (error) => {
+  console.error('harness unhandled rejection:', error && (error.stack || error.message) || error);
+});
 runtimeCheck().then(() => {
   fs.writeFileSync(path.join(OUT, 'island-metrics.json'), JSON.stringify(results, null, 2));
   console.log(failed === 0 ? `\nALL CHECKS PASSED — output in ${OUT}` : `\n${failed} check(s) FAILED — output in ${OUT}`);
