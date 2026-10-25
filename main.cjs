@@ -49,6 +49,7 @@ let settings;
 let secrets = {};
 let history = [];
 let memory = [];
+let lastOpenedApp = null;
 let dashboardWindow = null;
 let recorderWindow = null;
 let recorderReady = null;
@@ -1574,19 +1575,32 @@ function stripForSpeech(value) {
 }
 
 function toolSchemas() {
-  return TOOL_DEFINITIONS.map((tool) => ({
-    type: 'function',
-    function: {
-      name: tool.name,
-      description: tool.description,
-      parameters: {
-        type: 'object',
-        properties: Object.fromEntries(Object.entries(tool.parameters).map(([name]) => [name, { type: 'string' }])),
-        required: Object.keys(tool.parameters),
-        additionalProperties: false
+  return TOOL_DEFINITIONS.map((tool) => {
+    const entries = Object.entries(tool.parameters);
+    const properties = Object.fromEntries(entries.map(([name, spec]) => {
+      const definition = typeof spec === 'string' ? { type: spec } : spec;
+      const property = { type: definition.type || 'string' };
+      if (definition.description) property.description = definition.description;
+      if (Object.hasOwn(definition, 'default')) property.default = definition.default;
+      return [name, property];
+    }));
+    const required = entries
+      .filter(([, spec]) => typeof spec === 'string' || spec?.optional !== true)
+      .map(([name]) => name);
+    return {
+      type: 'function',
+      function: {
+        name: tool.name,
+        description: tool.description,
+        parameters: {
+          type: 'object',
+          properties,
+          required,
+          additionalProperties: false
+        }
       }
-    }
-  }));
+    };
+  });
 }
 
 function systemPrompt(target) {
@@ -1606,6 +1620,7 @@ function systemPrompt(target) {
     'Never claim an action succeeded unless a tool result says it did.',
     'After web_search, do not claim you found, read, or summarized results; say you opened the search in the browser and ask the user to look at it.',
     'Routine actions may run without a prompt based on the saved permission mode; sensitive actions still require approval.',
+    'Use close_app to close an app by name; never use press_keys or Alt+F4 to close an app. Pass the app name. Set force only when the user says "force close" or "kill".',
     'If the user denies approval, accept it and do not retry the same action.',
     'Do not end with generic questions such as "Anything else?".',
     `Focused app when the turn began: ${target?.title || 'unknown'}.`,
@@ -1683,8 +1698,36 @@ async function prepareTool(turn, name, args, providerName) {
       detail: entry?.launch || query,
       run: async () => {
         const opened = await apps.openAppByName(query);
+        lastOpenedApp = { name: opened.name, launch: opened.launch || '' };
         return `Opened ${opened.name}.`;
       }
+    };
+  }
+  if (name === 'close_app') {
+    const query = String(args.name || '').trim();
+    if (query.length > 200) throw new Error('The app name is too long.');
+    const force = args.force === true;
+    const useLast = !query || /^(it|that)$/i.test(query);
+    const lastApp = useLast ? lastOpenedApp : null;
+    const entry = query && !useLast
+      ? apps.findApp(query)
+      : (lastApp?.name ? apps.findApp(lastApp.name) : null);
+    const focusTarget = useLast && !lastApp ? (turn.target || null) : null;
+    const label = useLast
+      ? (lastApp?.name || focusTarget?.title || focusTarget?.processName || 'the focused window')
+      : (entry?.name || query);
+    const refusal = desktop.closeAppRefusal(query)
+      || (entry?.name ? desktop.closeAppRefusal(entry.name) : null)
+      || (focusTarget ? desktop.closeAppRefusal(focusTarget.processName) : null);
+    if (refusal) throw new Error(refusal);
+    return {
+      title: `Close ${label}?`,
+      detail: force ? `${label}\n\nForce close will kill the process if it stays open.` : label,
+      run: async () => desktop.closeApp(useLast ? '' : query, {
+        force,
+        lastApp: useLast ? lastApp : null,
+        focusedTarget: focusTarget
+      })
     };
   }
   if (name === 'web_search') {

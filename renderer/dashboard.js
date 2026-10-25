@@ -123,6 +123,7 @@ const PERMISSION_CATEGORIES = [
   ['open_files', 'Open files', 'Open documents and media from your user folders.'],
   ['open_folders', 'Open folders', 'Navigate to ordinary folders inside Home, Desktop, Documents, Downloads, Pictures, Music, or Videos.'],
   ['launch_apps', 'Launch applications', 'Start apps discovered from the Start menu.'],
+  ['close_apps', 'Close applications', 'Close apps, including minimized, background, and Store apps.'],
   ['browse_web', 'Open websites and search', 'Open HTTPS pages and run Google searches.'],
   ['read_files', 'Read files in your folders', 'Read text from non-sensitive files in your user folders.'],
   ['save_notes', 'Save memory notes', 'Save a short note when you explicitly ask Voxa to remember it.']
