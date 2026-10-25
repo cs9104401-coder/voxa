@@ -1331,6 +1331,9 @@ function settingsPage() {
       <div class="row"><div class="row-main"><b>Spoken replies</b><small>Use the Windows built-in voice.</small></div>${toggle('spokenRepliesSettings', settings.spokenReplies !== false, 'Spoken replies', 'spokenReplies')}<button class="button" data-action="test-voice">Test voice</button></div>
       <div class="row"><div class="row-main"><b>Animated companion</b><small>The companion reacts to listening, thinking, replies, and errors in the island.</small></div>${toggle('companionEnabled', settings.companionEnabled !== false, 'Animated companion', 'companionEnabled')}</div>
       <div class="row"><div class="row-main"><b>Overlay style</b><small>Island floats below the work area; Notch stays attached to the top edge.</small></div><div class="row-side"><select class="select" id="overlayStyle" aria-label="Overlay style"><option value="island" ${settings.overlayStyle !== 'notch' ? 'selected' : ''}>Island</option><option value="notch" ${settings.overlayStyle === 'notch' ? 'selected' : ''}>Notch</option></select><button class="button" data-action="save-page">Save appearance</button></div></div>
+      <div class="row"><div class="row-main"><b>Alert toast display</b><small>How long an unread-event toast stays up before it sinks away.</small></div><div class="row-side"><select class="select" id="feedToastSeconds" aria-label="Alert toast display">${[2, 4, 6, 8, 12].map((n) => `<option value="${n}" ${settings.feedToastSeconds === n ? 'selected' : ''}>${n} s</option>`).join('')}</select></div></div>
+      <div class="row"><div class="row-main"><b>Alert feed display</b><small>How long the open alert feed stays up before it collapses on its own.</small></div><div class="row-side"><select class="select" id="feedDwellSeconds" aria-label="Alert feed display">${[4, 8, 12, 20, 30].map((n) => `<option value="${n}" ${settings.feedDwellSeconds === n ? 'selected' : ''}>${n} s</option>`).join('')}</select></div></div>
+      <div class="row"><div class="row-main"><b>Media snooze</b><small>How long a stop press keeps the now-playing pill away.</small></div><div class="row-side"><select class="select" id="mediaSnoozeMinutes" aria-label="Media snooze">${[1, 3, 5, 10, 15].map((n) => `<option value="${n}" ${settings.mediaSnoozeMinutes === n ? 'selected' : ''}>${n} min</option>`).join('')}</select></div></div>
     </article>
     <article class="card"><h2 class="card-title">Updates</h2>
       <div class="row"><div class="row-main"><b id="updateCurrentVersion">Current version</b><small id="updateStatusText">Not checked yet.</small></div><div class="row-side"><button class="button" id="updateCheck" data-action="update-check">Check for updates</button><button class="button primary" id="updateDownload" data-action="update-download" hidden>Download update</button><button class="button primary" id="updateInstall" data-action="update-install" hidden>Restart and install</button></div></div>
@@ -1546,6 +1549,9 @@ function collectPagePatch() {
     patch.displayName = $('#displayName')?.value ?? settings.displayName;
     patch.communityUrl = $('#communityUrl')?.value ?? settings.communityUrl;
     patch.overlayStyle = $('#overlayStyle')?.value ?? settings.overlayStyle;
+    patch.feedToastSeconds = Number($('#feedToastSeconds')?.value ?? settings.feedToastSeconds);
+    patch.feedDwellSeconds = Number($('#feedDwellSeconds')?.value ?? settings.feedDwellSeconds);
+    patch.mediaSnoozeMinutes = Number($('#mediaSnoozeMinutes')?.value ?? settings.mediaSnoozeMinutes);
   }
   return patch;
 }

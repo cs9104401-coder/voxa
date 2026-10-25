@@ -1121,8 +1121,9 @@ function abortTurn(reason = 'cancelled') {
     speechController?.abort(); sendToPlayer('tts:stop-audio', {});
     speechController = null;
     // A stop press with no turn under way means "put the island away"; snooze
-    // the now-playing pill so it does not immediately resurface.
-    if (mediaLast && overlay?.state().status === 'media') mediaSnoozeUntil = Date.now() + 5 * 60000;
+    // the now-playing pill so it does not immediately resurface. The snooze
+    // length is a real setting (Phase I).
+    if (mediaLast && overlay?.state().status === 'media') mediaSnoozeUntil = Date.now() + settings.mediaSnoozeMinutes * 60000;
     overlay?.hide();
   }
   clearTimeout(tailTimer);
@@ -2008,7 +2009,8 @@ function popRestingPill() {
     chatOpen: false,
     chatPreview: false
   });
-  scheduleOverlayHide(4000);
+  // Phase I: the unread toast dwell is a real setting.
+  scheduleOverlayHide(settings.feedToastSeconds * 1000);
 }
 
 /* Phase H: the download live activity. Producers (whisper health, kokoro
@@ -2595,7 +2597,8 @@ function registerIpc() {
       chatPreview: false,
       message: ''
     });
-    scheduleOverlayHide(8000);
+    // Phase I: the live feed dwell is a real setting.
+    scheduleOverlayHide(settings.feedDwellSeconds * 1000);
   }, ['overlay']);
   listen('chat:open', () => openChat(), ['overlay']);
   listen('chat:close', () => closeChat(), ['overlay']);
@@ -2772,6 +2775,8 @@ async function initialize() {
       if (!hook.ok) {
         logger.warn('hotkeys', hook.error || 'Global shortcut listener unavailable.');
         overlay.show({ status: 'error', message: `Global shortcuts unavailable. ${hook.error || 'Use the dashboard Talk now button.'}`, approval: null, canCopy: false });
+        // Fixed dwell: app-startup error cards are not the alert feed or the
+        // unread toast, so the Phase I knobs deliberately do not touch this.
         scheduleOverlayHide(8000);
       }
     }

@@ -528,6 +528,48 @@ function checkIslandDownload() {
   }
 }
 
+function checkIslandDwell() {
+  try {
+    const constants = require('./lib/constants.cjs');
+    const store = require('./lib/store.cjs');
+    const base = constants.defaults('TestUser');
+    const current = { dictationHotkey: 'Ctrl+Q', agentHotkey: 'Alt+Q' };
+    let failures = [];
+    for (const [key, options] of Object.entries(constants.ISLAND_DWELL_OPTIONS)) {
+      if (!options.includes(base[key])) failures.push(`${key} default ${base[key]} is not a whitelisted option`);
+      const viaPatch = store.sanitizeSettingsPatch({ [key]: options[options.length - 1] }, current, () => true);
+      if (viaPatch[key] !== options[options.length - 1]) failures.push(`${key} valid option ${options[options.length - 1]} was not kept`);
+      let rejected = 0;
+      const bad = [0, '8', options[options.length - 1] + 1, null];
+      for (const candidate of bad) {
+        try {
+          store.sanitizeSettingsPatch({ [key]: candidate }, current, () => true);
+        } catch {
+          rejected += 1;
+        }
+      }
+      if (rejected !== bad.length) failures.push(`${key} accepted a non-whitelisted value`);
+    }
+    // Use sites: the knobs must actually drive the pill dwells, not just persist.
+    const main = require('node:fs').readFileSync(require('node:path').join(__dirname, 'main.cjs'), 'utf8');
+    const wired = [
+      ['feedToastSeconds', /scheduleOverlayHide\(settings\.feedToastSeconds \* 1000\)/],
+      ['feedDwellSeconds', /scheduleOverlayHide\(settings\.feedDwellSeconds \* 1000\)/],
+      ['mediaSnoozeMinutes', /mediaSnoozeUntil = Date\.now\(\) \+ settings\.mediaSnoozeMinutes \* 60000/]
+    ];
+    for (const [key, pattern] of wired) {
+      if (!pattern.test(main)) failures.push(`${key} never reaches its use site in main.cjs`);
+    }
+    record(
+      'Island dwell settings',
+      failures.length === 0,
+      failures.length ? failures.join('; ') : `${Object.keys(constants.ISLAND_DWELL_OPTIONS).length} dwell knobs validated end-to-end (defaults, whitelist save, use site).`
+    );
+  } catch (error) {
+    record('Island dwell settings', false, error.stack || error.message);
+  }
+}
+
 function run() {
   checkJavaScript();
   checkMarkup();
@@ -539,6 +581,7 @@ function run() {
   checkTtsNormaliser();
   checkTtsSegmenter();
   checkIslandDownload();
+  checkIslandDwell();
   checkTtsSettings();
   if (process.argv.includes('--static-only')) {
     record('Runtime checks', true, 'Skipped because --static-only was requested.');
