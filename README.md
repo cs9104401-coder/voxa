@@ -20,7 +20,7 @@ The dashboard ships a "warm loft" reskin: palette, spacing, radius, type, blur, 
 
 Dictation settings include a microphone picker, a live input meter, and a three-second **Mic test** that records, plays back, and transcribes a sample. Capture runs in a dedicated hidden renderer with media permission scoped to Voxa and background throttling disabled. Use **Settings > Diagnostics > Test overlay** to preview the notch.
 
-The dashboard shows local service health. Agent replies stay visible in the notch for 12 seconds and can be copied. Spoken replies use Windows `System.Speech` through PowerShell.
+The dashboard shows local service health. Agent replies stay visible in the notch for 12 seconds and can be copied. Spoken replies default to Windows `System.Speech` through PowerShell; choose **Kokoro** on the **Dictation** page to download the ~86 MB Kokoro-82M model and use a local natural voice, with the Windows voice as the fallback.
 
 ## Agent permissions
 
@@ -86,11 +86,17 @@ Build the standalone engine directly with:
 npm run build:whisper
 ```
 
-The script uses `whisper-server\.venv`, installs the pinned PyInstaller build dependency from `whisper-server\requirements-build.txt` if needed, and writes `whisper-server\dist\voxa-whisper.exe`.
+The script uses `whisper-server\.venv` and the pinned build dependencies in `whisper-server\requirements-build.txt`. Install them once with:
+
+```powershell
+.\whisper-server\.venv\Scripts\python.exe -m pip install -r whisper-server\requirements-build.txt
+```
+
+It then writes `whisper-server\dist\voxa-whisper.exe`.
 
 ## Release build
 
-Voxa 1.0.0 is packaged with electron-builder into a per-user NSIS installer.
+Voxa 1.2.0 is packaged with electron-builder into a per-user NSIS installer.
 
 ```powershell
 npm install
@@ -101,9 +107,9 @@ npm run dist
 
 1. Generates `assets\icon.ico` with `npm run build:icon`.
 2. Builds the bundled Whisper server with `npm run build:whisper`.
-3. Runs electron-builder and writes `dist\Voxa-Setup-1.0.0.exe`.
+3. Runs electron-builder and writes `dist\Voxa-Setup-1.2.0.exe`.
 
-The installer creates a **Voxa** desktop shortcut and Start Menu entry and includes an uninstaller. The app is packaged with ASAR; `node_modules\uiohook-napi` is explicitly unpacked through `build.asarUnpack` so its native prebuild loads in the installed build. The PyInstaller output is copied to `resources\whisper-server\voxa-whisper.exe` with `extraResources`.
+The installer creates a **Voxa** desktop shortcut and Start Menu entry and includes an uninstaller. The app is packaged with ASAR; `node_modules\uiohook-napi` is explicitly unpacked through `build.asarUnpack` so its native prebuild loads in the installed build. The PyInstaller output is copied to `resources\whisper-server\voxa-whisper.exe` with `extraResources`. The embedded Kokoro Python runtime and `kokoro_server.py` are copied there too, so natural voice replies need no system Python.
 
 For a faster unpacked test build, use `npm run dist:dir`; it writes an unpacked app under `dist\win-unpacked` without creating the installer.
 

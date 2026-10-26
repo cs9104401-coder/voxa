@@ -12,9 +12,8 @@
     "postinstall": "electron-rebuild -f -w uiohook-napi",
     "build:icon": "node scripts/generate-icon.cjs",
     "build:whisper": "node scripts/build-whisper.cjs",
-    "build:kokoro": "node scripts/build-kokoro.cjs",
-    "dist": "npm run build:icon && npm run build:whisper && npm run build:kokoro && electron-builder --win nsis",
-    "dist:dir": "npm run build:icon && npm run build:whisper && npm run build:kokoro && electron-builder --win --dir",
+    "dist": "npm run build:icon && npm run build:whisper && electron-builder --win nsis",
+    "dist:dir": "npm run build:icon && npm run build:whisper && electron-builder --win --dir",
     "verify": "node scripts/verify.cjs"
   },
   "dependencies": {
