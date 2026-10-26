@@ -722,16 +722,31 @@ function contentWidthFor(size) {
   return size === 'expanded' ? ISLAND_SIZES.expanded.width : ISLAND_SIZES[size].width;
 }
 
+function measureHost(clone, contentWidth, size = 'expanded') {
+  // Measurement clones leave .pill, so its layout tokens (--pad-x, --row-gap,
+  // --item-gap) would resolve to their fallbacks and wrap text at the wrong
+  // width. Keep the clone inside a zero-box pill host with the target size so
+  // every measured row uses the same geometry as the live pill.
+  const host = document.createElement('div');
+  host.className = 'pill';
+  host.dataset.style = state.style === 'notch' ? 'notch' : 'island';
+  host.dataset.size = size;
+  host.style.display = 'contents';
+  clone.style.width = `${contentWidth}px`;
+  host.append(clone);
+  document.body.append(host);
+  return host;
+}
+
 function measureCard(contentWidth) {
   const clone = card.cloneNode(true);  clone.removeAttribute('id');
   clone.removeAttribute('aria-live');
   clone.removeAttribute('data-scrolled');
   clone.querySelectorAll('[id]').forEach((element) => element.removeAttribute('id'));
   clone.classList.add('measure-card');
-  clone.style.width = `${contentWidth}px`;
-  document.body.append(clone);
+  const host = measureHost(clone, contentWidth);
   const height = clone.getBoundingClientRect().height;
-  clone.remove();
+  host.remove();
   return height;
 }
 
@@ -741,15 +756,14 @@ function measureChat(contentWidth) {
   clone.querySelectorAll('[id]').forEach((element) => element.removeAttribute('id'));
   clone.classList.add('measure-chat');
   clone.hidden = false;
-  clone.style.width = `${contentWidth}px`;
   const textarea = clone.querySelector('textarea');
   if (textarea) {
     textarea.value = chatInput.value;
     textarea.style.height = chatInput.style.height || 'auto';
   }
-  document.body.append(clone);
+  const host = measureHost(clone, contentWidth);
   const height = clone.getBoundingClientRect().height;
-  clone.remove();
+  host.remove();
   return height;
 }
 
@@ -760,10 +774,9 @@ function measureFeed(contentWidth) {
   clone.querySelectorAll('[id]').forEach((element) => element.removeAttribute('id'));
   clone.classList.add('measure-feed');
   clone.hidden = false;
-  clone.style.width = `${contentWidth}px`;
-  document.body.append(clone);
+  const host = measureHost(clone, contentWidth);
   const height = clone.getBoundingClientRect().height;
-  clone.remove();
+  host.remove();
   return Math.max(96, height);
 }
 
@@ -777,15 +790,9 @@ function measureHome(contentWidth) {
   clone.hidden = false;
   clone.querySelectorAll('[id]').forEach((element) => element.removeAttribute('id'));
   clone.classList.add('measure-home');
-  clone.style.width = `${contentWidth}px`;
-  // The clone leaves the .pill scope, so --pad-x (defined on .pill in island.css)
-  // is unresolved there and the attached padding would compute to 0. Feed the
-  // live computed value so the clone measures with the pill's real shared pad.
-  const padX = getComputedStyle(notch).getPropertyValue('--pad-x').trim();
-  if (padX) clone.style.setProperty('--pad-x', padX);
-  document.body.append(clone);
+  const host = measureHost(clone, contentWidth);
   const height = clone.getBoundingClientRect().height;
-  clone.remove();
+  host.remove();
   return height;
 }
 
