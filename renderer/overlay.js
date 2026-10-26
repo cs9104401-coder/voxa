@@ -683,6 +683,11 @@ function applyChatError(payload) {
     chat.streaming = false;
   } else {
     const last = chat.messages[chat.messages.length - 1];
+    const rejectedText = typeof payload.text === 'string' ? payload.text.trim() : null;
+    // A no-id rejection failed before main created a request. Only roll back
+    // the optimistic message it names: a stale rejection must not pop a newer
+    // send that arrived after a history refresh or cancellation race.
+    if (rejectedText !== null && (last?.role !== 'user' || last.content.trim() !== rejectedText)) return;
     chat.error = message;
     if (!(chat.streaming && last?.role === 'assistant' && last.streaming)) {
       chat.streaming = false;
@@ -690,6 +695,10 @@ function applyChatError(payload) {
       if (last?.role === 'user' && !chatInput.value.trim()) {
         chat.messages.pop();
         chatInput.value = last.content;
+      } else if (last?.role === 'user') {
+        // Keep the rejected message visible, marked as failed, when the user
+        // has already started another draft.
+        last.error = message;
       }
     }
   }

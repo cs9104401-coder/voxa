@@ -1551,43 +1551,44 @@ function cancelChat() {
 // schedule instead of stranding the user under a chat view that cannot send.
 // With the session already closed the countdown still expires the visible
 // shell under the ordinary hide disposition.
-function rejectChat(message) {
-  sendToOverlay('chat:error', { message });
+function rejectChat(message, text = '') {
+  sendToOverlay('chat:error', { message, text });
   scheduleOverlayHide(CHAT_LINGER_MS, chatSession.open);
 }
 
 async function sendChat(payload) {
+  const rawText = typeof payload?.text === 'string' ? payload.text.trim() : '';
   if (!chatSession.open) {
     logger.warn('chat', 'A typed message was ignored because chat is closed.');
-    rejectChat('Chat was closed before the message could be sent.');
+    rejectChat('Chat was closed before the message could be sent.', rawText);
     return;
   }
   if (currentTurn) {
-    rejectChat('Finish the voice turn before typing.');
+    rejectChat('Finish the voice turn before typing.', rawText);
     return;
   }
   if (chatSession.controller) {
-    rejectChat('Please wait for the current reply to finish.');
+    rejectChat('Please wait for the current reply to finish.', rawText);
     return;
   }
-  const text = typeof payload?.text === 'string' ? payload.text.trim() : '';
+  const text = rawText;
   if (!text) {
-    rejectChat('Type a message first.');
+    rejectChat('Type a message first.', rawText);
     return;
   }
   if (text.length > LIMITS.MAX_CHAT_CHARS) {
-    rejectChat(`Messages are limited to ${LIMITS.MAX_CHAT_CHARS} characters.`);
+    rejectChat(`Messages are limited to ${LIMITS.MAX_CHAT_CHARS} characters.`, rawText);
     return;
   }
   const providerName = settings.chatProvider;
   const config = settings.providers?.[providerName];
   if (!config) {
-    rejectChat(`Unknown chat provider: ${providerName}`);
+    rejectChat(`Unknown chat provider: ${providerName}`, rawText);
     return;
   }
   const key = providerNeedsKey(providerName) ? secrets[providerName] : '';
   if (providerNeedsKey(providerName) && !key) {
-    rejectChat(`Add an API key for ${providerName} in the dashboard.`);
+    rejectChat(`Add an API key for ${providerName} in the dashboard.`, rawText);
     return;
   }
 
