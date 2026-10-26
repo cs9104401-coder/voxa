@@ -291,7 +291,7 @@ function inline(parent, text) {
   let match;
   while ((match = pattern.exec(text))) {
     parent.append(document.createTextNode(text.slice(index, match.index)));
-    const element = document.createElement(match[1] || match[2] ? 'strong' : 'code');
+    const element = document.createElement(match[1] ? 'strong' : match[2] ? 'em' : 'code');
     element.textContent = match[1] || match[2] || match[3];
     parent.append(element);
     index = pattern.lastIndex;
