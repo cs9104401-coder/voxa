@@ -2581,11 +2581,15 @@ function registerIpc() {
     const variant = settings.ttsModelVariant || 'quantized';
     const spec = kokoro.MODEL_VARIANTS[variant] || kokoro.MODEL_VARIANTS.quantized;
     const modelReady = kokoro.isModelReady(variant);
+    const voiceReady = kokoro.isVoiceReady(settings.ttsVoice || 'af_heart');
     const hasConsent = kokoro.hasConsent();
     const running = kokoro.kokoroStatus().running;
     return {
-      status: modelReady ? (running ? 'ready' : 'downloaded') : (hasConsent ? 'not-downloaded' : 'needs-consent'),
+      status: modelReady && voiceReady
+        ? (running ? 'ready' : 'downloaded')
+        : (hasConsent ? 'not-downloaded' : 'needs-consent'),
       modelReady,
+      voiceReady,
       hasConsent,
       running,
       variant,
@@ -2621,18 +2625,33 @@ function registerIpc() {
         }
       });
       if (controller.signal.aborted) {
-        publishKokoroHealth({ status: 'not-downloaded', modelReady: false, hasConsent: true, variant });
+        publishKokoroHealth({ status: 'not-downloaded', modelReady: true, voiceReady: false, hasConsent: true, variant });
         return { ok: false, message: 'Download cancelled.' };
       }
-      publishKokoroHealth({ status: 'downloaded', modelReady: true, hasConsent: true, variant });
+      // The model alone cannot synthesize speech; the voice pack is required.
+      publishKokoroHealth({
+        status: 'downloading',
+        modelReady: true,
+        voiceReady: false,
+        hasConsent: true,
+        variant,
+        message: 'Downloading the Kokoro voice pack…',
+        progress: { percent: null, totalBytes: 0, downloadedBytes: 0 }
+      });
+      await kokoro.ensureVoiceFile(settings.ttsVoice || 'af_heart', controller.signal, logger);
+      if (controller.signal.aborted) {
+        publishKokoroHealth({ status: 'not-downloaded', modelReady: true, voiceReady: false, hasConsent: true, variant });
+        return { ok: false, message: 'Download cancelled.' };
+      }
+      publishKokoroHealth({ status: 'downloaded', modelReady: true, voiceReady: true, hasConsent: true, variant });
       // Phase E feed: voice model staged and ready.
-      pushFeedEvent({ title: 'Voice model downloaded', body: `${spec.filename} is ready for spoken replies.`, kind: 'download', tone: 'highlight' });
-      logger.info('kokoro', `Model ${spec.filename} ready.`);
-      return { ok: true, message: 'Kokoro model downloaded.' };
+      pushFeedEvent({ title: 'Voice model downloaded', body: `${spec.filename} and the voice pack are ready for spoken replies.`, kind: 'download', tone: 'highlight' });
+      logger.info('kokoro', `Model ${spec.filename} and voice pack ready.`);
+      return { ok: true, message: 'Kokoro model and voices downloaded.' };
     } catch (err) {
       if (!err.cancelled) logger.warn('kokoro', `Download failed: ${cleanError(err)}`);
       if (!err.cancelled) pushFeedEvent({ title: 'Voice model download failed', body: cleanError(err), kind: 'error', tone: 'highlight' });
-      publishKokoroHealth({ status: err.cancelled ? 'not-downloaded' : 'error', modelReady: false, hasConsent: true, variant, error: cleanError(err) });
+      publishKokoroHealth({ status: err.cancelled ? 'not-downloaded' : 'error', modelReady: kokoro.isModelReady(variant), voiceReady: kokoro.isVoiceReady(settings.ttsVoice || 'af_heart'), hasConsent: true, variant, error: cleanError(err) });
       if (err.cancelled) return { ok: false, message: 'Download cancelled.' };
       throw new Error(cleanError(err));
     } finally {
@@ -3026,16 +3045,7 @@ async function initialize() {
 }
 
 if (SELF_TEST || app.requestSingleInstanceLock()) {
-  app.whenReady().then(initialize).then(() => {
-  setTimeout(() => {
-    if (settings && settings.ttsEngine === 'kokoro') {
-      const started = Date.now();
-      require('./lib/kokoro-tts.cjs').warmup()
-        .then(() => logger.info('speech', 'kokoro warmup done in ' + (Date.now() - started) + ' ms'))
-        .catch((e) => logger.warn('speech', 'kokoro warmup failed: ' + e.message));
-    }
-  }, 5000);
-});
+  app.whenReady().then(initialize);
 } else {
   app.quit();
 }

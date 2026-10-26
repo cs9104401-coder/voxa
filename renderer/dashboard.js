@@ -355,7 +355,7 @@ function updateKokoroProgress() {
   if (text) {
     text.textContent = isDownloading && status.progress?.totalBytes
       ? `Downloading Kokoro model (${formatBytes(status.progress.downloadedBytes)} of ${formatBytes(status.progress.totalBytes)})`
-      : status.error || 'Downloading Kokoro-82M model (~86 MB)…';
+      : status.error || status.message || 'Downloading Kokoro-82M model (~86 MB)…';
   }
   if (percentBadge) {
     const pct = status.progress?.percent;
