@@ -796,9 +796,16 @@ function historyResults() {
 }
 
 function historyPage() {
+  const historyOn = settings.historyEnabled !== false;
   return `${heading('History', 'Search a past request and its result.')}
-  <div class="history-tools"><input id="historySearch" class="input" aria-label="Search history" placeholder="Search history" value="${esc(historyQuery)}"><button class="button" data-action="clear-history">Clear</button></div>
-  <div id="historyResults">${historyResults()}</div>`;
+  <div class="page-stack">
+    <article class="card"><h2 class="card-title">Privacy</h2>
+      <div class="row-side" style="justify-content:space-between;align-items:flex-start"><div class="row-main"><b>Save turn history</b><small class="card-note">When off, new dictation, agent, and chat turns stay out of history and logs.</small></div>${toggle('historyEnabled', historyOn, 'Save turn history', 'historyEnabled')}</div>
+      <div class="row-side" style="justify-content:space-between;margin-top:12px"><span class="card-note">Clear all data removes saved turns, chat, memory, activity logs, and downloaded voice models from this device.</span><button class="button danger" data-action="clear-all-data">Clear all data</button></div>
+    </article>
+    <div class="history-tools"><input id="historySearch" class="input" aria-label="Search history" placeholder="Search history" value="${esc(historyQuery)}"><button class="button" data-action="clear-history">Clear history</button></div>
+    <div id="historyResults">${historyResults()}</div>
+  </div>`;
 }
 
 function dictation() {
@@ -2153,6 +2160,29 @@ async function handleAction(action, button) {
       data.turns = [];
       note('History cleared.');
       refreshPage('history');
+      return;
+    }
+    if (action === 'clear-all-data') {
+      if (!window.confirm('Clear all saved turns, chat, memory, activity logs, and downloaded voice models? This cannot be undone.')) return;
+      button.disabled = true;
+      try {
+        const result = await api.clearAllData();
+        data.turns = [];
+        data.memory = [];
+        data.activationLogs = [];
+        data.health = { ...(data.health || {}), kokoro: { status: 'needs-consent', modelReady: false, voiceReady: false, hasConsent: false } };
+        if (result?.failed?.length) {
+          note(`Most data was cleared, but these items could not be removed: ${result.failed.join(', ')}.`);
+        } else if (result?.logsCleared === false) {
+          note('Data was cleared, but the activity log could not be reset.');
+        } else {
+          note('All local data cleared.');
+        }
+        refreshPage('history');
+        updateShell();
+      } finally {
+        button.disabled = false;
+      }
       return;
     }
     if (action === 'refresh-apps') {

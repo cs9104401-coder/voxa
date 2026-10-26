@@ -48,6 +48,7 @@ try {
 let settings;
 let secrets = {};
 let history = [];
+let historyEpoch = 0;
 let memory = [];
 let lastOpenedApp = null;
 let dashboardWindow = null;
@@ -74,6 +75,7 @@ let nextChatId = 1;
 const chatSession = {
   open: false,
   requestId: 0,
+  generation: 0,
   controller: null,
   messages: []
 };
@@ -980,7 +982,11 @@ function warmServices() {
   }, 1200).unref?.();
 }
 
-function addTurn(said, did) {
+function addTurn(said, did, epoch = historyEpoch) {
+  // A cleared history invalidates turns that were already in flight, and the
+  // user can opt out of writing new turns entirely.
+  if (epoch !== historyEpoch) return;
+  if (settings.historyEnabled === false) return;
   history = [{ time: new Date().toISOString(), said: said.slice(0, LIMITS.MAX_TRANSCRIPT_CHARS), did: did.slice(0, LIMITS.MAX_TRANSCRIPT_CHARS) }, ...history].slice(0, LIMITS.MAX_TURNS);
   try {
     store.writeJson('history.json', history);
@@ -988,6 +994,64 @@ function addTurn(said, did) {
     logger.error('history', cleanError(error));
   }
   broadcast('history:updated', structuredClone(history));
+}
+
+function clearHistoryStore() {
+  historyEpoch += 1;
+  history = [];
+  store.writeJson('history.json', history);
+  broadcast('history:updated', []);
+}
+
+function chatReplyAlive(generation, controller) {
+  return generation === chatSession.generation && !controller.signal.aborted;
+}
+
+function resetChatSession() {
+  chatSession.generation += 1;
+  const controller = chatSession.controller;
+  chatSession.controller = null;
+  if (controller) controller.abort();
+  chatSession.requestId = 0;
+  chatSession.messages = [];
+  overlay?.setState({ chatStreaming: false });
+  if (chatSession.open) sendChatHistory();
+}
+
+async function clearLocalData() {
+  clearHistoryStore();
+  memory = [];
+  store.writeJson('memory.json', memory);
+  resetChatSession();
+  if (currentTurn) abortTurn('local data cleared');
+  try {
+    services.stopKokoro();
+  } catch {
+    // No Kokoro server was loaded.
+  }
+  // Windows may keep the model files busy while taskkill unwinds.
+  await new Promise((resolve) => setTimeout(resolve, 500));
+  const removed = [];
+  const failed = [];
+  for (const name of ['kokoro', 'kokoro-cache']) {
+    const target = path.join(USER_DATA_DIR, name);
+    try {
+      fs.rmSync(target, { recursive: true, force: true });
+      if (fs.existsSync(target)) failed.push(name);
+      else removed.push(name);
+    } catch {
+      failed.push(name);
+    }
+  }
+  const logsCleared = logger.clear();
+  modelListCache.clear();
+  overlayEvents = [];
+  overlay?.setNotifications([], false);
+  broadcast('memory-updated', []);
+  const variant = settings.ttsModelVariant || 'quantized';
+  publishKokoroHealth({ status: 'needs-consent', modelReady: false, voiceReady: false, hasConsent: false, variant });
+  logger.info('privacy', `History, memory, logs, and voice caches cleared${failed.length ? ` (failed: ${failed.join(', ')})` : ''}.`);
+  return { ok: logsCleared && failed.length === 0, logsCleared, removed, failed };
 }
 
 function addMemory(note) {
@@ -1233,6 +1297,7 @@ async function beginTurn(mode, origin = 'hotkey') {
     id: nextTurnId++,
     mode,
     origin,
+    historyEpoch,
     controller: new AbortController(),
     holdStartedAt: Date.now(),
     recording: false,
@@ -1521,6 +1586,7 @@ async function sendChat(payload) {
 
   const id = nextChatId++;
   const controller = new AbortController();
+  const generation = chatSession.generation;
   chatSession.controller = controller;
   chatSession.requestId = id;
   chatSession.messages.push({ role: 'user', content: text }, { role: 'assistant', content: '', streaming: true });
@@ -1539,12 +1605,14 @@ async function sendChat(payload) {
       chatMessagesFor(),
       controller.signal,
       (partial) => {
+        if (!chatReplyAlive(generation, controller)) return;
         const display = chatDisplayText(partial);
         const last = chatSession.messages[chatSession.messages.length - 1];
         if (last?.role === 'assistant') last.content = display;
         sendToOverlay('chat:delta', { id, text: display });
       }
     );
+    if (!chatReplyAlive(generation, controller)) return;
     const clean = cleanChatReply(reply);
     if (!clean) throw new Error('The model returned an empty reply.');
     const last = chatSession.messages[chatSession.messages.length - 1];
@@ -1561,6 +1629,10 @@ async function sendChat(payload) {
     scheduleOverlayHide(CHAT_LINGER_MS, true);
     logger.info('chat', `Reply received from ${providerName}`);
   } catch (error) {
+    if (generation !== chatSession.generation) {
+      logger.info('chat', 'A cleared reply was dropped.');
+      return;
+    }
     const last = chatSession.messages[chatSession.messages.length - 1];
     if (controller.signal.aborted) {
       if (last?.role === 'assistant') {
@@ -1585,7 +1657,7 @@ async function sendChat(payload) {
     }
   } finally {
     if (chatSession.controller === controller) chatSession.controller = null;
-    overlay?.setState({ chatStreaming: false });
+    if (generation === chatSession.generation) overlay?.setState({ chatStreaming: false });
   }
 }
 
@@ -2043,14 +2115,18 @@ async function processTurn(turn, audio, mime) {
       showTurnError(turn, MESSAGES.HEARD_NOTHING, 'Transcription returned no text.');
       return;
     }
-    logger.info('transcript', transcript.slice(0, 1000));
+    if (settings.historyEnabled === false) {
+      logger.info('transcript', `Not saved (${transcript.length} characters).`);
+    } else {
+      logger.info('transcript', transcript.slice(0, 1000));
+    }
     if (turn.mode === 'dictation') {
       if (!turnAlive(turn)) return;
       overlay.setState({ status: 'thinking', message: 'Typing into your app…' });
       const target = await requireTurnTarget(turn);
       await desktop.typeText(transcript, target, turn.controller.signal);
       if (!turnAlive(turn)) return;
-      addTurn(transcript, 'Dictated into the focused app.');
+      addTurn(transcript, 'Dictated into the focused app.', turn.historyEpoch);
       // Phase E feed: completed dictations land in the island feed.
       pushFeedEvent({ title: 'Dictation typed', body: transcript, kind: 'turn', tone: 'neutral' });
       finishTurn(turn);
@@ -2062,7 +2138,7 @@ async function processTurn(turn, audio, mime) {
     const answer = await runAgent(turn, transcript);
     if (!turnAlive(turn)) return;
     finishTurn(turn);
-    addTurn(transcript, answer);
+    addTurn(transcript, answer, turn.historyEpoch);
     // Phase E feed: finished agent turns surface their first reply sentence.
     pushFeedEvent({ title: 'Agent finished the task', body: feedSentence(answer), kind: 'turn', tone: 'highlight' });
     const willSpeak = Boolean(settings.spokenReplies && stripForSpeech(answer));
@@ -2161,7 +2237,10 @@ function pushFeedEvent({ title, body = '', kind = 'system', tone = 'neutral' } =
     tone: tone === 'highlight' ? 'highlight' : 'neutral'
   };
   overlayEvents = [event, ...overlayEvents].slice(0, FEED_MAX_EVENTS);
-  logger.info('feed', `${event.title}${event.body ? ` — ${event.body.slice(0, 120)}` : ''} (${event.id})`);
+  const logBody = event.body && (settings.historyEnabled !== false || event.kind !== 'turn')
+    ? ` - ${event.body.slice(0, 120)}`
+    : '';
+  logger.info('feed', `${event.title}${logBody} (${event.id})`);
   if (!galleryPreviewActive) {
     overlay?.setNotifications(overlayEvents, false);
     popRestingPill();
@@ -2559,15 +2638,11 @@ function registerIpc() {
     return saved;
   });
   handle('history:clear', () => {
-    history = [];
-    store.writeJson('history.json', history);
-    broadcast('history:updated', []);
-    if (!chatSession.controller) {
-      chatSession.messages = [];
-      if (chatSession.open) sendChatHistory();
-    }
+    clearHistoryStore();
+    resetChatSession();
     return true;
   });
+  handle('data:clear-all', () => clearLocalData());
   handle('apps:refresh', () => apps.refreshApps(logger).map((item) => item.name));
   handle('logs:read', () => logger.read(LIMITS.MAX_LOG_LINES));
   handle('overlay:preview', (status, message) => previewOverlay(status, message));
