@@ -1446,12 +1446,13 @@ function render() {
   }
   notch.dataset.mediaPlaying = media && media.playing ? 'true' : 'false';
   // Leaving the feed forgets which cards were rendered so the next open
-  // replays the Ref 1 cascade from the top.
-  if (!openFeed && feedRenderedIds.size) feedRenderedIds.clear();
+  // replays the Ref 1 cascade from the top. A hidden feed counts as left: the
+  // entrance animation must not be consumed while the window is off screen.
+  if ((!openFeed || !state.visible) && feedRenderedIds.size) feedRenderedIds.clear();
   updateChatHeader();
   updateChatComposer();
   if (openChat) renderChatLog();
-  if (openFeed) renderFeed();
+  if (openFeed && state.visible) renderFeed();
   let text = '';
   if (state.approval) text = `${state.approval.title}\n\n${state.approval.detail || ''}`;
   else if (state.message) text = state.message;
