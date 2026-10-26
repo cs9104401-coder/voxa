@@ -1,0 +1,20 @@
+/* Window shell only. The notch, mascot, and pill styling live untouched in notch-kit.css. */
+:root {
+  --spring: cubic-bezier(.2, .9, .25, 1.12);
+  --ember: #ff6b2c;
+}
+
+html,
+body {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+  background: transparent;
+  color: #f4ede6;
+  font: 14px/1.4 "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
+}
+
+#notch {
+  pointer-events: auto;
+}

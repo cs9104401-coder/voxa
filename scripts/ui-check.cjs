@@ -1567,7 +1567,7 @@ function registerIpcStubs() {
   for (const channel of ['settings:save', 'provider:save-key', 'provider:test', 'provider:detect', 'ollama:pull', 'ollama:open-download', 'whisper:load', 'whisper:cancel', 'microphone:test', 'microphone:monitor', 'assistant:toggle', 'assistant:stop', 'assistant:set-mode', 'history:clear', 'apps:refresh', 'overlay:preview', 'overlay:test', 'overlay:gallery-options', 'voice:test', 'tts:download', 'tts:cancel-download', 'tts:speak', 'window:action', 'updater:check', 'updater:download', 'updater:install']) {
     onHandle(channel, () => ({}));
   }
-  for (const channel of ['approval:respond', 'overlay:resize', 'overlay:stop', 'overlay:copy', 'overlay:interactive', 'overlay:hidden', 'overlay:expand', 'overlay:dismiss-pause', 'overlay:dismiss-resume', 'overlay:notification-dismiss', 'overlay:media-control', 'overlay:feed-toggle', 'overlay:open-settings', 'chat:send', 'chat:cancel', 'chat:open', 'chat:close', 'chat:request-history', 'recorder:audio', 'recorder:error', 'recorder:audio-level', 'recorder:speech-level', 'recorder:test-progress', 'recorder:response', 'recorder:ready']) {
+  for (const channel of ['approval:respond', 'overlay:resize', 'overlay:stop', 'overlay:copy', 'overlay:interactive', 'overlay:hidden', 'overlay:expand', 'overlay:dismiss-pause', 'overlay:dismiss-resume', 'overlay:notification-dismiss', 'overlay:media-control', 'overlay:feed-toggle', 'overlay:open-settings', 'overlay:cancel-download', 'overlay:retry', 'chat:send', 'chat:cancel', 'chat:open', 'chat:close', 'chat:request-history', 'recorder:audio', 'recorder:error', 'recorder:audio-level', 'recorder:speech-level', 'recorder:test-progress', 'recorder:response', 'recorder:ready']) {
     try { ipcMain.on(channel, () => { }); } catch { }
   }
 }

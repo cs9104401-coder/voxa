@@ -1,0 +1,114 @@
+/* ============ NOTCH + MASCOT (drop-in, class prefix vx-) ============ */
+.vx-notch{
+  position:absolute;left:50%;top:18px;transform:translateX(-50%);
+  width:132px;height:64px;max-width:calc(100% - 24px);
+  background:#000;color:#f4ede6;border-radius:32px;overflow:hidden;
+  display:grid;grid-template-columns:auto;grid-template-areas:"slot";
+  justify-content:center;align-items:center;padding:0 10px;
+  transition:width .5s var(--spring),height .5s var(--spring),border-radius .5s var(--spring),padding .5s var(--spring);
+  font:14px/1.4 "Segoe UI Variable Text","Segoe UI",system-ui,sans-serif;
+}
+.vx-slot{grid-area:slot;width:46px;height:46px;cursor:pointer;transition:width .5s var(--spring),height .5s var(--spring);touch-action:manipulation}
+.vx-head,.vx-text,.vx-actions{display:none}
+.vx-head{grid-area:head;align-items:center;gap:8px;font-size:13px;color:#a79e96;min-height:30px}
+.vx-name{font-weight:600;color:#f4ede6}
+.vx-text{grid-area:text;color:#f4ede6;min-width:0}
+.vx-actions{grid-area:actions;gap:8px;align-items:center}
+.vx-btn{width:30px;height:30px;border-radius:50%;border:0;background:#1f1b19;color:#e9e1d9;display:grid;place-items:center;cursor:pointer}
+.vx-btn:hover{background:#2c2623}
+.vx-btn:focus-visible{outline:2px solid var(--ember);outline-offset:2px}
+.vx-notch:not([data-state=listening]):not([data-state=thinking]):not([data-state=speaking]) .vx-btn[data-act=stop]{display:none}
+
+.vx-notch[data-size=medium]{
+  width:330px;height:70px;border-radius:35px;
+  grid-template-columns:auto 1fr auto;grid-template-areas:"slot text actions";
+  column-gap:12px;justify-content:stretch;padding:0 14px;
+}
+.vx-notch[data-size=medium] .vx-text{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.vx-notch[data-size=medium] .vx-actions{display:flex}
+
+.vx-notch[data-size=expanded]{
+  width:470px;height:196px;border-radius:36px;
+  grid-template-columns:auto 1fr auto;grid-template-rows:auto 1fr;
+  grid-template-areas:"slot head actions" "slot text text";
+  column-gap:14px;row-gap:6px;justify-content:stretch;align-items:start;padding:18px;
+}
+.vx-notch[data-size=expanded] .vx-slot{width:70px;height:70px}
+.vx-notch[data-size=expanded] .vx-head{display:flex}
+.vx-notch[data-size=expanded] .vx-actions{display:flex}
+.vx-notch[data-size=expanded] .vx-text{display:block;font-size:15px;line-height:1.5;overflow:hidden}
+
+.vx-notch[data-size=medium] .vx-text,
+.vx-notch[data-size=medium] .vx-actions,
+.vx-notch[data-size=expanded] .vx-head,
+.vx-notch[data-size=expanded] .vx-text,
+.vx-notch[data-size=expanded] .vx-actions{animation:vx-in .35s .12s both}
+@keyframes vx-in{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}
+@media (prefers-reduced-motion:reduce){
+  .vx-notch,.vx-slot{transition-duration:.01ms}
+  .vx-notch *{animation:none!important}
+}
+
+/* ============ APP ADDITIONS (approval, chat, spectrum, pill, styles) ============ */
+:root{--vx-accent:#d96a8b}
+.vx-fixed{position:fixed;top:10px;z-index:2147483000}
+.vx-notch[data-style=notch]{top:0!important;border-top-left-radius:0!important;border-top-right-radius:0!important}
+.vx-notch[data-companion=off] .vx-slot{display:none}
+.vx-mode{display:none;font-size:12px;color:#d8cfc6;background:#1f1b19;border-radius:999px;padding:1px 9px}
+.vx-notch[data-size=expanded] .vx-mode:not(:empty),.vx-notch[data-size=chat] .vx-mode:not(:empty){display:inline-block}
+.vx-notch[data-size=expanded]{grid-template-rows:auto 1fr auto;grid-template-areas:"slot head actions" "slot text text" "slot extra extra"}
+.vx-extra,.vx-appr,.vx-spec,.vx-log,.vx-bar{display:none}
+.vx-extra{grid-area:extra}
+.vx-notch[data-state=approval][data-size=expanded] .vx-extra{display:block;animation:vx-in .35s .12s both}
+.vx-appr{display:flex;gap:8px}
+.vx-appr button{font:inherit;font-size:14px;font-weight:600;border:0;border-radius:999px;padding:7px 20px;cursor:pointer}
+.vx-yes{background:#f4ede6;color:#1a0f0a}
+.vx-no{background:#1f1b19;color:#e9e1d9}
+.vx-yes:hover{background:#fff}.vx-no:hover{background:#2c2623}
+.vx-appr button:focus-visible{outline:2px solid var(--vx-accent);outline-offset:2px}
+.vx-notch:not([data-stop=true]) .vx-btn[data-act=stop]{display:none}
+.vx-notch:not([data-state=answer]) .vx-btn[data-act=copy]{display:none}
+.vx-notch:not([data-state=error]) .vx-btn[data-act=retry]{display:none}
+.vx-notch:not([data-size=expanded]):not([data-size=chat]) .vx-btn[data-act=settings]{display:none}
+.vx-notch[data-state=approval] .vx-btn[data-act=collapse]{display:none}
+.vx-btn.ok{background:var(--vx-accent);color:#160a0e}
+.vx-spec{grid-area:text;align-items:center;gap:3px;height:30px}
+.vx-notch[data-spec=true] .vx-spec{display:flex}
+.vx-notch[data-spec=true] .vx-text{display:none!important}
+.vx-spec i{flex:1;max-width:7px;height:26px;border-radius:3px;background:var(--vx-accent);transform:scaleY(.1)}
+.vx-notch[data-size=chat]{
+  width:470px;height:360px;border-radius:36px;
+  grid-template-columns:auto 1fr auto;grid-template-rows:auto 1fr auto;
+  grid-template-areas:"slot head actions" "log log log" "bar bar bar";
+  column-gap:14px;row-gap:10px;justify-content:stretch;align-items:start;padding:18px;
+}
+.vx-notch[data-size=chat] .vx-slot{width:44px;height:44px}
+.vx-notch[data-size=chat] .vx-head,.vx-notch[data-size=chat] .vx-actions{display:flex}
+.vx-notch[data-size=chat] .vx-head{align-self:center}
+.vx-notch[data-size=chat] .vx-log{display:flex;grid-area:log;flex-direction:column;gap:8px;overflow-y:auto;min-height:0;height:100%;scrollbar-width:thin}
+.vx-notch[data-size=chat] .vx-bar{display:flex;grid-area:bar;gap:8px;align-items:center;align-self:end}
+.vx-msg{max-width:88%;padding:8px 12px;border-radius:16px;font-size:14px;line-height:1.45;white-space:pre-wrap;overflow-wrap:anywhere}
+.vx-msg.user{align-self:flex-end;background:#2a2423}
+.vx-msg.ai{align-self:flex-start;background:#161312}
+.vx-input{flex:1;min-width:0;font:inherit;font-size:14px;color:#f4ede6;background:#161312;border:1px solid #2a2423;border-radius:999px;padding:8px 14px}
+.vx-input::placeholder{color:#7e746c}
+.vx-input:focus-visible{outline:2px solid var(--vx-accent);outline-offset:1px}
+.vx-pill{display:none;position:absolute;left:50%;transform:translateX(-50%);align-items:center;gap:10px;background:#000;color:#f4ede6;border-radius:999px;padding:7px 8px 7px 16px;font:13px/1.3 "Segoe UI Variable Text","Segoe UI",system-ui,sans-serif;max-width:calc(100% - 24px);white-space:nowrap}
+.vx-pill.on{display:flex;animation:vx-in .3s both}
+.vx-ptext{overflow:hidden;text-overflow:ellipsis}
+.vx-pbar{display:none;width:110px;height:5px;border-radius:3px;background:#2a2522;overflow:hidden;flex:none}
+.vx-pbar i{display:block;height:100%;width:0;background:var(--vx-accent);transition:width .25s}
+.vx-pill[data-progress=true] .vx-pbar{display:block}
+.vx-pill:not([data-cancel=true]) .vx-pcancel{display:none}
+.vx-pill:not([data-cancel=true]){padding-right:16px}
+.vx-pcancel{width:24px;height:24px}
+.vx-btn[data-act=send]{flex:none}
+
+/* ============ COUPLE ============ */
+.vx-cb,.vx-cg{flex:1;min-width:0;height:100%}
+.vx-notch[data-cast=couple] .vx-slot{display:flex;width:96px}
+.vx-notch[data-cast=couple][data-size=compact]{width:178px}
+.vx-notch[data-cast=couple][data-size=medium]{width:390px}
+.vx-notch[data-cast=couple][data-size=expanded]{width:520px}
+.vx-notch[data-cast=couple][data-size=expanded] .vx-slot{width:136px;height:70px}
+.vx-notch[data-cast=couple][data-size=chat] .vx-slot{width:92px;height:44px}

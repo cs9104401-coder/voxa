@@ -57,6 +57,8 @@ const SEND_CHANNELS = new Set([
   'overlay:media-control',
   'overlay:feed-toggle',
   'overlay:open-settings',
+  'overlay:cancel-download',
+  'overlay:retry',
   'chat:send',
   'chat:cancel',
   'chat:open',
@@ -205,7 +207,9 @@ contextBridge.exposeInMainWorld('voiceAgent', {
     dismissNotification: (id) => send('overlay:notification-dismiss', { id: String(id || '') }),
     mediaControl: (action) => send('overlay:media-control', { action: String(action || '') }),
     feedToggle: () => send('overlay:feed-toggle', {}),
-    openSettings: () => send('overlay:open-settings', {})
+    openSettings: () => send('overlay:open-settings', {}),
+    cancelDownload: () => send('overlay:cancel-download'),
+    retry: () => send('overlay:retry')
   }
 });
 

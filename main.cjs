@@ -2942,6 +2942,26 @@ function registerIpc() {
   listen('overlay:open-settings', () => {
     showDashboard();
   }, ['overlay']);
+  // The kit's activity pill owns a real cancel button. It aborts whichever
+  // long download currently owns the pill; Ollama pulls have no cancel path.
+  listen('overlay:cancel-download', () => {
+    if (kokoroDownloadController) {
+      kokoroDownloadController.abort();
+      kokoroDownloadController = null;
+      return true;
+    }
+    if (lastHealth?.whisper?.switching) {
+      void cancelWhisperSwitch().catch((error) => {
+        logger.warn('health', `Could not cancel the Whisper download: ${cleanError(error)}`);
+      });
+      return true;
+    }
+    return false;
+  }, ['overlay']);
+  // The kit's error card retry button starts a fresh capture in the current
+  // mode. It cannot use assistant:toggle directly because that invoke is
+  // dashboard-scoped by the trusted-sender guard.
+  listen('overlay:retry', () => toggleTalk('button', settings.mode), ['overlay']);
   listen('chat:open', () => openChat(), ['overlay']);
   listen('chat:close', () => closeChat(), ['overlay']);
   listen('chat:request-history', () => sendChatHistory(), ['overlay']);

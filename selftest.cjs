@@ -63,19 +63,17 @@ function checkMarkup() {
     'page-apps', 'page-logs', 'page-settings', 'page-about', 'sideName', 'sideAvatar',
     'brandName', 'tierBadge', 'talkNow', 'userMenu', 'userDropdown', 'appStatus', 'appStatusText', 'toast', 'community'
   ];
-  const overlayIds = [
-    'notch', 'notchCard', 'cardText', 'notchState', 'levelMeter', 'approvalActions', 'stopButton', 'allowButton', 'denyButton', 'copyButton',
-    'chatButton', 'chatCloseButton', 'chatPanel', 'chatLog', 'chatEmpty', 'chatForm', 'chatInput', 'chatHint', 'chatStopButton', 'chatSendButton', 'chatError', 'chatPreviewLabel', 'companion',
-    'pillTabs', 'tabHome', 'tabAssistant', 'tabNotifications', 'islandSettings', 'islandHome', 'timeCard', 'timeDot', 'timeTemp', 'feedClearButton', 'retryButton'
-  ];
+  const overlayIds = ['notch'];
+  const overlayAssets = ['overlay.js', 'overlay-shell.css', 'notch-kit.css', 'notch-kit.js'];
   const missing = [
     ...dashboardIds.filter((id) => !dashboard.includes(`id="${id}"`)).map((id) => `settings.html:${id}`),
-    ...overlayIds.filter((id) => !overlay.includes(`id="${id}"`)).map((id) => `overlay.html:${id}`)
+    ...overlayIds.filter((id) => !overlay.includes(`id="${id}"`)).map((id) => `overlay.html:${id}`),
+    ...overlayAssets.filter((file) => !overlay.includes(file)).map((file) => `overlay.html:${file}`)
   ];
   record(
     'Renderer markup',
     missing.length === 0,
-    missing.length ? `Missing required elements: ${missing.join(', ')}` : `${dashboardIds.length + overlayIds.length} required page, shell, and notch elements are present.`
+    missing.length ? `Missing required elements: ${missing.join(', ')}` : `${dashboardIds.length} dashboard elements and the CSP-safe notch host are present.`
   );
 }
 
