@@ -1698,7 +1698,7 @@ collapseButton.addEventListener('click', () => {
 
 notch.addEventListener('click', (event) => {
   if (!state.visible) return;
-  if (event.target?.closest('button, input, textarea, a, .card-text')) return;
+  if (event.target?.closest('button, input, textarea, a, .card-text, .blob')) return;
   if (notch.dataset.state === 'approval') return;
   if (sizeFor(notch.dataset.state) === 'expanded') return;
   api.overlay.expand('pinned');
@@ -1731,6 +1731,9 @@ mediaPrevButton?.addEventListener('click', () => { api.overlay.mediaControl?.('p
 document.querySelector('.pill-head')?.addEventListener('click', (event) => {
   if (event.target.closest('button, #companion, #mediaControls')) return;
   if (!state.visible || notch.dataset.state !== 'idle') return;
+  // The head click is the feed affordance; do not let it bubble into the pill
+  // handler and expand the island as a second, conflicting action.
+  event.stopPropagation();
   api.overlay.feedToggle?.();
 });
 
