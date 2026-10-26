@@ -96,7 +96,7 @@ It then writes `whisper-server\dist\voxa-whisper.exe`.
 
 ## Release build
 
-Voxa 1.2.0 is packaged with electron-builder into a per-user NSIS installer.
+Voxa 1.3.0 is packaged with electron-builder into a per-user NSIS installer.
 
 ```powershell
 npm install
@@ -107,7 +107,7 @@ npm run dist
 
 1. Generates `assets\icon.ico` with `npm run build:icon`.
 2. Builds the bundled Whisper server with `npm run build:whisper`.
-3. Runs electron-builder and writes `dist\Voxa-Setup-1.2.0.exe`.
+3. Runs electron-builder and writes `dist\Voxa-Setup-1.3.0.exe`.
 
 The installer creates a **Voxa** desktop shortcut and Start Menu entry and includes an uninstaller. The app is packaged with ASAR; `node_modules\uiohook-napi` is explicitly unpacked through `build.asarUnpack` so its native prebuild loads in the installed build. The PyInstaller output is copied to `resources\whisper-server\voxa-whisper.exe` with `extraResources`. The embedded Kokoro Python runtime and `kokoro_server.py` are copied there too, so natural voice replies need no system Python.
 
