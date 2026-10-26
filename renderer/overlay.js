@@ -1390,7 +1390,7 @@ function render() {
     && notch.dataset.size === 'expanded'
     && status !== 'approval'
     && !openChat);
-  const openFeed = status === 'feed';
+  const openFeed = status === 'feed' || (size === 'expanded' && tab === 'notifications');
   // Stage 2 expanded tabs: the tab rail shows only when expanded, the head band
   // (blob strip) only on the Assistant tab, and the Home grid takes the body
   // whenever it is the active tab.
@@ -1430,7 +1430,7 @@ function render() {
   notch.dataset.mediaPlaying = media && media.playing ? 'true' : 'false';
   // Leaving the feed forgets which cards were rendered so the next open
   // replays the Ref 1 cascade from the top.
-  if (status !== 'feed' && feedRenderedIds.size) feedRenderedIds.clear();
+  if (!openFeed && feedRenderedIds.size) feedRenderedIds.clear();
   updateChatHeader();
   updateChatComposer();
   if (openChat) renderChatLog();
