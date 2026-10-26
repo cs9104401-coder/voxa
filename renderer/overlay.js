@@ -1331,6 +1331,7 @@ function render() {
   const interactiveChat = openChat && !state.chatPreview;
   const wasVisible = notch.dataset.visible === 'true';
   const wasSize = notch.dataset.size;
+  const wasListening = notch.dataset.state === 'listening';
   if (state.visible !== wasVisible) invalidateHitShape();
   // Stage 2 tab model: state patches steer the tab; the user's pinned choice
   // survives only while the pill rests idle-expanded.
@@ -1349,6 +1350,7 @@ function render() {
   notch.dataset.tab = tab;
   notch.dataset.style = style;
   notch.dataset.visible = state.visible ? 'true' : 'false';
+  if ((wasListening && status !== 'listening') || (wasVisible && !state.visible)) resetMicLevel();
   notch.dataset.mode = state.mode || 'agent';
   notch.dataset.speaking = state.speaking ? 'true' : 'false';
   notch.dataset.scrolled = cardText.scrollTop > 4 ? 'true' : 'false';
@@ -1487,9 +1489,28 @@ function applyAudioLevel(peak, bins) {
       spectrumTarget[i] = Number.isFinite(value) ? Math.max(0, Math.min(1, value)) : spectrumTarget[i];
     }
   }
-  companion?.style.setProperty('--level', normalized.toFixed(3));
+  // A final frame can arrive just after the listening state ends; painting it
+  // would relight the bands with no active microphone.
+  if (state.visible && notch.dataset.state === 'listening') {
+    companion?.style.setProperty('--level', normalized.toFixed(3));
+    startLoop();
+  }
   levelMeter.setAttribute('aria-label', `Microphone level ${Math.round(normalized * 100)} percent`);
-  if (state.visible && notch.dataset.state === 'listening') startLoop();
+}
+
+// Leaving listening or hiding must clear the mic-driven companion level:
+// updateWave only decays its local value, so without this the blob bands stay
+// at the last microphone peak until speech or another session touches --level.
+function resetMicLevel() {
+  levelTarget = 0;
+  level = 0;
+  spectrumTarget.fill(0);
+  spectrumSmooth.fill(0);
+  companion?.style.setProperty('--level', '0');
+  if (spectrumCtx && spectrumUnit) {
+    spectrumCtx.clearRect(0, 0, spectrumUnit.w, spectrumUnit.h);
+    spectrumDirty = false;
+  }
 }
 
 /* --- Real audio spectrum (Phase C) ---------------------------------------- */
@@ -1601,7 +1622,7 @@ function updateSpeech(dt) {
     companionActMod = true;
   } else if (companionActMod) {
     companion.style.removeProperty('--act');
-    companion.style.setProperty('--level', Math.min(1, levelTarget).toFixed(3));
+    companion.style.setProperty('--level', Math.min(1, level).toFixed(3));
     companionActMod = false;
   }
 }

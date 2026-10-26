@@ -88,6 +88,7 @@ function readBands(analyser) {
 
 function cleanup(target) {
   if (!target) return;
+  const hadLevels = Boolean(target.levelTimer);
   clearInterval(target.levelTimer);
   clearTimeout(target.stopTimer);
   target.levelTimer = null;
@@ -104,6 +105,12 @@ function cleanup(target) {
     target.context = null;
   }
   if (session === target) session = null;
+  // The last level frame can sit just above zero when recording stops, leaving
+  // the island bands lit. Send an explicit silent frame so every consumer can
+  // settle at zero without waiting for another session.
+  if (hadLevels) {
+    api.recorder.level({ peak: 0, at: Date.now(), bins: new Array(BAND_COUNT).fill(0) });
+  }
 }
 
 function stopMonitor() {
