@@ -1395,6 +1395,7 @@ function render() {
   approvalActions.hidden = status !== 'approval' || !state.approval;
   approvalActions.querySelectorAll('button').forEach((button) => {
     button.disabled = Boolean(approvalId && respondedApprovalId === approvalId);
+    if (!approvalId || respondedApprovalId !== approvalId) button.classList.remove('is-pressed');
   });
   copyButton.hidden = !state.canCopy;
   if (copyButton.textContent === 'Copied') {
