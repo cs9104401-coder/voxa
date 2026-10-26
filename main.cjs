@@ -36,7 +36,7 @@ const START_HIDDEN = process.argv.includes('--hidden');
 const GALLERY = process.argv.includes('--gallery') || process.argv.includes('--ui-gallery');
 const SELF_TEST = process.argv.includes('--selftest-worker') || Boolean(process.env.VOXA_SELFTEST_OUTPUT);
 const RECORDER_PARTITION = 'persist:voxa-recorder';
-const WHISPER_PORT = 8000;
+const WHISPER_PORT = LIMITS.WHISPER_PORT;
 
 let userName = 'User';
 try {
