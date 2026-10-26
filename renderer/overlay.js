@@ -501,6 +501,10 @@ function renderChatLog() {
 }
 
 function updateChatDeltaView() {
+  // The gallery preview owns the log and shows sample messages, not
+  // chat.messages. Never paint a live delta over a preview bubble; the real
+  // reply stays buffered and appears when chatPreview turns off.
+  if (state.chatPreview) return;
   const last = chat.messages[chat.messages.length - 1];
   const items = chatLog?.querySelectorAll('.chat-message') || [];
   const item = items[items.length - 1];
