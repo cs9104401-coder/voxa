@@ -43,7 +43,16 @@ let snapshot = {
   notifications: [],
   feedPreview: false,
   download: null,
-  media: null
+  media: null,
+  panel: null,
+  notchSize: 'auto',
+  notchScale: 100,
+  notchPosition: 'center',
+  notchOffsetY: 0,
+  notchBehavior: 'auto',
+  notchCast: 'bob',
+  notchPalette: 'auto',
+  companionFollow: true
 };
 
 const chatView = {
@@ -57,8 +66,13 @@ const chatView = {
 let renderedSignature = '';
 let lastAppliedStyle = '';
 let lastAppliedCompanion = null;
+let lastAppliedCast = '';
+let lastAppliedPalette = '';
+let lastAppliedFollow = null;
 let lastHit = null;
-let lastHitKey = '';
+let extras = null;
+let hitFrame = 0;
+let lastRectsKey = '';
 let hoverInside = false;
 let hideAckTimer = 0;
 let lastPillKey = '';
@@ -150,16 +164,46 @@ function renderMarkdown(element, text) {
 }
 
 /* --- Kit mount ------------------------------------------------------------ */
-function sendHitRect(rect) {
-  if (!rect || !snapshot.visible) return;
-  const key = `${Math.round(rect.x)},${Math.round(rect.y)},${Math.round(rect.width)},${Math.round(rect.height)}`;
-  if (key === lastHitKey) return;
-  lastHitKey = key;
+function notchHitRect() {
+  if (extras?.isPanelOpen()) return null;
+  return lastHit || notch.getHitRect() || null;
+}
+
+function hitRects() {
+  if (!snapshot.visible) return [];
+  const rects = [];
+  const current = notchHitRect();
+  if (current) rects.push(current);
+  if (extras) rects.push(...extras.getHitRects());
+  return rects;
+}
+
+function sendHitRects() {
+  if (!snapshot.visible) return;
+  const rects = hitRects();
+  if (!rects.length) return;
+  const key = rects
+    .map((rect) => [rect.x, rect.y, rect.width, rect.height].map((value) => Math.round(value)).join(','))
+    .join('|');
+  if (key === lastRectsKey) return;
+  lastRectsKey = key;
   try {
-    api.overlay.hitRect(rect);
+    api.overlay.hitRect(rects);
   } catch {
     // A closing window can reject one shape update; the next repaint reports again.
   }
+}
+
+function scheduleHitRects() {
+  if (hitFrame) return;
+  hitFrame = requestAnimationFrame(() => {
+    hitFrame = 0;
+    sendHitRects();
+  });
+}
+
+function resendHitRects() {
+  scheduleHitRects();
 }
 
 const notch = kit.mount(root, {
@@ -167,17 +211,22 @@ const notch = kit.mount(root, {
   style: snapshot.style === 'notch' ? 'notch' : 'island',
   onHitRect(rect) {
     lastHit = rect;
-    sendHitRect(rect);
+    scheduleHitRects();
+  },
+  onFold() {
+    applyRestingSize();
   },
   renderText: renderMarkdown
 });
 
-function resendHitRect() {
-  const rect = notch.getHitRect();
-  if (rect) {
-    lastHit = rect;
-    sendHitRect(rect);
-  }
+if (window.VoxaOverlayExtras) {
+  extras = window.VoxaOverlayExtras.mount({
+    api,
+    notch,
+    root,
+    getSnapshot: () => snapshot,
+    onRectsChanged: scheduleHitRects
+  });
 }
 
 /* --- Snapshot to kit state ------------------------------------------------ */
@@ -193,6 +242,23 @@ function feedText(items) {
     const body = String(item.body || '').trim();
     return body ? `**${title}**\n${body}` : `**${title}**`;
   }).join('\n\n');
+}
+
+function restingSize(snap) {
+  const size = snap?.notchSize;
+  return size === 'compact' || size === 'medium' || size === 'expanded' ? size : 'compact';
+}
+
+function restingSizeForSnapshot() {
+  if (snapshot.expand === 'collapsed') return 'compact';
+  if (snapshot.expand === 'pinned') return 'expanded';
+  return restingSize(snapshot);
+}
+
+function applyRestingSize() {
+  if (!snapshot.visible || extras?.isPanelOpen()) return;
+  if (root.getAttribute('data-state') !== 'idle') return;
+  notch.setSize(restingSizeForSnapshot());
 }
 
 function viewFor(snap) {
@@ -269,9 +335,20 @@ function viewFor(snap) {
         options: compactWhenCollapsed({
           text: snap.expand === 'pinned' ? 'Ready.' : '',
           mode,
-          size: snap.expand === 'pinned' ? 'expanded' : 'compact'
+          size: snap.expand === 'pinned' ? 'expanded' : restingSize(snap)
         })
       };
+  }
+}
+
+function resolvePalette(snap) {
+  const palette = String(snap.notchPalette || 'auto');
+  if (['wine', 'ember', 'mint', 'sky', 'plum', 'brick', 'boy'].includes(palette)) return palette;
+  switch (snap.notchCast) {
+    case 'girl': return 'brick';
+    case 'boy': return 'boy';
+    case 'couple': return 'brick';
+    default: return 'wine';
   }
 }
 
@@ -286,12 +363,32 @@ function applySettings(snap) {
     lastAppliedCompanion = companion;
     notch.setCompanion(companion);
   }
+  const cast = ['bob', 'girl', 'boy', 'couple'].includes(snap.notchCast) ? snap.notchCast : 'bob';
+  if (cast !== lastAppliedCast) {
+    notch.setCast(cast);
+    lastAppliedCast = cast;
+    lastAppliedPalette = '';
+    lastAppliedFollow = null;
+    lastHit = null;
+    scheduleHitRects();
+  }
+  const palette = resolvePalette({ ...snap, notchCast: cast });
+  if (palette !== lastAppliedPalette) {
+    lastAppliedPalette = palette;
+    notch.mascot?.setPalette?.(palette);
+  }
+  const follow = snap.companionFollow !== false;
+  if (follow !== lastAppliedFollow) {
+    lastAppliedFollow = follow;
+    notch.mascot?.setFollow?.(follow);
+  }
 }
 
 function renderSurface() {
   if (!snapshot.visible) {
     renderedSignature = '';
-    lastHitKey = '';
+    lastRectsKey = '';
+    lastHit = null;
     notch.fold();
     notch.pillClear();
     lastPillKey = '';
@@ -307,7 +404,7 @@ function renderSurface() {
   if (signature !== renderedSignature || root.dataset.state !== view.state) {
     renderedSignature = signature;
     notch.show(view.state, view.options);
-    requestAnimationFrame(resendHitRect);
+    requestAnimationFrame(resendHitRects);
   }
   updateActivityPill();
   syncChatState();
@@ -546,6 +643,10 @@ notch.onAction = (action) => {
       return;
     }
     if (action === 'settings') {
+      if (extras?.openSettings) {
+        void extras.openSettings();
+        return;
+      }
       api.overlay.openSettings();
       return;
     }
@@ -585,10 +686,8 @@ notch.onChatSend = (text) => {
 /* --- Cursor, audio, and speech ------------------------------------------- */
 function updateHover(x, y) {
   if (!snapshot.visible) return;
-  const rect = lastHit || notch.getHitRect();
-  if (!rect) return;
-  const inside = x >= rect.x && x <= rect.x + rect.width
-    && y >= rect.y && y <= rect.y + rect.height;
+  const inside = hitRects().some((rect) => x >= rect.x && x <= rect.x + rect.width
+    && y >= rect.y && y <= rect.y + rect.height);
   if (inside === hoverInside) return;
   hoverInside = inside;
   try {
@@ -612,10 +711,11 @@ function scheduleHideAcknowledge() {
 api.overlay.onState((next) => {
   const wasVisible = snapshot.visible;
   snapshot = { ...snapshot, ...next, visible: next.visible !== false };
+  extras?.update(snapshot);
   if (!snapshot.visible) {
     hoverInside = false;
     lastHit = null;
-    lastHitKey = '';
+    lastRectsKey = '';
     clearTimeout(hideAckTimer);
     hideAckTimer = 0;
     renderSurface();
@@ -624,11 +724,11 @@ api.overlay.onState((next) => {
   }
   clearTimeout(hideAckTimer);
   hideAckTimer = 0;
-  if (!wasVisible) lastHitKey = '';
+  if (!wasVisible) lastRectsKey = '';
   renderSurface();
   if (!wasVisible) {
     requestAnimationFrame(() => {
-      resendHitRect();
+      resendHitRects();
       requestAnimationFrame(() => {
         if (snapshot.visible) notch.getHitRect();
       });
@@ -652,6 +752,7 @@ api.overlay.onCursor?.((coords) => {
   if (!coords || !snapshot.visible) return;
   const x = Number(coords.x) || 0;
   const y = Number(coords.y) || 0;
+  extras?.updateCursor(x, y);
   notch.setCursor(x, y);
   updateHover(x, y);
 });
@@ -665,5 +766,8 @@ api.chat.onHistory(applyChatHistory);
 window.addEventListener('pagehide', () => {
   clearTimeout(hideAckTimer);
   hideAckTimer = 0;
+  if (hitFrame) cancelAnimationFrame(hitFrame);
+  hitFrame = 0;
+  extras?.destroy();
   notch.destroy();
 });

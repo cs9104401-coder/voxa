@@ -767,9 +767,14 @@ function dictation() {
         <div class="form-grid">
           <label class="field">Engine<select class="select" id="ttsEngine"><option value="windows" ${(settings.ttsEngine || 'windows') === 'windows' ? 'selected' : ''}>Windows (built-in)</option><option value="kokoro" ${settings.ttsEngine === 'kokoro' ? 'selected' : ''}>Kokoro · natural voice</option></select></label>
           <label class="field">Voice<select class="select" id="ttsVoice" ${(settings.ttsEngine || 'windows') !== 'kokoro' ? 'disabled' : ''}>${ttsVoiceOptions(settings.ttsVoice || 'af_heart')}</select><small class="card-note">Voice selection applies to Kokoro only.</small></label>
-          <label class="field">Speed · <span id="ttsSpeedVal">${(settings.ttsSpeed || 1.0).toFixed(1)}×</span><input type="range" class="full" id="ttsSpeed" min="0.5" max="2.0" step="0.1" value="${settings.ttsSpeed || 1.0}"></label>
+          <label class="field">Speed · <span id="ttsSpeedVal">${(settings.ttsSpeed || 1.0).toFixed(1)}×</span><input type="range" class="full" id="ttsSpeed" min="0.7" max="1.4" step="0.05" value="${settings.ttsSpeed || 1.0}"></label>
           <label class="field">Volume · <span id="ttsVolumeVal">${Math.round((settings.ttsVolume ?? 1.0) * 100)}%</span><input type="range" class="full" id="ttsVolume" min="0" max="1" step="0.05" value="${settings.ttsVolume ?? 1.0}"></label>
           <div class="row-side field full"><button class="button primary" id="ttsPreview" type="button">Preview voice</button><span id="ttsPreviewResult" class="card-note"></span></div>
+        </div>
+        <div class="rows-card" style="padding:0;margin-top:14px">
+          <div class="row"><div class="row-main"><b>Use GPU for Kokoro</b><small>Load the voice model on CUDA when available; otherwise it falls back to CPU.</small></div>${toggle('ttsGpu', settings.ttsGpu === true, 'Use GPU for Kokoro', 'ttsGpu')}</div>
+          <div class="row"><div class="row-main"><b>Automatic voice fallback</b><small>If the selected Kokoro voice is unavailable, use Heart instead of failing.</small></div>${toggle('ttsAutoVoice', settings.ttsAutoVoice !== false, 'Automatic voice fallback', 'ttsAutoVoice')}</div>
+          <div class="row"><div class="row-main"><b>Battery saver</b><small>Use the built-in Windows voice while running on battery.</small></div>${toggle('ttsBatterySaver', settings.ttsBatterySaver !== false, 'Battery saver', 'ttsBatterySaver')}</div>
         </div>
         <div class="whisper-model-card" id="kokoroModelCard" style="margin-top:14px">
           <div class="row-side" style="justify-content:space-between;align-items:flex-start">
@@ -1275,10 +1280,22 @@ function settingsPage() {
       <div class="row"><div class="row-main"><b>Start with Windows</b><small>Keep Voxa ready in the tray.</small></div>${toggle('startup', Boolean(settings.startWithWindows), 'Start with Windows', 'startWithWindows')}</div>
       <div class="row"><div class="row-main"><b>Spoken replies</b><small>Use the Windows built-in voice.</small></div>${toggle('spokenRepliesSettings', settings.spokenReplies !== false, 'Spoken replies', 'spokenReplies')}<button class="button" data-action="test-voice">Test voice</button></div>
       <div class="row"><div class="row-main"><b>Animated companion</b><small>The companion reacts to listening, thinking, replies, and errors in the island.</small></div>${toggle('companionEnabled', settings.companionEnabled !== false, 'Animated companion', 'companionEnabled')}</div>
+      <div class="row"><div class="row-main"><b>Pause listening</b><small>Ignore the shortcuts and leave the notch resting until you resume.</small></div>${toggle('paused', settings.paused === true, 'Pause listening', 'paused')}</div>
       <div class="row"><div class="row-main"><b>Overlay style</b><small>Island floats below the work area; Notch stays attached to the top edge.</small></div><div class="row-side"><select class="select" id="overlayStyle" aria-label="Overlay style"><option value="island" ${settings.overlayStyle !== 'notch' ? 'selected' : ''}>Island</option><option value="notch" ${settings.overlayStyle === 'notch' ? 'selected' : ''}>Notch</option></select><button class="button" data-action="save-page">Save appearance</button></div></div>
       <div class="row"><div class="row-main"><b>Alert toast display</b><small>How long an unread-event toast stays up before it sinks away.</small></div><div class="row-side"><select class="select" id="feedToastSeconds" aria-label="Alert toast display">${[2, 4, 6, 8, 12].map((n) => `<option value="${n}" ${settings.feedToastSeconds === n ? 'selected' : ''}>${n} s</option>`).join('')}</select></div></div>
       <div class="row"><div class="row-main"><b>Alert feed display</b><small>How long the open alert feed stays up before it collapses on its own.</small></div><div class="row-side"><select class="select" id="feedDwellSeconds" aria-label="Alert feed display">${[4, 8, 12, 20, 30].map((n) => `<option value="${n}" ${settings.feedDwellSeconds === n ? 'selected' : ''}>${n} s</option>`).join('')}</select></div></div>
       <div class="row"><div class="row-main"><b>Media snooze</b><small>How long a stop press keeps the now-playing pill away.</small></div><div class="row-side"><select class="select" id="mediaSnoozeMinutes" aria-label="Media snooze">${[1, 3, 5, 10, 15].map((n) => `<option value="${n}" ${settings.mediaSnoozeMinutes === n ? 'selected' : ''}>${n} min</option>`).join('')}</select></div></div>
+    </article>
+    <article class="card"><h2 class="card-title">Notch</h2>
+      <div class="row"><div class="row-main"><b>Resting size</b><small>The size of the idle pill. Answers, chats, and approvals always open wide enough for their controls.</small></div><div class="row-side"><select class="select" id="notchSize" aria-label="Resting size">${[['auto', 'Auto'], ['compact', 'Compact'], ['medium', 'Medium'], ['expanded', 'Expanded']].map(([value, label]) => `<option value="${value}" ${(settings.notchSize || 'auto') === value ? 'selected' : ''}>${label}</option>`).join('')}</select></div></div>
+      <div class="row"><div class="row-main"><b>Scale · <span id="notchScaleVal">${settings.notchScale ?? 100}%</span></b><small>Grow or shrink the whole notch and its mascot together.</small></div><div class="row-side"><input class="range" type="range" id="notchScale" min="80" max="120" step="5" value="${settings.notchScale ?? 100}" style="width:170px" aria-label="Notch scale"></div></div>
+      <div class="row"><div class="row-main"><b>Screen position</b><small>Left, center, or right edge of the current display.</small></div><div class="row-side"><select class="select" id="notchPosition" aria-label="Screen position">${[['left', 'Left'], ['center', 'Center'], ['right', 'Right']].map(([value, label]) => `<option value="${value}" ${(settings.notchPosition || 'center') === value ? 'selected' : ''}>${label}</option>`).join('')}</select></div></div>
+      <div class="row"><div class="row-main"><b>Top offset · <span id="notchOffsetYVal">${settings.notchOffsetY ?? 0}px</span></b><small>Nudge the notch down from the top edge.</small></div><div class="row-side"><input class="range" type="range" id="notchOffsetY" min="0" max="64" step="2" value="${settings.notchOffsetY ?? 0}" style="width:170px" aria-label="Top offset"></div></div>
+      <div class="row"><div class="row-main"><b>When idle</b><small>Auto hide after a reply, or keep a resting notch on screen.</small></div><div class="row-side"><select class="select" id="notchBehavior" aria-label="When idle"><option value="auto" ${settings.notchBehavior !== 'stay-open' ? 'selected' : ''}>Auto hide</option><option value="stay-open" ${settings.notchBehavior === 'stay-open' ? 'selected' : ''}>Stay open</option></select></div></div>
+      <div class="row"><div class="row-main"><b>Companion</b><small>Which character sits in the notch.</small></div><div class="row-side"><select class="select" id="notchCast" aria-label="Companion">${[['bob', 'Bob'], ['girl', 'Girl'], ['boy', 'Boy'], ['couple', 'Couple']].map(([value, label]) => `<option value="${value}" ${(settings.notchCast || 'bob') === value ? 'selected' : ''}>${label}</option>`).join('')}</select></div></div>
+      <div class="row"><div class="row-main"><b>Palette</b><small>Auto picks the palette that matches the companion.</small></div><div class="row-side"><select class="select" id="notchPalette" aria-label="Palette">${[['auto', 'Auto'], ['wine', 'Wine'], ['ember', 'Ember'], ['mint', 'Mint'], ['sky', 'Sky'], ['plum', 'Plum'], ['brick', 'Brick'], ['boy', 'Boy']].map(([value, label]) => `<option value="${value}" ${(settings.notchPalette || 'auto') === value ? 'selected' : ''}>${label}</option>`).join('')}</select></div></div>
+      <div class="row"><div class="row-main"><b>Companion follows cursor</b><small>Let the character's eyes follow the pointer across the screen.</small></div>${toggle('companionFollow', settings.companionFollow !== false, 'Companion follows cursor', 'companionFollow')}</div>
+      <div class="row-side" style="margin-top:12px"><button class="button primary" data-action="save-page">Save notch settings</button></div>
     </article>
     <article class="card"><h2 class="card-title">Updates</h2>
       <div class="row"><div class="row-main"><b id="updateCurrentVersion">Current version</b><small id="updateStatusText">Not checked yet.</small></div><div class="row-side"><button class="button" id="updateCheck" data-action="update-check">Check for updates</button><button class="button primary" id="updateDownload" data-action="update-download" hidden>Download update</button><button class="button primary" id="updateInstall" data-action="update-install" hidden>Restart and install</button></div></div>
@@ -1360,6 +1377,10 @@ function restoreFieldValues(saved) {
       if ([...field.options].some((option) => option.value === entry.value)) field.value = entry.value;
     } else {
       field.value = entry.value;
+      // Range labels are updated by oninput; run the handler directly so a
+      // restored draft (for example 110%) does not sit next to a stale
+      // "100%" label or count as a new unsaved edit.
+      if (field.type === 'range' && typeof field.oninput === 'function') field.oninput();
     }
   }
 }
@@ -1528,6 +1549,13 @@ function collectPagePatch() {
     patch.displayName = $('#displayName')?.value ?? settings.displayName;
     patch.communityUrl = $('#communityUrl')?.value ?? settings.communityUrl;
     patch.overlayStyle = $('#overlayStyle')?.value ?? settings.overlayStyle;
+    patch.notchSize = $('#notchSize')?.value ?? settings.notchSize;
+    patch.notchScale = Number($('#notchScale')?.value ?? settings.notchScale);
+    patch.notchPosition = $('#notchPosition')?.value ?? settings.notchPosition;
+    patch.notchOffsetY = Number($('#notchOffsetY')?.value ?? settings.notchOffsetY);
+    patch.notchBehavior = $('#notchBehavior')?.value ?? settings.notchBehavior;
+    patch.notchCast = $('#notchCast')?.value ?? settings.notchCast;
+    patch.notchPalette = $('#notchPalette')?.value ?? settings.notchPalette;
     patch.feedToastSeconds = Number($('#feedToastSeconds')?.value ?? settings.feedToastSeconds);
     patch.feedDwellSeconds = Number($('#feedDwellSeconds')?.value ?? settings.feedDwellSeconds);
     patch.mediaSnoozeMinutes = Number($('#mediaSnoozeMinutes')?.value ?? settings.mediaSnoozeMinutes);
@@ -1581,6 +1609,9 @@ async function savePage() {
 
 async function saveInlineToggle(input) {
   const previous = input.checked;
+  // The save rebroadcasts hotkey-status, which re-renders Settings. Capture
+  // drafts before the round-trip so a mixed inline/batch edit keeps them.
+  const fieldValues = captureFieldValues();
   try {
     const patch = {};
     if (input.dataset.permission) {
@@ -1599,7 +1630,6 @@ async function saveInlineToggle(input) {
     settings = { ...settings, ...saved };
     data.settings = settings;
     note('Saved.');
-    const fieldValues = captureFieldValues();
     renderAll();
     restoreFieldValues(fieldValues);
   } catch (error) {
@@ -1995,6 +2025,22 @@ function wire() {
     };
   }
 
+  const notchScaleSlider = $('#notchScale');
+  if (notchScaleSlider) {
+    notchScaleSlider.oninput = () => {
+      const label = $('#notchScaleVal');
+      if (label) label.textContent = `${notchScaleSlider.value}%`;
+    };
+  }
+
+  const notchOffsetSlider = $('#notchOffsetY');
+  if (notchOffsetSlider) {
+    notchOffsetSlider.oninput = () => {
+      const label = $('#notchOffsetYVal');
+      if (label) label.textContent = `${notchOffsetSlider.value}px`;
+    };
+  }
+
   const ttsPreview = $('#ttsPreview');
   if (ttsPreview) {
     ttsPreview.onclick = async () => {
@@ -2349,11 +2395,20 @@ api.on('settings:updated', (next) => {
   if (!next || document.querySelector('.modal-shade')) return;
   settings = { ...settings, ...next };
   data.settings = settings;
+  // Pause can also be toggled from the tray or the notch rail. Keep the
+  // dashboard switch honest so the next click does not save stale state.
+  const paused = $('#paused');
+  if (paused) paused.checked = settings.paused === true;
   updateShell();
 });
 api.on('hotkey-status', (status) => {
   data.hotkey = status;
-  if (activePage === 'settings') refreshPage('settings');
+  if (activePage !== 'settings') return;
+  // Every settings save rebroadcasts hotkey status. Keep field drafts instead
+  // of letting this refresh overwrite edits the user has not saved yet.
+  const fieldValues = captureFieldValues();
+  refreshPage('settings');
+  restoreFieldValues(fieldValues);
 });
 api.on('mode-status', ({ mode } = {}) => {
   if (!mode) return;

@@ -4,7 +4,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const {
-  app, BrowserWindow, Menu, Tray, clipboard, dialog, ipcMain, nativeImage, screen, session, shell
+  app, BrowserWindow, Menu, Tray, clipboard, dialog, ipcMain, nativeImage, powerMonitor, screen, session, shell
 } = require('electron');
 
 const logger = require('./lib/logger.cjs');
@@ -29,8 +29,8 @@ const {
   ollamaIslandDownload
 } = require('./lib/island-download.cjs');
 const {
-  APP_NAME, APPROVABLE_TOOLS, LIMITS, MESSAGES, STT_CLOUD_PROVIDERS, TOOL_DEFINITIONS, TOOL_NAMES,
-  WHISPER_MODELS, WHISPER_PRESETS, defaults
+  APP_NAME, APPROVABLE_TOOLS, LIMITS, MESSAGES, NOTCH_OPTIONS, NOTCH_OFFSET_RANGE, NOTCH_SCALE_RANGE,
+  STT_CLOUD_PROVIDERS, TOOL_DEFINITIONS, TOOL_NAMES, WHISPER_MODELS, WHISPER_PRESETS, defaults
 } = require('./lib/constants.cjs');
 
 const START_HIDDEN = process.argv.includes('--hidden');
@@ -191,6 +191,36 @@ function toBuffer(payload) {
 
 function publicSettings() {
   return structuredClone(settings);
+}
+
+function overlayAppearance(source = settings) {
+  return {
+    notchSize: source.notchSize,
+    notchScale: source.notchScale,
+    notchPosition: source.notchPosition,
+    notchOffsetY: source.notchOffsetY,
+    notchBehavior: source.notchBehavior,
+    notchCast: source.notchCast,
+    notchPalette: source.notchPalette,
+    companionFollow: source.companionFollow
+  };
+}
+
+// Battery saver keeps Kokoro (and its model load) off the battery by routing
+// spoken replies through the built-in Windows voice. The dashboard and the
+// notch settings sheet both save the switch; the routing is live here.
+function speechSettings(source = settings, extra = {}) {
+  const batterySaver = source.ttsBatterySaver !== false && powerMonitor.isOnBatteryPower();
+  return {
+    ttsEngine: batterySaver ? 'windows' : source.ttsEngine,
+    ttsVoice: source.ttsVoice,
+    ttsSpeed: source.ttsSpeed,
+    ttsVolume: source.ttsVolume,
+    ttsGpu: Boolean(source.ttsGpu),
+    ttsAutoVoice: source.ttsAutoVoice !== false,
+    ttsModelVariant: source.ttsModelVariant,
+    ...extra
+  };
 }
 
 function sendToDashboard(channel, payload) {
@@ -376,6 +406,10 @@ function showDashboard() {
   createDashboard(true);
 }
 
+function openNotchSettings() {
+  overlay?.setPanel('settings');
+}
+
 function rejectPendingRecorderRequests(message) {
   for (const pending of pendingRecorderRequests.values()) {
     clearTimeout(pending.timer);
@@ -527,6 +561,7 @@ function trayTemplate() {
     { label: 'Agent mode', type: 'radio', checked: settings.mode === 'agent', click: () => setMode('agent') },
     { label: 'Dictation mode', type: 'radio', checked: settings.mode === 'dictation', click: () => setMode('dictation') },
     { label: settings.paused ? 'Resume listening' : 'Pause listening', click: togglePaused },
+    { label: 'Notch settings', click: openNotchSettings },
     { label: 'Start with Windows', type: 'checkbox', checked: Boolean(settings.startWithWindows), click: (item) => {
       try {
         saveSettingsPatch({ startWithWindows: item.checked });
@@ -586,6 +621,11 @@ function saveSettingsPatch(patch) {
   const hotkeysChanged = next.dictationHotkey !== settings.dictationHotkey || next.agentHotkey !== settings.agentHotkey;
   const overlayStyleChanged = next.overlayStyle !== settings.overlayStyle;
   const companionEnabledChanged = next.companionEnabled !== settings.companionEnabled;
+  const appearanceChanged = ['notchSize', 'notchScale', 'notchPosition', 'notchOffsetY', 'notchBehavior', 'notchCast', 'notchPalette', 'companionFollow']
+    .some((key) => next[key] !== settings[key]);
+  const ttsGpuChanged = Boolean(next.ttsGpu) !== Boolean(settings.ttsGpu);
+  const pausedNow = next.paused === true && settings.paused !== true;
+  const previousNotchBehavior = settings.notchBehavior;
   const chatChanged = next.chatProvider !== settings.chatProvider
     || JSON.stringify(next.providers) !== JSON.stringify(settings.providers);
   if (hotkeysChanged && (turnRunning || currentTurn)) {
@@ -609,7 +649,20 @@ function saveSettingsPatch(patch) {
   settings = next;
   applyAutostart();
   if (overlayStyleChanged) overlay?.setStyle(next.overlayStyle);
+  if (appearanceChanged) {
+    overlay?.setAppearance(overlayAppearance(next));
+    if (next.notchBehavior === 'stay-open') clearOverlayHideTimer();
+    else if (previousNotchBehavior === 'stay-open') scheduleOverlayHide(4500);
+  }
   if (companionEnabledChanged) overlay?.setState({ companionEnabled: next.companionEnabled });
+  if (pausedNow) abortTurn('paused', { hide: !overlay?.state().panel });
+  if (ttsGpuChanged) {
+    services.stopKokoro();
+    logger.info('kokoro', `Compute preference changed to ${next.ttsGpu ? 'CUDA' : 'CPU'}; the voice server will restart on the next reply.`);
+  }
+  if (next.notchBehavior === 'stay-open' && !next.paused && overlay && !overlay.state().visible && !currentTurn && !chatSession.open) {
+    showRestingNotch();
+  }
   if (whisperDeviceChanged) {
     stopWhisperWatch();
     services.stopWhisper();
@@ -619,6 +672,7 @@ function saveSettingsPatch(patch) {
   }
   refreshTray();
   broadcast('settings:updated', publicSettings());
+  sendToOverlay('settings:updated', publicSettings());
   broadcast('hotkey-status', hotkeyStatus());
   broadcast('mode-status', { mode: settings.mode });
   logger.info('settings', `Saved: ${Object.keys(patch).join(', ') || 'settings'}`);
@@ -656,9 +710,15 @@ function togglePaused() {
     broadcast('settings:updated', publicSettings());
     return;
   }
-  if (settings.paused) abortTurn('paused');
+  if (settings.paused) abortTurn('paused', { hide: !overlay?.state().panel });
+  // Resuming from the tray while the notch is hidden must honor stay-open just
+  // like the dashboard save path does.
+  if (!settings.paused && settings.notchBehavior === 'stay-open' && overlay && !overlay.state().visible && !currentTurn && !chatSession.open) {
+    showRestingNotch();
+  }
   refreshTray();
   broadcast('settings:updated', publicSettings());
+  sendToOverlay('settings:updated', publicSettings());
   logger.info('app', settings.paused ? 'Listening paused' : 'Listening resumed');
 }
 
@@ -1123,6 +1183,11 @@ function clearOverlayHideTimer() {
 
 function scheduleOverlayHide(delay, chatLinger = false) {
   if (chatSession.open && !chatLinger) return;
+  if (overlay?.state().panel) return;
+  if (settings.notchBehavior === 'stay-open') {
+    clearOverlayHideTimer();
+    return;
+  }
   clearTimeout(hideTimer);
   hidePaused = false;
   hideDisposition = chatLinger ? 'chat' : 'hide';
@@ -1134,6 +1199,8 @@ function scheduleOverlayHide(delay, chatLinger = false) {
     hidePaused = false;
     hideRemaining = 0;
     if (currentTurn) return;
+    if (overlay?.state().panel) return;
+    if (settings.notchBehavior === 'stay-open') return;
     if (chatSession.open) {
       // The chat countdown never hides the window while chat is open; it folds
       // the island back to the compact idle pill first (which starts a fresh,
@@ -1176,12 +1243,15 @@ function pauseOverlayHide() {
 function resumeOverlayHide() {
   if (!hidePaused) return;
   if (chatSession.open && hideDisposition !== 'chat') return;
+  if (settings.notchBehavior === 'stay-open' || overlay?.state().panel) return;
   hidePaused = false;
   hideDeadline = Date.now() + hideRemaining;
   hideTimer = setTimeout(() => {
     hideTimer = null;
     hideRemaining = 0;
     if (currentTurn) return;
+    if (overlay?.state().panel) return;
+    if (settings.notchBehavior === 'stay-open') return;
     if (chatSession.open) {
       chatLingerFold();
       return;
@@ -1251,7 +1321,8 @@ function failTurn(turn, message, detail = '') {
   showTurnError(turn, message, detail);
 }
 
-function abortTurn(reason = 'cancelled') {
+function abortTurn(reason = 'cancelled', options = {}) {
+  const hide = options.hide !== false;
   const turn = currentTurn;
   clearOverlayHideTimer();
   if (turn) {
@@ -1259,7 +1330,7 @@ function abortTurn(reason = 'cancelled') {
     turn.controller.abort();
     if (turn.recorderId) recorderManager?.cancel(turn.recorderId, reason);
     finishTurn(turn);
-    overlay?.hide();
+    if (hide) overlay?.hide();
   } else {
     speechController?.abort(); sendToPlayer('tts:stop-audio', {});
     speechController = null;
@@ -1267,7 +1338,7 @@ function abortTurn(reason = 'cancelled') {
     // the now-playing pill so it does not immediately resurface. The snooze
     // length is a real setting (Phase I).
     if (mediaLast && overlay?.state().status === 'media') mediaSnoozeUntil = Date.now() + settings.mediaSnoozeMinutes * 60000;
-    overlay?.hide();
+    if (hide) overlay?.hide();
   }
   clearTimeout(tailTimer);
   clearTimeout(audioTimer);
@@ -2140,15 +2211,8 @@ async function speakReply(turn, text) {
   speechController = new AbortController();
   const controller = speechController;
   try {
-    // Extract TTS settings with safe defaults
-    const tts = {
-      ttsEngine: settings.ttsEngine,
-      ttsVoice: settings.ttsVoice,
-      ttsSpeed: settings.ttsSpeed,
-      ttsVolume: settings.ttsVolume,
-      ttsGpu: settings.ttsGpu,
-      ttsModelVariant: settings.ttsModelVariant
-    };
+    // Extract TTS settings with safe defaults, including battery routing.
+    const tts = speechSettings();
     await services.speakStreaming(speech, tts, controller.signal, logger, (buffer) => {
       sendToPlayer('tts:play-audio', buffer);
     });
@@ -2307,7 +2371,21 @@ function pushFeedEvent({ title, body = '', kind = 'system', tone = 'neutral' } =
   }
 }
 
-// Phase H: a resting pill pop is shared behavior — anything the user could not
+// Stay-open mode keeps a resting notch on screen even with no turn in flight.
+function showRestingNotch() {
+  overlay?.show({
+    status: 'idle',
+    message: '',
+    approval: null,
+    canCopy: false,
+    streaming: false,
+    speaking: false,
+    chatOpen: false,
+    chatPreview: false
+  });
+}
+
+// Phase H: a resting pill pop is shared behavior - anything the user could not
 // otherwise see (new feed events, a download starting) raises the idle pill as
 // a toast. Never steals the stage from a turn, chat, an approval, or the media
 // pill; respects the media snooze so a stop press keeps the island away.
@@ -2387,7 +2465,10 @@ function broadcastMediaState(next) {
   mediaLast = next;
   if (!next) {
     overlay?.setState({ media: null });
-    if (overlay?.state().status === 'media') overlay?.hide();
+    if (overlay?.state().status === 'media') {
+      if (settings.notchBehavior === 'stay-open') showRestingNotch();
+      else if (!overlay?.state().panel) overlay?.hide();
+    }
     // Playback ended: surface any unread events that arrived mid-playback.
     popRestingPill();
     return;
@@ -2525,9 +2606,9 @@ function assertTrusted(event, expectedRole = '') {
   throw new Error('Untrusted IPC sender.');
 }
 
-function handle(channel, handler) {
+function handle(channel, handler, role = 'dashboard') {
   ipcMain.handle(channel, async (event, ...args) => {
-    assertTrusted(event, 'dashboard');
+    assertTrusted(event, role);
     return handler(...args);
   });
 }
@@ -2548,6 +2629,32 @@ function listen(channel, handler, roles = ['dashboard']) {
   });
 }
 
+function overlaySettingsCatalog() {
+  return {
+    appName: APP_NAME,
+    settings: publicSettings(),
+    voices: ttsText.allVoices(),
+    languages: ttsText.LANG_LABELS,
+    permissionModes: permissions.PERMISSION_MODES.map(({ id, label, description }) => ({ id, label, description })),
+    permissionCategories: permissions.ROUTINE_CATEGORIES.map(({ id, label, detail }) => ({ id, label, detail })),
+    options: {
+      overlayStyle: ['island', 'notch'],
+      mode: ['agent', 'dictation'],
+      ttsEngine: ['windows', 'kokoro'],
+      ...NOTCH_OPTIONS,
+      feedToastSeconds: [2, 4, 6, 8, 12],
+      feedDwellSeconds: [4, 8, 12, 20, 30],
+      mediaSnoozeMinutes: [1, 3, 5, 10, 15]
+    },
+    ranges: {
+      notchScale: NOTCH_SCALE_RANGE,
+      notchOffsetY: NOTCH_OFFSET_RANGE,
+      ttsSpeed: [0.7, 1.4],
+      ttsVolume: [0, 1]
+    }
+  };
+}
+
 function registerIpc() {
   handle('app:state', () => buildDashboardState());
   handle('updater:get-status', () => updater.getStatus());
@@ -2555,6 +2662,25 @@ function registerIpc() {
   handle('updater:download', () => updater.downloadUpdate());
   handle('updater:install', () => updater.installNow());
   handle('settings:save', (patch) => saveSettingsPatch(patch));
+  handle('overlay:settings-catalog', () => overlaySettingsCatalog(), 'overlay');
+  handle('overlay:settings-save', (patch) => saveSettingsPatch(patch), 'overlay');
+  handle('overlay:panel', (panel) => {
+    const state = overlay.setPanel(panel);
+    if (!state.panel && state.status === 'idle') {
+      if (settings.paused) {
+        // Paused means asleep: closing the sheet must not leave a resting
+        // notch behind, even when stay-open is selected.
+        if (state.visible) overlay.hide();
+      } else if (settings.notchBehavior === 'stay-open') {
+        // Resuming from inside the sheet (or merely closing it) should honor
+        // stay-open even when the sheet was opened from a hidden notch.
+        if (!state.visible) showRestingNotch();
+      } else if (state.visible) {
+        scheduleOverlayHide(3500);
+      }
+    }
+    return { panel: state.panel };
+  }, 'overlay');
   handle('provider:save-key', (provider, key) => {
     if (typeof provider !== 'string' || !Object.hasOwn(settings.providers, provider) || provider === 'local') throw new Error('Unknown provider.');
     const value = String(key || '').trim();
@@ -2799,15 +2925,8 @@ function registerIpc() {
     kokoroDownloadController = null;
     return { ok: true };
   });
-  handle('tts:speak', async (text, settings, signal) => {
-    const tts = {
-      ttsEngine: settings?.ttsEngine || 'windows',
-      ttsVoice: settings?.ttsVoice,
-      ttsSpeed: settings?.ttsSpeed,
-      ttsVolume: settings?.ttsVolume,
-      ttsGpu: settings?.ttsGpu,
-      ttsModelVariant: settings?.ttsModelVariant
-    };
+  handle('tts:speak', async (text, requested, signal) => {
+    const tts = speechSettings({ ...settings, ...(requested || {}) });
     try {
       await services.speakStreaming(String(text || ''), tts, signal, logger, (buffer) => {
         sendToDashboard('tts:play-audio', buffer);
@@ -2825,19 +2944,12 @@ function registerIpc() {
     const controller = new AbortController();
     speechController = controller;
     try {
-      const tts = {
-        ttsEngine: settings.ttsEngine,
-        ttsVoice: settings.ttsVoice,
-        ttsSpeed: settings.ttsSpeed,
-        ttsVolume: settings.ttsVolume,
-        ttsGpu: settings.ttsGpu,
-        ttsModelVariant: settings.ttsModelVariant
-      };
+      const tts = speechSettings();
       await services.speakStreaming(`This is a voice test from ${APP_NAME}.`, tts, controller.signal, logger, (buffer) => {
         sendToDashboard('tts:play-audio', buffer);
       });
       if (controller.signal.aborted) return { ok: false, message: 'Voice test stopped.' };
-      const engine = settings.ttsEngine === 'kokoro' ? 'Kokoro' : 'Windows';
+      const engine = tts.ttsEngine === 'kokoro' ? 'Kokoro' : 'Windows';
       return { ok: true, message: `${engine} voice test finished.` };
     } finally {
       if (speechController === controller) speechController = null;
@@ -2941,6 +3053,16 @@ function registerIpc() {
   // the dashboard settings window. The overlay pill keeps its own state.
   listen('overlay:open-settings', () => {
     showDashboard();
+  }, ['overlay']);
+  // The in-overlay quick rail owns a pause action so listening can be stopped
+  // without opening the dashboard.
+  listen('overlay:pause-toggle', () => togglePaused(), ['overlay']);
+  // Clear the whole alert stack from the notch panel. Main owns the list, so
+  // both the feed state and the rendered cards are reset together.
+  listen('overlay:feed-clear', () => {
+    overlayEvents = [];
+    overlay?.setNotifications([], false);
+    return true;
   }, ['overlay']);
   // The kit's activity pill owns a real cancel button. It aborts whichever
   // long download currently owns the pill; Ollama pulls have no cancel path.
@@ -3116,7 +3238,9 @@ async function initialize() {
     overlay = createOverlay({ log: logger });
     overlay.create();
     overlay.setStyle(settings.overlayStyle);
+    overlay.setAppearance(overlayAppearance());
     overlay.setState({ companionEnabled: settings.companionEnabled, speaking: false });
+    if (settings.notchBehavior === 'stay-open' && !settings.paused) showRestingNotch();
     attachConsoleLogging(overlay.getWindow(), 'overlay');
     recorderManager = createRecorderManager({ getWindow: () => recorderWindow, log: logger });
     hotkeys = createHotkeys({

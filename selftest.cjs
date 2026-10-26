@@ -64,7 +64,7 @@ function checkMarkup() {
     'brandName', 'tierBadge', 'talkNow', 'userMenu', 'userDropdown', 'appStatus', 'appStatusText', 'toast', 'community'
   ];
   const overlayIds = ['notch'];
-  const overlayAssets = ['overlay.js', 'overlay-shell.css', 'notch-kit.css', 'notch-kit.js'];
+  const overlayAssets = ['overlay.js', 'overlay-extras.js', 'overlay-shell.css', 'overlay-extras.css', 'notch-kit.css', 'notch-kit.js'];
   const missing = [
     ...dashboardIds.filter((id) => !dashboard.includes(`id="${id}"`)).map((id) => `settings.html:${id}`),
     ...overlayIds.filter((id) => !overlay.includes(`id="${id}"`)).map((id) => `overlay.html:${id}`),
@@ -197,7 +197,7 @@ function checkIpcPairs() {
   );
 
   const roleScoped = /function senderRole\(event\)/.test(main)
-    && /assertTrusted\(event, 'dashboard'\)/.test(main)
+    && /assertTrusted\(event, role\)/.test(main)
     && /\}, \['recorder'\]\)/.test(main)
     && /\['overlay', 'dashboard'\]/.test(main);
   record(

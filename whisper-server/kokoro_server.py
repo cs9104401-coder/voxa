@@ -250,7 +250,37 @@ def _parse_args() -> argparse.Namespace:
         default=os.getenv("KOKORO_VOICES_FILE", ""),
         help="Absolute path to voices-v1.0.bin.",
     )
+    parser.add_argument(
+        "--provider",
+        choices=("cpu", "cuda"),
+        default=os.getenv("KOKORO_PROVIDER", "cpu"),
+        help="Execution provider preference. Falls back to CPU when CUDA is unavailable.",
+    )
     return parser.parse_args()
+
+
+def _select_provider(preference: str) -> str:
+    """Return an ONNX provider this installation can actually run.
+
+    kokoro-onnx reads ONNX_PROVIDER when it creates the inference session. If
+    CUDA was requested but this onnxruntime build has no CUDA provider, passing
+    it through would make the model fail to load, so fall back to CPU loudly.
+    """
+    try:
+        import onnxruntime as rt  # type: ignore[import-untyped]
+        available = rt.get_available_providers()
+    except Exception as exc:  # pragma: no cover - import failure reports itself
+        logger.warning("Could not inspect ONNX providers: %s", exc)
+        available = []
+    requested = "CUDAExecutionProvider" if preference == "cuda" else "CPUExecutionProvider"
+    if requested not in available:
+        if preference == "cuda":
+            logger.warning(
+                "CUDA was requested but is not available (providers=%s); using CPU.",
+                available,
+            )
+        return "CPUExecutionProvider"
+    return requested
 
 
 def main() -> None:
@@ -266,10 +296,12 @@ def main() -> None:
 
     _state.model_path = os.path.abspath(args.model_path)
     _state.voices_file = os.path.abspath(args.voices_file)
+    provider = _select_provider(args.provider)
+    os.environ["ONNX_PROVIDER"] = provider
 
     logger.info(
-        "Kokoro TTS server starting on %s:%d  model=%s  voices_file=%s",
-        args.host, args.port, _state.model_path, _state.voices_file,
+        "Kokoro TTS server starting on %s:%d  model=%s  voices_file=%s  provider=%s",
+        args.host, args.port, _state.model_path, _state.voices_file, provider,
     )
     uvicorn.run(app, host=args.host, port=args.port, log_level="warning", access_log=False)
 
