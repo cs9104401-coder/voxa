@@ -75,21 +75,16 @@ async function build() {
     spawnSync('powershell', ['-Command', `Expand-Archive -Path '${zipPath}' -DestinationPath '${pythonDir}' -Force`], { stdio: 'inherit' });
   }
 
-  // Enable site-packages in ._pth
-  const pthFile = path.join(pythonDir, 'python3' + PYTHON_VERSION.split('.')[2].replace(/\./g, '') + '._pth');
-  if (!fs.existsSync(pthFile)) {
-    const possibleFiles = [
-      path.join(pythonDir, 'python311._pth'),
-      path.join(pythonDir, 'python3.11._pth'),
-    ];
-    let selected = possibleFiles.find((p) => fs.existsSync(p));
-    if (!selected) throw new Error(`Could not find ._pth file for Python ${PYTHON_VERSION}.`);
-    selected = selected;
-  }
-  let pthContent = fs.readFileSync(path.join(pythonDir, 'python311._pth'), 'utf8');
-  if (!pthContent.includes('import site')) {
-    pthContent += '\nimport site\n';
-    fs.writeFileSync(path.join(pythonDir, 'python311._pth'), pthContent, 'utf8');
+  // The embeddable runtime keeps its packages in site-packages (not
+  // Lib/site-packages). Add that directory to the isolated search path so
+  // `python.exe kokoro_server.py` can import onnxruntime, numpy, etc.
+  const pthFile = path.join(pythonDir, 'python311._pth');
+  if (!fs.existsSync(pthFile)) throw new Error(`Could not find ${pthFile}.`);
+  const pthLines = fs.readFileSync(pthFile, 'utf8').split(/\r?\n/).filter((line) => line.trim() !== '');
+  if (!pthLines.includes('site-packages')) {
+    const dot = pthLines.indexOf('.');
+    pthLines.splice(dot >= 0 ? dot + 1 : pthLines.length, 0, 'site-packages');
+    fs.writeFileSync(pthFile, pthLines.join('\r\n') + '\r\n', 'utf8');
   }
 
   // Copy needed packages from venv
@@ -97,64 +92,64 @@ async function build() {
   const venvSite = path.join(serverDir, '.venv', 'Lib', 'site-packages');
 
   console.log('[build:kokoro-runtime] Copying packages from venv...');
+  // Keep this list in sync with kokoro_server.py's import graph. The embedded
+  // runtime has no pip and its ._pth only exposes site-packages, so every
+  // module and native data directory must be copied explicitly.
   const pkgsToCopy = [
-    'kokoro_onnx', 'kokoro_onnx-0.6.1.dist-info',
-    'soundfile.py', 'soundfile-0.14.0.dist-info',
-    'numpy', 'fastapi',
-    'uvicorn', 'pydantic', 'pydantic_core', 'anyio', 'sniffio', 'sniffio-1.3.1.dist-info',
-    'starlette', 'h11', 'click', 'idna', 'typing_extensions.py', 'typing_extensions-4.16.0.dist-info',
-    'annotated_types', 'phonemizer', 'espeakng_loader', 'onnxruntime'
+    // Kokoro / inference
+    'kokoro_onnx', 'onnxruntime', 'numpy', 'numpy.libs',
+    // Audio encoding (soundfile needs its DLL data directory)
+    'soundfile.py', '_soundfile.py', '_soundfile_data',
+    // HTTP server
+    'fastapi', 'starlette', 'uvicorn', 'pydantic', 'pydantic_core',
+    'anyio', 'h11', 'click', 'colorama', 'idna',
+    // Phonemizer chain
+    'phonemizer', 'espeakng_loader', 'joblib', 'attrs', 'attr', 'dlinfo',
+    'cffi', '_cffi_backend.cp311-win_amd64.pyd', 'cloudpickle',
+    // Typing helpers required by FastAPI/Pydantic
+    'annotated_types', 'annotated_doc', 'typing_inspection', 'typing_extensions.py',
+    // FastAPI 0.159 imports opentelemetry unconditionally
+    'opentelemetry',
   ];
 
   for (const pkg of pkgsToCopy) {
-    const src = path.join(venvSite, pkg.trim());
-    const dest = path.join(sitePackages, pkg.trim());
+    const src = path.join(venvSite, pkg);
+    const dest = path.join(sitePackages, pkg);
     if (!fs.existsSync(src)) {
-      console.warn(`[build:kokoro-runtime] WARN: Package not found: ${pkg.trim()}`);
-      continue;
+      throw new Error(`Required package not found in venv: ${src}`);
     }
 
     if (fs.statSync(src).isDirectory()) {
-      spawnSync('powershell', ['-Command', `Copy-Item -Path '${src}' -Destination '${dest}' -Recurse -Force`], { stdio: 'inherit' });
+      fs.cpSync(src, dest, { recursive: true, force: true });
     } else {
-      try {
-        fs.copyFileSync(src, dest);
-      } catch (err) {
-        console.warn(`[build:kokoro-runtime] WARN: Could not copy ${pkg}: ${err.message}`);
-      }
+      fs.copyFileSync(src, dest);
     }
   }
 
-  // Also copy any .py file modules or dist-info if needed
-  const extraFiles = ['soundfile.py', '_soundfile.py', 'typing_extensions.py'];
-  for (const file of extraFiles) {
-    const src = path.join(venvSite, file);
-    const dest = path.join(sitePackages, file);
-    if (fs.existsSync(src) && !fs.existsSync(dest)) {
-      try {
-        fs.copyFileSync(src, dest);
-      } catch (err) {
-        console.warn(`[build:kokoro-runtime] WARN: Could not copy file ${file}: ${err.message}`);
-      }
-    }
-  }
-
-  // __init__.py placeholder needed for package imports?
-  for (const pkg of pkgsToCopy) {
-    const pkgName = pkg.trim();
-    const destSubPath = path.join(sitePackages, pkgName);
-    if (fs.existsSync(destSubPath) && fs.statSync(destSubPath).isDirectory()) {
-      const subPath = path.join(destSubPath, '__init__.py');
-      if (!fs.existsSync(subPath)) {
-        // Create empty package marker
-        fs.writeFileSync(subPath, '', 'utf8');
-      }
-    }
+  // Package metadata is required at runtime (kokoro_onnx calls
+  // importlib.metadata.version) and identifies native dependencies correctly.
+  for (const entry of fs.readdirSync(venvSite)) {
+    if (!entry.endsWith('.dist-info')) continue;
+    fs.cpSync(path.join(venvSite, entry), path.join(sitePackages, entry), { recursive: true, force: true });
   }
 
   // Copy kokoro_server.py
   fs.mkdirSync(runtimeDir, { recursive: true });
   fs.copyFileSync(path.join(serverDir, 'kokoro_server.py'), path.join(runtimeDir, 'kokoro_server.py'));
+
+  // Fail the build if the embedded interpreter cannot import the server's
+  // dependencies. This catches missing DLLs/data directories at build time
+  // instead of at runtime on a user's machine.
+  console.log('[build:kokoro-runtime] Verifying embedded runtime imports...');
+  const verify = spawnSync(
+    path.join(pythonDir, 'python.exe'),
+    ['-c', 'import numpy, onnxruntime, soundfile, kokoro_onnx, fastapi, uvicorn, phonemizer, espeakng_loader; print("imports-ok", numpy.__version__, onnxruntime.__version__)'],
+    { cwd: pythonDir, encoding: 'utf8' }
+  );
+  if (verify.status !== 0) {
+    throw new Error(`Embedded runtime import check failed:\n${verify.stdout || ''}${verify.stderr || ''}`);
+  }
+  console.log(`[build:kokoro-runtime] ${verify.stdout.trim()}`);
 
   console.log('[build:kokoro-runtime] Done. Created whisper-server/runtime-kokoro');
 }

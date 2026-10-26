@@ -1,6 +1,6 @@
 {
   "name": "voxa",
-  "version": "1.3.0",
+  "version": "1.3.1",
   "private": true,
   "description": "Local desktop voice workspace with dictation and approved agent actions.",
   "author": "Voxa",
@@ -58,7 +58,12 @@
       },
       {
         "from": "whisper-server/runtime-kokoro",
-        "to": "whisper-server/runtime-kokoro"
+        "to": "whisper-server/runtime-kokoro",
+        "filter": [
+          "**/*",
+          "!python.zip",
+          "!kokoro_server.py"
+        ]
       },
       {
         "from": "whisper-server/kokoro_server.py",
