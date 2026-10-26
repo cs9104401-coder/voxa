@@ -339,7 +339,7 @@ function whisperModelLabel(model) {
 
 function whisperOptionText(item, activeModel = '') {
   const active = item.active || (activeModel && activeModel === item.id);
-  const status = active ? 'Active' : item.downloaded === true ? 'Downloaded' : item.downloaded === false ? 'Not downloaded' : 'Status unknown';
+  const status = active ? 'Active' : item.downloaded === true ? 'Installed' : item.downloaded === false ? 'Not installed' : 'Status unknown';
   return `${item.label} · ${formatBytes(item.sizeBytes)} · ${status}`;
 }
 
@@ -379,7 +379,7 @@ function updateWhisperModelControls() {
   const targetMatches = !targetModel || targetModel === selected;
   const switchError = targetMatches ? health.switchError || health.switch_error || '' : '';
   const failedForSelection = targetMatches && health.status === 'error';
-  const statusText = isActive ? 'Active' : downloaded === true ? 'Downloaded' : downloaded === false ? 'Not downloaded' : 'Status unknown';
+  const statusText = isActive ? 'Active' : downloaded === true ? 'Installed' : downloaded === false ? 'Not installed' : 'Status unknown';
   const badgeKind = isActive || downloaded === true ? 'good' : 'info';
   const name = $('#whisperSelectedName');
   const meta = $('#whisperSelectedMeta');
@@ -431,11 +431,11 @@ function updateWhisperModelControls() {
             ? `Switch failed: ${noteError}`
             : downloaded === false
               ? activeModel
-                ? 'Not downloaded yet. Choose Download; the current model keeps working until the switch completes.'
-                : 'Not downloaded yet. Choose Download to fetch it.'
+                ? 'Not installed yet. Choose Download; the current model keeps working until the switch completes.'
+                : 'Not installed yet. Choose Download to fetch it.'
               : downloaded == null
-                ? 'Start Whisper to check whether this model is installed.'
-                : isActive ? 'This model is ready for dictation.' : 'Ready to switch without restarting the app.';
+                ? 'Model status is unavailable. Check again.'
+                : isActive ? 'This model is ready for dictation.' : 'Ready to load for dictation.';
   }
 }
 

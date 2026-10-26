@@ -1,6 +1,7 @@
 'use strict';
 
 const fs = require('node:fs');
+const net = require('node:net');
 const os = require('node:os');
 const path = require('node:path');
 const {
@@ -38,6 +39,52 @@ const GALLERY = process.argv.includes('--gallery') || process.argv.includes('--u
 const SELF_TEST = process.argv.includes('--selftest-worker') || Boolean(process.env.VOXA_SELFTEST_OUTPUT);
 const RECORDER_PARTITION = 'persist:voxa-recorder';
 const WHISPER_PORT = LIMITS.WHISPER_PORT;
+let whisperPort = WHISPER_PORT;
+
+function portAvailable(port) {
+  return new Promise((resolve) => {
+    const server = net.createServer();
+    server.once('error', () => resolve(false));
+    server.once('listening', () => server.close(() => resolve(true)));
+    server.listen(port, '127.0.0.1');
+  });
+}
+
+function freePort() {
+  return new Promise((resolve, reject) => {
+    const server = net.createServer();
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', () => {
+      const address = server.address();
+      const port = address && typeof address === 'object' ? address.port : 0;
+      server.close(() => (port ? resolve(port) : reject(new Error('Could not reserve a local port for Whisper.'))));
+    });
+  });
+}
+
+// Port 8000 is also a common ad-hoc HTTP port. If another service owns it,
+// keep Voxa's Whisper server on an ephemeral loopback port instead of sending
+// control requests to that service (which may answer /load_model with 501).
+async function resolveWhisperPort() {
+  const health = await services.whisperHealth(WHISPER_PORT);
+  const voxaLike = health.status !== 'http-error'
+    && health.status !== 'unreachable'
+    && (Object.hasOwn(health, 'launch_id') || Object.hasOwn(health, 'active_model') || Array.isArray(health.models));
+  if (voxaLike) {
+    whisperPort = WHISPER_PORT;
+    return whisperPort;
+  }
+  // A loopback bind can succeed while another listener still answers on
+  // 127.0.0.1 (the Python http.server case on Windows), so an HTTP error at
+  // /health means the port is effectively taken even if bind() says otherwise.
+  if (health.status !== 'http-error' && await portAvailable(WHISPER_PORT)) {
+    whisperPort = WHISPER_PORT;
+    return whisperPort;
+  }
+  whisperPort = await freePort();
+  logger.warn('whisper server', `Port ${WHISPER_PORT} is already used by another service; using port ${whisperPort} for Whisper.`);
+  return whisperPort;
+}
 
 let userName = 'User';
 try {
@@ -283,6 +330,10 @@ function hotkeyStatus() {
 }
 
 function buildDashboardState() {
+  const health = structuredClone(lastHealth);
+  if (!Array.isArray(health.whisper?.models) || health.whisper.models.length === 0) {
+    health.whisper = whisperHealthSummary(health.whisper || {});
+  }
   return {
     appName: APP_NAME,
     appVersion: app.getVersion(),
@@ -291,7 +342,7 @@ function buildDashboardState() {
     settings: publicSettings(),
     turns: structuredClone(history),
     memory: [...memory],
-    health: structuredClone(lastHealth),
+    health,
     activationLogs: logger.read(LIMITS.MAX_LOG_LINES),
     hotkey: hotkeyStatus(),
     apps: apps.appNames(80),
@@ -730,23 +781,22 @@ function formatBytes(value) {
 }
 
 function whisperModelSummary(health = {}) {
-  const source = Array.isArray(health.models) && health.models.length ? health.models : null;
-  if (source) {
-    return source.map((item) => ({
-      id: String(item.id || ''),
-      label: String(item.label || item.id || ''),
-      sizeBytes: Number(item.size_bytes ?? item.sizeBytes) || 0,
-      downloaded: typeof item.downloaded === 'boolean' ? item.downloaded : null,
-      active: Boolean(item.active),
-      status: String(item.status || '')
-    })).filter((item) => item.id);
-  }
-  return WHISPER_MODELS.map((item) => ({
-    ...item,
-    downloaded: null,
-    active: false,
-    status: 'Unknown'
-  }));
+  const installed = services.whisperInstalledModels();
+  const source = Array.isArray(health.models) ? health.models : [];
+  const remote = new Map(source.map((item) => [String(item.id || ''), item]));
+  return WHISPER_MODELS.map((item) => {
+    const live = remote.get(item.id) || {};
+    const downloaded = installed[item.id] === true || live.downloaded === true;
+    const active = Boolean(live.active);
+    return {
+      id: item.id,
+      label: String(live.label || item.label || item.id),
+      sizeBytes: Number(live.size_bytes ?? live.sizeBytes ?? item.sizeBytes) || 0,
+      downloaded,
+      active,
+      status: active ? 'Active' : downloaded ? 'Installed' : 'Not installed'
+    };
+  });
 }
 
 function whisperHealthSummary(health = {}) {
@@ -774,6 +824,7 @@ function whisperHealthSummary(health = {}) {
   let status;
   if (switching) status = rawStatus === 'downloading' ? 'downloading' : 'loading';
   else if (!modelMatches) status = 'mismatch';
+  else if (rawStatus === 'http-error') status = 'error';
   else status = rawStatus || (health.ok ? 'ready' : 'unreachable');
   const ok = Boolean(health.ok && modelMatches && !switching);
   const model = activeModel || targetModel || selectedModel;
@@ -838,7 +889,7 @@ async function ensureWhisper() {
     // Always go through startWhisper so it can validate the running server's
     // build identity and compute setting before reusing it.
     const health = await services.startWhisper({
-      port: WHISPER_PORT,
+      port: whisperPort,
       model: settings.whisperModel,
       device: settings.whisperDevice,
       onHealth: publishWhisperHealth
@@ -868,7 +919,7 @@ function startWhisperWatch(expectStart = false) {
     if (token !== whisperWatchToken || polling) return;
     polling = true;
     try {
-      const health = await services.whisperHealth(WHISPER_PORT);
+      const health = await services.whisperHealth(whisperPort);
       if (token !== whisperWatchToken) return;
       if (health.status !== 'unreachable') waitingForStart = false;
       publishWhisperHealth(health);
@@ -897,8 +948,8 @@ function startWhisperWatch(expectStart = false) {
 }
 
 async function cancelWhisperSwitch() {
-  await services.cancelWhisperModel(WHISPER_PORT);
-  const health = await services.whisperHealth(WHISPER_PORT);
+  await services.cancelWhisperModel(whisperPort);
+  const health = await services.whisperHealth(whisperPort);
   publishWhisperHealth(health);
   return whisperHealthSummary(health);
 }
@@ -914,9 +965,32 @@ async function switchWhisperModel(model) {
     : 'custom';
   saveSettingsPatch({ whisperModel: target, performancePreset: preset });
   const feedLabel = WHISPER_MODELS.find((item) => item.id === target)?.label || target;
-  const existing = await services.whisperHealth(WHISPER_PORT);
+  const existing = await services.whisperHealth(whisperPort);
+  if (existing.status === 'http-error') {
+    const message = `${existing.error || `Port ${whisperPort} is already used by another service.`} Stop that service and try again.`;
+    publishWhisperHealth({
+      ok: false,
+      status: 'error',
+      error: message,
+      active_model: null,
+      target_model: target
+    });
+    throw new Error(message);
+  }
+  // Only send /load_model to a server that identifies as this build. A stale
+  // build or another service on the port may not implement the route (the
+  // Python http.server case answers it with 501), so restart through the
+  // normal launcher instead.
+  let verified = false;
   if (existing.status !== 'unreachable') {
-    await services.loadWhisperModel(WHISPER_PORT, target);
+    try {
+      verified = String(existing.launch_id || '') === services.whisperExpectedLaunchId();
+    } catch {
+      verified = false;
+    }
+  }
+  if (verified) {
+    await services.loadWhisperModel(whisperPort, target);
     startWhisperWatch();
     // Phase E feed: model swaps are recorded once the new model is serving.
     pushFeedEvent({ title: 'Whisper model switched', body: `${feedLabel} is now transcribing your voice.`, kind: 'system', tone: 'neutral' });
@@ -932,16 +1006,11 @@ async function switchWhisperModel(model) {
         error: cleanError(error),
         active_model: null,
         target_model: target,
-        models: WHISPER_MODELS.map((item) => ({
-          ...item,
-          downloaded: null,
-          active: false,
-          status: 'Unknown'
-        }))
+        models: whisperModelSummary({})
       });
     });
   }
-  const health = await services.whisperHealth(WHISPER_PORT);
+  const health = await services.whisperHealth(whisperPort);
   publishWhisperHealth(health);
   return whisperHealthSummary(health);
 }
@@ -957,7 +1026,7 @@ async function transcribeAudio(audio, mime, signal) {
     return result.text.slice(0, LIMITS.MAX_TRANSCRIPT_CHARS);
   }
   await ensureWhisper();
-  const result = await services.transcribe(`http://127.0.0.1:${WHISPER_PORT}`, bytes, mime, settings.whisperModel, signal);
+  const result = await services.transcribe(`http://127.0.0.1:${whisperPort}`, bytes, mime, settings.whisperModel, signal);
   return result.text.slice(0, LIMITS.MAX_TRANSCRIPT_CHARS);
 }
 
@@ -992,7 +1061,7 @@ async function healthChecks() {
         };
       }
     })(),
-    (async () => whisperHealthSummary(await services.whisperHealth(WHISPER_PORT)))(),
+    (async () => whisperHealthSummary(await services.whisperHealth(whisperPort)))(),
     (async () => {
       if (providerName === 'local') return null;
       const wanted = providerConfig.model;
@@ -2761,15 +2830,15 @@ function registerIpc() {
   });
   handle('ollama:open-download', () => openExternalLink('https://ollama.com/download/windows'));
   handle('whisper:models', async () => {
-    const health = await services.whisperHealth(WHISPER_PORT);
-    if (health.status === 'unreachable') {
+    const health = await services.whisperHealth(whisperPort);
+    if (health.status === 'unreachable' || health.status === 'http-error') {
       return {
         ok: false,
         error: health.error || 'Whisper is not running.',
         models: whisperModelSummary(health)
       };
     }
-    return services.whisperModels(WHISPER_PORT);
+    return services.whisperModels(whisperPort);
   });
   handle('whisper:load', (model) => switchWhisperModel(model));
   handle('whisper:cancel', () => cancelWhisperSwitch());
@@ -3216,6 +3285,7 @@ async function initialize() {
     logger.info('app', `${APP_NAME} ${app.getVersion()} starting on Electron ${process.versions.electron}`);
     settings = store.loadSettings(defaults(userName), userName, logger, isValidHotkey);
     normalizeSettings();
+    await resolveWhisperPort();
     secrets = store.readSecrets(logger);
     if (settings.fallbackEnabled && isCloudProvider(settings.fallbackProvider) && !secrets[settings.fallbackProvider]) {
       settings.fallbackEnabled = false;
@@ -3279,7 +3349,7 @@ async function initialize() {
         transcribeAudio,
         healthChecks,
         ensureWhisper,
-        WHISPER_PORT,
+        WHISPER_PORT: whisperPort,
         hotkeys
       });
       return;
