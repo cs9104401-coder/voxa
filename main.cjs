@@ -459,6 +459,10 @@ function createRecorderWindow() {
 }
 
 async function ensureRecorder() {
+  // A dashboard unload (for example the Dictation page's beforeunload
+  // monitor-stop) must not recreate the microphone window after before-quit
+  // destroyed it; a window created during shutdown keeps Voxa alive.
+  if (quitting) throw new Error('Voxa is shutting down.');
   if (!recorderWindow || recorderWindow.isDestroyed()) createRecorderWindow();
   try {
     if (recorderReady) await recorderReady;
