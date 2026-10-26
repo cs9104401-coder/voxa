@@ -696,6 +696,11 @@ function dashboard() {
     ${whisperProgressRow()}
     <div class="row"><span class="row-icon">${icon('M9 3h6v12H9zM5 11a7 7 0 0 0 14 0')}</span><div class="row-main"><b>Voice replies</b><small>Read agent answers aloud</small></div><div class="row-side">${toggle('spokenReplies', settings.spokenReplies !== false, 'Voice replies', 'spokenReplies')}</div></div>
   </div>
+  <div class="section-head"><h2>Privacy</h2><p>Decide what Voxa keeps on this device.</p></div>
+  <div class="card">
+    <div class="row-side" style="justify-content:space-between;align-items:flex-start"><div class="row-main"><b>Save turn history</b><small class="card-note">When off, new dictation, agent, and chat turns stay out of history and logs.</small></div>${toggle('historyEnabled', settings.historyEnabled !== false, 'Save turn history', 'historyEnabled')}</div>
+    <div class="row-side" style="justify-content:space-between;margin-top:12px"><span class="card-note">Clear all data removes saved turns, chat, memory, activity logs, and downloaded voice models from this device.</span><button class="button danger" data-action="clear-all-data">Clear all data</button></div>
+  </div>
   <div class="section-head"><h2>Recent turns</h2><button class="button" data-page-link="insights">Open Insights</button></div>
   <div class="card rows-card">${recentTurns.length ? recentTurns.map((turn) => `<div class="row"><span class="row-icon">${icon('M12 7v5l3 2m9-2A9 9 0 1 1 3 12a9 9 0 0 1 18 0Z')}</span><div class="row-main"><b>${esc(turn.said)}</b><small>${esc(turn.did)}</small></div><small>${new Date(turn.time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</small></div>`).join('') : '<div class="empty">No saved turns yet. Dictate or ask with the island and they will appear here.</div>'}</div>
   <div class="section-head tips-head"><div><h2>Tips</h2><p>Small ideas to get started.</p></div><div class="carousel-controls"><button class="icon-button" data-carousel="-1" aria-label="Previous tips">‹</button><button class="icon-button" data-carousel="1" aria-label="Next tips">›</button></div></div>
@@ -729,13 +734,8 @@ function historyResults() {
 }
 
 function historyPage() {
-  const historyOn = settings.historyEnabled !== false;
   return `${heading('History', 'Search a past request and its result.')}
   <div class="page-stack">
-    <article class="card"><h2 class="card-title">Privacy</h2>
-      <div class="row-side" style="justify-content:space-between;align-items:flex-start"><div class="row-main"><b>Save turn history</b><small class="card-note">When off, new dictation, agent, and chat turns stay out of history and logs.</small></div>${toggle('historyEnabled', historyOn, 'Save turn history', 'historyEnabled')}</div>
-      <div class="row-side" style="justify-content:space-between;margin-top:12px"><span class="card-note">Clear all data removes saved turns, chat, memory, activity logs, and downloaded voice models from this device.</span><button class="button danger" data-action="clear-all-data">Clear all data</button></div>
-    </article>
     <div class="history-tools"><input id="historySearch" class="input" aria-label="Search history" placeholder="Search history" value="${esc(historyQuery)}"><button class="button" data-action="clear-history">Clear history</button></div>
     <div id="historyResults">${historyResults()}</div>
   </div>`;
@@ -2147,7 +2147,7 @@ async function handleAction(action, button) {
         } else {
           note('All local data cleared.');
         }
-        refreshPage('history');
+        refreshPage(activePage);
         updateShell();
       } finally {
         button.disabled = false;
