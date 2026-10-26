@@ -1330,6 +1330,40 @@ function renderAll() {
   updateUpdaterUi();
 }
 
+// Inline toggles save only their own setting, so a full re-render must not
+// discard values the user has typed but not saved yet. Capture text/select
+// fields (including hidden pages) and put the values back after rendering.
+// Checkboxes are excluded: every toggle saves immediately, so a re-render must
+// keep them in sync with the saved setting, including duplicate cross-page
+// toggles such as the dashboard mode cards.
+function captureFieldValues() {
+  const saved = [];
+  for (const field of $$('input, select, textarea')) {
+    if (!field.id || field.type === 'checkbox' || field.type === 'radio') continue;
+    saved.push({
+      page: field.closest('.page')?.id || '',
+      id: field.id,
+      tag: field.tagName,
+      type: field.type,
+      value: field.value
+    });
+  }
+  return saved;
+}
+
+function restoreFieldValues(saved) {
+  for (const entry of saved) {
+    const page = entry.page ? document.getElementById(entry.page) : document;
+    const field = page?.querySelector(`#${CSS.escape(entry.id)}`);
+    if (!field || field.tagName !== entry.tag || field.type !== entry.type) continue;
+    if (field.tagName === 'SELECT') {
+      if ([...field.options].some((option) => option.value === entry.value)) field.value = entry.value;
+    } else {
+      field.value = entry.value;
+    }
+  }
+}
+
 function refreshPage(name) {
   const render = renderers[name];
   const page = $(`#page-${name}`);
@@ -1565,7 +1599,9 @@ async function saveInlineToggle(input) {
     settings = { ...settings, ...saved };
     data.settings = settings;
     note('Saved.');
+    const fieldValues = captureFieldValues();
     renderAll();
+    restoreFieldValues(fieldValues);
   } catch (error) {
     input.checked = !previous;
     note(error.message || 'Could not save that setting.');
