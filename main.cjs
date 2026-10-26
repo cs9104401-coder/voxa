@@ -84,10 +84,14 @@ const modelListCache = new Map();
 const approvalGate = createApprovalGate({
   timeoutMs: LIMITS.APPROVAL_TIMEOUT_MS,
   onTimeout: () => {
+    clearApprovalFallback();
     logger.warn('approval', 'The approval request timed out and was denied.');
     if (currentTurn) overlay?.setState({ status: 'thinking', message: 'Approval timed out. Nothing was run.', approval: null });
   }
 });
+const APPROVAL_NATIVE_FALLBACK_MS = 2000;
+let approvalFallbackTimer = null;
+let approvalNativeDialogId = '';
 let micTestRunning = false;
 let ollamaPullRunning = false;
 let whisperWatchTimer = null;
@@ -1092,7 +1096,7 @@ function clearTurnTimers(turn) {
 function finishTurn(turn) {
   if (!turn) return;
   clearTurnTimers(turn);
-  approvalGate.cancelTurn(turn.id);
+  if (approvalGate.cancelTurn(turn.id)) clearApprovalFallback();
   if (currentTurn === turn) currentTurn = null;
   turnRunning = false;
   broadcast('ptt-state', { active: false, cancelled: false, mode: turn.mode });
@@ -1729,12 +1733,46 @@ function systemPrompt(target) {
   ].join(' ');
 }
 
+function clearApprovalFallback() {
+  clearTimeout(approvalFallbackTimer);
+  approvalFallbackTimer = null;
+}
+
+function overlayApprovalVisible() {
+  const window = overlay?.getWindow();
+  return Boolean(window && !window.isDestroyed() && window.isVisible());
+}
+
+async function showNativeApproval(id, request) {
+  if (approvalGate.current()?.id !== id || approvalNativeDialogId === id) return;
+  approvalNativeDialogId = id;
+  try {
+    const { response } = await dialog.showMessageBox({
+      type: 'warning',
+      title: 'Voxa needs approval',
+      message: String(request.title || 'Allow this action?').slice(0, 300),
+      detail: String(request.detail || '').slice(0, 2000),
+      buttons: ['Deny', 'Allow'],
+      defaultId: 0,
+      cancelId: 0,
+      noLink: true
+    });
+    respondApproval(id, response === 1);
+  } catch (error) {
+    logger.warn('approval', `Native approval dialog failed: ${cleanError(error)}`);
+  } finally {
+    if (approvalNativeDialogId === id) approvalNativeDialogId = '';
+  }
+}
+
 async function askApproval(turn, request) {
   if (!turnAlive(turn)) return false;
   const id = `${turn.id}-${++turn.approvalCount}`;
   const detail = String(request.detail || '').slice(0, 2000);
   logger.info('approval', `${request.tool}: ${request.title}`);
   const decision = approvalGate.request(id, turn.id);
+  clearApprovalFallback();
+  let shown = true;
   try {
     overlay.show({
       status: 'approval',
@@ -1745,14 +1783,28 @@ async function askApproval(turn, request) {
       streaming: false
     });
   } catch (error) {
-    approvalGate.respond(id, false);
-    throw error;
+    shown = false;
+    logger.warn('approval', `Island approval prompt failed: ${cleanError(error)}`);
+    showNativeApproval(id, request);
+  }
+  // If the island never becomes visible, the OS dialog keeps the turn from
+  // waiting the full approval timeout with no usable prompt.
+  if (shown) {
+    approvalFallbackTimer = setTimeout(() => {
+      approvalFallbackTimer = null;
+      if (approvalGate.current()?.id !== id) return;
+      if (overlayApprovalVisible()) return;
+      logger.warn('approval', 'The island did not show the approval; using a native dialog.');
+      showNativeApproval(id, request);
+    }, APPROVAL_NATIVE_FALLBACK_MS);
+    approvalFallbackTimer.unref?.();
   }
   return decision;
 }
 
 function respondApproval(id, allowed) {
   if (!approvalGate.respond(id, allowed)) return false;
+  clearApprovalFallback();
   if (currentTurn) {
     overlay.setState({ status: 'thinking', message: allowed ? 'Working on it…' : 'Okay, skipped.', approval: null });
   }
