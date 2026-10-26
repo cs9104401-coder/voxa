@@ -325,9 +325,12 @@ function updateActivityPill() {
     const key = `download|${download.phase}|${download.label}|${percent}`;
     if (key !== lastPillKey) {
       lastPillKey = key;
+      // Whisper swaps and Kokoro packs have a real cancel path. Ollama pulls
+      // do not, so the kit must not offer a button that cannot do anything.
+      const cancelable = /^(?:Whisper|Voice)\b/.test(String(download.label || ''));
       notch.pill(`${download.label}${suffix}`, {
         progress: percent == null ? undefined : clamp(percent / 100, 0, 1),
-        cancel: true
+        cancel: cancelable
       });
     }
     return;
