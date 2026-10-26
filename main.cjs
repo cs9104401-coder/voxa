@@ -21,6 +21,7 @@ const { createRecorderManager } = require('./lib/recorder.cjs');
 const { createOverlay } = require('./lib/overlay.cjs');
 const { createHotkeys, isValidHotkey } = require('./lib/hotkeys.cjs');
 const mediaSmtc = require('./lib/media-smtc.cjs');
+const ttsText = require('./lib/tts-text.cjs');
 const {
   whisperIslandDownload,
   whisperStartingIslandDownload,
@@ -264,6 +265,8 @@ function buildDashboardState() {
     activationLogs: logger.read(LIMITS.MAX_LOG_LINES),
     hotkey: hotkeyStatus(),
     apps: apps.appNames(80),
+    ttsVoices: ttsText.allVoices(),
+    ttsLanguages: ttsText.LANG_LABELS,
     keyStatus: Object.fromEntries(Object.keys(settings.providers).map((provider) => [provider, Boolean(secrets[provider])]))
   };
 }

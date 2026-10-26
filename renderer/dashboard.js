@@ -18,87 +18,20 @@ const WHISPER_PRESETS = {
   accurate: { label: 'Accurate', model: 'large-v3', description: 'Best accuracy with the largest download.' },
   custom: { label: 'Custom', model: '', description: 'Choose any installed or downloadable model.' }
 };
-// Kokoro voice language group labels — derived from tts-text.cjs lang codes.
-const TTS_LANG_LABELS = {
-  a: 'American English',
-  b: 'British English',
-  e: 'Spanish',
-  f: 'French',
-  h: 'Hindi',
-  i: 'Italian',
-  j: 'Japanese',
-  p: 'Portuguese',
-  z: 'Mandarin'
-};
-
-// Full Kokoro voice list (mirrors VOICES in lib/tts-text.cjs).
-const TTS_VOICES = [
-  { id: 'af_heart',    lang: 'a', label: 'Heart' },
-  { id: 'af_alloy',    lang: 'a', label: 'Alloy' },
-  { id: 'af_aoede',    lang: 'a', label: 'Aoede' },
-  { id: 'af_bella',    lang: 'a', label: 'Bella' },
-  { id: 'af_jessica',  lang: 'a', label: 'Jessica' },
-  { id: 'af_kore',     lang: 'a', label: 'Kore' },
-  { id: 'af_nicole',   lang: 'a', label: 'Nicole' },
-  { id: 'af_nova',     lang: 'a', label: 'Nova' },
-  { id: 'af_river',    lang: 'a', label: 'River' },
-  { id: 'af_sarah',    lang: 'a', label: 'Sarah' },
-  { id: 'af_sky',      lang: 'a', label: 'Sky' },
-  { id: 'am_adam',     lang: 'a', label: 'Adam' },
-  { id: 'am_echo',     lang: 'a', label: 'Echo' },
-  { id: 'am_eric',     lang: 'a', label: 'Eric' },
-  { id: 'am_fenrir',   lang: 'a', label: 'Fenrir' },
-  { id: 'am_liam',     lang: 'a', label: 'Liam' },
-  { id: 'am_michael',  lang: 'a', label: 'Michael' },
-  { id: 'am_onyx',     lang: 'a', label: 'Onyx' },
-  { id: 'am_puck',     lang: 'a', label: 'Puck' },
-  { id: 'am_santa',    lang: 'a', label: 'Santa' },
-  { id: 'bf_alice',    lang: 'b', label: 'Alice' },
-  { id: 'bf_emma',     lang: 'b', label: 'Emma' },
-  { id: 'bf_isabella', lang: 'b', label: 'Isabella' },
-  { id: 'bf_lily',     lang: 'b', label: 'Lily' },
-  { id: 'bm_daniel',   lang: 'b', label: 'Daniel' },
-  { id: 'bm_fable',    lang: 'b', label: 'Fable' },
-  { id: 'bm_george',   lang: 'b', label: 'George' },
-  { id: 'bm_lewis',    lang: 'b', label: 'Lewis' },
-  { id: 'ef_dora',     lang: 'e', label: 'Dora' },
-  { id: 'em_alex',     lang: 'e', label: 'Alex' },
-  { id: 'em_santa',    lang: 'e', label: 'Santa' },
-  { id: 'ff_siwis',    lang: 'f', label: 'Siwis' },
-  { id: 'hf_alpha',    lang: 'h', label: 'Alpha' },
-  { id: 'hf_beta',     lang: 'h', label: 'Beta' },
-  { id: 'hm_omega',    lang: 'h', label: 'Omega' },
-  { id: 'hm_psi',      lang: 'h', label: 'Psi' },
-  { id: 'if_sara',     lang: 'i', label: 'Sara' },
-  { id: 'im_nicola',   lang: 'i', label: 'Nicola' },
-  { id: 'jf_alpha',      lang: 'j', label: 'Alpha' },
-  { id: 'jf_gongitsune', lang: 'j', label: 'Gongitsune' },
-  { id: 'jf_nezumi',     lang: 'j', label: 'Nezumi' },
-  { id: 'jf_tebukuro',   lang: 'j', label: 'Tebukuro' },
-  { id: 'jm_kumo',       lang: 'j', label: 'Kumo' },
-  { id: 'pf_dora',     lang: 'p', label: 'Dora' },
-  { id: 'pm_alex',     lang: 'p', label: 'Alex' },
-  { id: 'pm_santa',    lang: 'p', label: 'Santa' },
-  { id: 'zf_xiaobei',  lang: 'z', label: 'Xiaobei' },
-  { id: 'zf_xiaoni',   lang: 'z', label: 'Xiaoni' },
-  { id: 'zf_xiaoxiao', lang: 'z', label: 'Xiaoxiao' },
-  { id: 'zf_xiaoyi',   lang: 'z', label: 'Xiaoyi' },
-  { id: 'zm_yunjian',  lang: 'z', label: 'Yunjian' },
-  { id: 'zm_yunxi',    lang: 'z', label: 'Yunxi' },
-  { id: 'zm_yunxia',   lang: 'z', label: 'Yunxia' },
-  { id: 'zm_yunyang',  lang: 'z', label: 'Yunyang' }
-];
-
+// Kokoro voice catalogue and language labels come from lib/tts-text.cjs over
+// app:state, so the dashboard never keeps a duplicate list.
 function ttsVoiceOptions(selected) {
   // Group voices by language, emit <optgroup> per group.
+  const voices = Array.isArray(data.ttsVoices) ? data.ttsVoices : [];
+  const labels = data.ttsLanguages || {};
   const groups = new Map();
-  for (const v of TTS_VOICES) {
+  for (const v of voices) {
     if (!groups.has(v.lang)) groups.set(v.lang, []);
     groups.get(v.lang).push(v);
   }
-  return [...groups.entries()].map(([lang, voices]) => {
-    const groupLabel = TTS_LANG_LABELS[lang] || lang;
-    const opts = voices.map((v) => `<option value="${esc(v.id)}" ${selected === v.id ? 'selected' : ''}>${esc(v.label)}</option>`).join('');
+  return [...groups.entries()].map(([lang, groupVoices]) => {
+    const groupLabel = labels[lang] || lang;
+    const opts = groupVoices.map((v) => `<option value="${esc(v.id)}" ${selected === v.id ? 'selected' : ''}>${esc(v.shortLabel || v.label)}</option>`).join('');
     return `<optgroup label="${esc(groupLabel)}">${opts}</optgroup>`;
   }).join('');
 }
