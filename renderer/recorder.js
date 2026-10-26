@@ -383,5 +383,5 @@ api.recorder.onRequest((request) => {
 
 api.recorder.ready();
 
-api.on?.('tts:play-audio', (buffer) => { console.log('player got play'); window.ttsPlayer?.play(new Uint8Array(buffer)); });
-api.on?.('tts:stop-audio', () => { console.log('player got stop'); window.ttsPlayer?.stop(); });
+api.on?.('tts:play-audio', (buffer) => { window.ttsPlayer?.play(new Uint8Array(buffer)); });
+api.on?.('tts:stop-audio', () => { window.ttsPlayer?.stop(); });
