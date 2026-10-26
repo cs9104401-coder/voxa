@@ -131,6 +131,14 @@ let chat = {
   streaming: false,
   error: ''
 };
+// Must match the main-process chatSession cap so the visible log never holds
+// turns that the next history refresh will drop.
+const CHAT_MESSAGE_LIMIT = 40;
+function trimChatMessages() {
+  if (chat.messages.length > CHAT_MESSAGE_LIMIT) {
+    chat.messages.splice(0, chat.messages.length - CHAT_MESSAGE_LIMIT);
+  }
+}
 let lastText = null;
 let lastStatus = '';
 let respondedApprovalId = '';
@@ -556,6 +564,7 @@ function sendChatMessage() {
   if (!text) return;
   chat.error = '';
   chat.messages.push({ role: 'user', content: text });
+  trimChatMessages();
   chat.streaming = true;
   chatInput.value = '';
   updateChatComposer();
@@ -580,6 +589,7 @@ function applyChatHistory(payload) {
       cancelled: Boolean(message.cancelled),
       error: message.error ? String(message.error) : ''
     }));
+  trimChatMessages();
   chat.streaming = Boolean(payload.streaming);
   chat.requestId = Number(payload.requestId) || chat.requestId;
   chat.error = '';
@@ -602,6 +612,7 @@ function applyChatStarted(payload) {
     if (text && (!lastUser || lastUser.content !== text)) chat.messages.push({ role: 'user', content: text });
     chat.messages.push({ role: 'assistant', content: '', streaming: true });
   }
+  trimChatMessages();
   updateChatComposer();
   renderChatLog();
   updateChatHeader();
@@ -620,6 +631,7 @@ function applyChatDelta(payload) {
     last.cancelled = false;
     last.error = '';
   }
+  trimChatMessages();
   chat.streaming = true;
   chat.error = '';
   updateChatComposer();
@@ -641,6 +653,7 @@ function applyChatDone(payload) {
     last.cancelled = Boolean(payload.cancelled);
     last.error = '';
   }
+  trimChatMessages();
   chat.streaming = false;
   chat.error = '';
   updateChatComposer();
@@ -662,6 +675,7 @@ function applyChatError(payload) {
       last.streaming = false;
       last.error = message;
     }
+    trimChatMessages();
     chat.streaming = false;
   } else {
     const last = chat.messages[chat.messages.length - 1];
