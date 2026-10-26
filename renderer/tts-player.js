@@ -48,14 +48,22 @@ class TtsPlayer {
     this.currentSource = source;
 
     source.onended = () => {
-      if (this.currentSource === source) {
-        this.currentSource = null;
-      }
+      // stop() or a newer source already moved playback on: this end event is
+      // stale and must not pop the next queued buffer or stop the speech feed.
+      if (this.currentSource !== source) return;
+      this.currentSource = null;
       this.playNext();
     };
 
     this.startSpeechFeed();
-    source.start(0);
+    try {
+      source.start(0);
+    } catch {
+      if (this.currentSource === source) this.currentSource = null;
+      this.playing = false;
+      this.queue = [];
+      this.stopSpeechFeed();
+    }
   }
 
   startSpeechFeed() {
