@@ -25,7 +25,6 @@ AUDIT.md
 whisper-server/runtime-kokoro/
 whisper-server/runtime-kokoro.bak/
 
-test-kokoro.wav
 renderer/assets/mascot*.png
 
 # agent session artifacts
