@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import gc
 import logging
 import os
 import threading
@@ -32,6 +33,7 @@ from io import BytesIO
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 import uvicorn
 from fastapi import Body, FastAPI, File, HTTPException, UploadFile
 from faster_whisper import WhisperModel
@@ -97,6 +99,32 @@ def compute_type_for(device: str, requested: str) -> str:
     if requested:
         return requested
     return "int8" if device == "cpu" else "float16"
+
+
+CUDA_LIBRARY_MARKERS = ("cublas", "cudnn", "cuda", "nvcuda", "nvrtc", "no cuda-capable")
+
+
+def is_cuda_library_error(exc: Exception) -> bool:
+    message = str(exc).lower()
+    return any(marker in message for marker in CUDA_LIBRARY_MARKERS)
+
+
+def warmup_model(model: WhisperModel) -> None:
+    """Force the CUDA kernels to load before reporting the model as ready.
+
+    cuBLAS/cuDNN are loaded lazily on the first inference, not when the model is
+    constructed. A one-second silent warmup catches a missing DLL during loading
+    instead of failing the user's first turn.
+    """
+    audio = np.zeros(16000, dtype=np.float32)
+    segments, _info = model.transcribe(
+        audio,
+        beam_size=1,
+        vad_filter=False,
+        condition_on_previous_text=False,
+    )
+    for _segment in segments:
+        pass
 
 
 def transcribe_bytes(model: WhisperModel, audio: bytes) -> str:
@@ -431,30 +459,53 @@ async def switch_model_task(
             "error": "",
         }
         config = application.state.config
-        logger.info(
-            "Loading %s on %s (%s)",
-            local_model,
-            config["device"],
-            config["compute_type"],
-        )
-        model = await asyncio.to_thread(
-            WhisperModel,
-            local_model,
-            device=config["device"],
-            compute_type=config["compute_type"],
-        )
+        device = config["device"]
+        compute_type = config["compute_type"]
+        logger.info("Loading %s on %s (%s)", local_model, device, compute_type)
+        fallback_reason = ""
+        model = None
+        try:
+            model = await asyncio.to_thread(
+                WhisperModel,
+                local_model,
+                device=device,
+                compute_type=compute_type,
+            )
+            if device == "cuda":
+                await asyncio.to_thread(warmup_model, model)
+        except Exception as exc:
+            if device != "cuda" or not is_cuda_library_error(exc):
+                raise
+            fallback_reason = str(exc) or exc.__class__.__name__
+            logger.warning("CUDA is unavailable (%s); falling back to CPU.", fallback_reason)
+            model = None
+            gc.collect()
+            device = "cpu"
+            compute_type = compute_type_for(device, "")
+            config["device"] = device
+            config["compute_type"] = compute_type
+            model = await asyncio.to_thread(
+                WhisperModel,
+                local_model,
+                device=device,
+                compute_type=compute_type,
+            )
         if cancel_event.is_set() or generation != application.state.switch_generation:
             raise DownloadCancelled()
         application.state.model = model
         application.state.active_model = target
         application.state.config["model"] = target
+        application.state.device_fallback = fallback_reason
         application.state.load_error = ""
         application.state.switch = {
             "target": target,
             "status": "complete",
             "error": "",
         }
-        logger.info("Whisper model is ready: %s", target)
+        if fallback_reason:
+            logger.info("Whisper model is ready on the CPU: %s", target)
+        else:
+            logger.info("Whisper model is ready: %s", target)
     except DownloadCancelled:
         if generation == application.state.switch_generation:
             application.state.switch = {
@@ -647,6 +698,8 @@ def health_payload(application: FastAPI) -> dict[str, Any]:
             message += f" The {application.state.active_model} model remains active."
     elif status == "ready":
         message = f"The {active_model(application)} model is ready."
+        if application.state.device_fallback:
+            message += " CUDA was unavailable, so Voxa is using the CPU."
         if state.get("switch_error"):
             message += f" Could not switch to {state['target_model']}: {state['switch_error']}"
     else:
@@ -660,6 +713,7 @@ def health_payload(application: FastAPI) -> dict[str, Any]:
         "active_model": state["active_model"],
         "device": application.state.config["device"],
         "compute_type": application.state.config["compute_type"],
+        "device_fallback": application.state.device_fallback,
         "cache_dir": application.state.config.get("cache_dir", ""),
         "message": message,
         "switching": state["switching"],
@@ -678,6 +732,7 @@ async def lifespan(application: FastAPI):
     application.state.model = None
     application.state.active_model = None
     application.state.load_error = ""
+    application.state.device_fallback = ""
     application.state.download = {
         "status": "idle",
         "downloaded_bytes": 0,
