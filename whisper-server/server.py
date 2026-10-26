@@ -26,6 +26,8 @@ def configure_cache_dir() -> str:
 
 
 CACHE_DIR = configure_cache_dir()
+LAUNCH_ID = os.getenv("VOXA_WHISPER_LAUNCH_ID", "")
+SERVER_PID = os.getpid()
 
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
@@ -714,6 +716,8 @@ def health_payload(application: FastAPI) -> dict[str, Any]:
         "device": application.state.config["device"],
         "compute_type": application.state.config["compute_type"],
         "device_fallback": application.state.device_fallback,
+        "pid": SERVER_PID,
+        "launch_id": LAUNCH_ID,
         "cache_dir": application.state.config.get("cache_dir", ""),
         "message": message,
         "switching": state["switching"],

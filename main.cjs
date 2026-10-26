@@ -835,15 +835,8 @@ function publishWhisperHealth(health) {
 
 async function ensureWhisper() {
   try {
-    const existing = await services.whisperHealth(WHISPER_PORT);
-    if (existing.ok) {
-      publishWhisperHealth(existing);
-      return existing;
-    }
-    if (existing.status === 'error') {
-      publishWhisperHealth(existing);
-      throw new Error(existing.error || 'The Whisper model failed to load.');
-    }
+    // Always go through startWhisper so it can validate the running server's
+    // build identity and compute setting before reusing it.
     const health = await services.startWhisper({
       port: WHISPER_PORT,
       model: settings.whisperModel,
