@@ -95,6 +95,17 @@ py -3.12 -m venv whisper-server\.venv-asr-qwen
 $env:VOXA_ASR_PYTHON = "C:\path\to\my-voice-app\whisper-server\.venv-asr-qwen\Scripts\python.exe"
 ```
 
+To make the installed app use the Parakeet/Granite environment without setting
+`VOXA_ASR_PYTHON`, run:
+
+```powershell
+npm run setup:asr-runtime
+```
+
+The script copies the environment into `%APPDATA%\my-voice-app\asr-runtime`
+and verifies the imports before replacing the target. See [docs/asr.md](docs/asr.md)
+for Qwen and custom paths.
+
 Parakeet reports token timestamps, not word timestamps. Qwen timestamps require the separate `Qwen3-ForcedAligner-0.6B` weights; Granite reports no timestamps or language label. Parakeet and Granite also choose the language internally and ignore the **Speech language** hint; use bundled Whisper or Qwen3-ASR to force English. English is the default speech language and reply language. See [docs/asr.md](docs/asr.md) for the capability table, CUDA-wheel requirements, CLI, environment variables, cache details, packaging, and current verification status.
 
 Build the standalone engine directly with:

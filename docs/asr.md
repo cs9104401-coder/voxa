@@ -79,6 +79,33 @@ The Parakeet file also installs `librosa`, which the Parakeet processor imports,
 and both files install `torchaudio`, which Granite's feature extractor needs.
 The registry reports a model unavailable if either package is missing.
 
+### Install the runtime for the packaged app
+
+The installed app does not bundle Python. After the environment above is
+verified, copy it into the per-user runtime the packaged app searches:
+
+```powershell
+npm run setup:asr-runtime
+```
+
+The script creates `%APPDATA%\my-voice-app\asr-runtime\python\python.exe` and
+copies the source environment's `Lib\site-packages`. It uses the base Python
+installation named by the source environment for the standard library and
+system packages such as `torch`, so keep that Python installed. The source
+environment is no longer needed by the installed app after the copy.
+
+Use `--source` and `--target` to choose another environment or location. Pass
+script options after `--`, for example:
+
+```powershell
+npm run setup:asr-runtime -- --source whisper-server\.venv-asr-qwen
+```
+
+For Qwen, point `--source` at `whisper-server\.venv-asr-qwen`; only one
+optional runtime can be installed at a time. Re-run the command after changing
+the source environment. The script verifies the imports before replacing the
+target, and asks for `--force` if the target was not created by the script.
+
 ### Qwen3-ASR (separate environment)
 
 `qwen-asr==0.0.6` pins `transformers==4.57.6`, which conflicts with the
@@ -242,7 +269,9 @@ Electron-builder includes the `asr` Python package and unpacks it outside
 model weights. In a packaged build Voxa looks for a runtime in
 `resources\asr-runtime`, then `%APPDATA%\my-voice-app\asr-runtime`, and otherwise
 uses `VOXA_ASR_PYTHON` or `python` from `PATH`. Whisper-only users need none of
-that.
+that. Create the per-user runtime from an existing `.venv-asr` with
+`npm run setup:asr-runtime`; the script verifies the imports before replacing
+the target.
 
 ## Tests and verification status
 
