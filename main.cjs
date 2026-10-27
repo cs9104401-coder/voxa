@@ -18,6 +18,8 @@ const updater = require('./lib/updater.cjs');
 const apps = require('./lib/apps.cjs');
 const desktop = require('./lib/desktop.cjs');
 const services = require('./lib/services.cjs');
+const { createAsrService } = require('./lib/asr-service.cjs');
+const { optionalEngine, summarizeAsr, normalizeAsrModels, BUSY_STATES } = require('./lib/asr-health.cjs');
 const { createRecorderManager } = require('./lib/recorder.cjs');
 const { createOverlay } = require('./lib/overlay.cjs');
 const { createHotkeys, isValidHotkey } = require('./lib/hotkeys.cjs');
@@ -30,7 +32,7 @@ const {
   ollamaIslandDownload
 } = require('./lib/island-download.cjs');
 const {
-  APP_NAME, APPROVABLE_TOOLS, LIMITS, MESSAGES, NOTCH_OPTIONS, NOTCH_OFFSET_RANGE, NOTCH_SCALE_RANGE,
+  APP_NAME, APPROVABLE_TOOLS, ASR_ENGINES, LIMITS, MESSAGES, NOTCH_OPTIONS, NOTCH_OFFSET_RANGE, NOTCH_SCALE_RANGE,
   STT_CLOUD_PROVIDERS, TOOL_DEFINITIONS, TOOL_NAMES, WHISPER_MODELS, WHISPER_PRESETS, defaults
 } = require('./lib/constants.cjs');
 
@@ -113,8 +115,15 @@ let lastHealth = {
   ollama: { ok: false, message: 'Not checked yet.' },
   chat: { ok: false, provider: 'local', message: 'Not checked yet.' },
   whisper: { ok: false, message: 'Not checked yet.' },
+  asr: { mode: 'bundled', engine: 'whisper', status: 'bundled', message: 'The bundled Whisper server handles local dictation.' },
   kokoro: { status: 'unknown' }
 };
+let asrService = null;
+let asrLastStatus = null;
+let asrLastError = '';
+let asrTranscribing = false;
+let asrWatchTimer = null;
+let asrWatchToken = 0;
 let kokoroDownloadController = null;
 let currentTurn = null;
 let turnRunning = false;
@@ -343,6 +352,7 @@ function buildDashboardState() {
     turns: structuredClone(history),
     memory: [...memory],
     health,
+    asrEngines: structuredClone(ASR_ENGINES),
     activationLogs: logger.read(LIMITS.MAX_LOG_LINES),
     hotkey: hotkeyStatus(),
     apps: apps.appNames(80),
@@ -682,6 +692,13 @@ function saveSettingsPatch(patch) {
   }
   const whisperModelChanged = next.whisperModel !== settings.whisperModel;
   const whisperDeviceChanged = next.whisperDevice !== settings.whisperDevice;
+  const asrEngineChanged = next.asrEngine !== settings.asrEngine;
+  const asrDeviceChanged = next.asrDevice !== settings.asrDevice;
+  const asrComputeTypeChanged = next.asrComputeType !== settings.asrComputeType;
+  const asrChunkChanged = Number(next.asrChunkSeconds) !== Number(settings.asrChunkSeconds);
+  const asrLifecycleChanged = asrEngineChanged || asrDeviceChanged || asrComputeTypeChanged || asrChunkChanged;
+  const asrOptionalTouched = asrLifecycleChanged
+    && (settings.asrEngine !== 'whisper' || next.asrEngine !== 'whisper');
   const hotkeysChanged = next.dictationHotkey !== settings.dictationHotkey || next.agentHotkey !== settings.agentHotkey;
   const overlayStyleChanged = next.overlayStyle !== settings.overlayStyle;
   const companionEnabledChanged = next.companionEnabled !== settings.companionEnabled;
@@ -694,6 +711,9 @@ function saveSettingsPatch(patch) {
     || JSON.stringify(next.providers) !== JSON.stringify(settings.providers);
   if (hotkeysChanged && (turnRunning || currentTurn)) {
     throw new Error('Finish or cancel the current turn before changing shortcuts.');
+  }
+  if (asrOptionalTouched && (turnRunning || currentTurn || asrBusy())) {
+    throw new Error('Finish or cancel the current turn, download, or model load before changing the speech engine settings.');
   }
   if (hotkeys && hotkeysChanged) {
     try {
@@ -734,6 +754,39 @@ function saveSettingsPatch(patch) {
   } else if (whisperModelChanged) {
     logger.info('whisper server', `Whisper model selection changed to ${next.whisperModel}; the active model stays loaded until the switch is requested.`);
   }
+  if (asrEngineChanged && next.asrEngine !== 'whisper') {
+    // One active local engine at a time: switching to an optional backend
+    // releases Whisper instead of leaving it resident beside the new model.
+    stopWhisperWatch();
+    services.stopWhisper();
+    logger.info('asr', `Speech engine changed to ${next.asrEngine}; Whisper was stopped and the optional service will start only on request.`);
+  }
+  if (asrOptionalTouched) {
+    // Device, compute, chunk size, and engine changes take effect on the next
+    // service start. Saving never starts, loads, or downloads an optional ASR
+    // model.
+    const optionalStopped = Promise.resolve(
+      asrService?.stopAndWait ? asrService.stopAndWait() : asrService?.stop()
+    );
+    stopAsrWatch();
+    asrLastStatus = null;
+    asrLastError = '';
+    logger.info('asr', 'The optional speech service was stopped; it will restart on the next explicit Load or Check status.');
+    if (asrEngineChanged && next.asrEngine === 'whisper' && next.sttProvider === 'local') {
+      // Returning to the bundled engine preloads Whisper again so the next
+      // dictation does not pay the model-load cost. Optional engines themselves
+      // stay lazy and never start just because settings were saved.
+      optionalStopped
+        .catch(() => false)
+        .then((exited) => {
+          if (!exited) logger.warn('asr', 'The optional speech service did not report a clean exit before Whisper restarted.');
+          if (quitting || settings.sttProvider !== 'local' || settings.asrEngine !== 'whisper') return null;
+          return ensureWhisper();
+        })
+        .catch((error) => logger.warn('whisper server', cleanError(error)));
+    }
+  }
+  if (asrLifecycleChanged) publishAsrHealth();
   refreshTray();
   broadcast('settings:updated', publicSettings());
   sendToOverlay('settings:updated', publicSettings());
@@ -884,6 +937,33 @@ function publishKokoroHealth(status) {
   syncIslandDownload(kokoroIslandDownload(status));
 }
 
+// One model-readiness shape for getState, tts:health, and startup. The old
+// startup probe reported the *server* status ("unreachable" when no Kokoro
+// process was listening), which is not the same thing as "model not
+// downloaded" and overwrote the real file status in lastHealth.kokoro.
+function kokoroModelHealth() {
+  const kokoro = require('./lib/tts-kokoro.cjs');
+  const variant = settings.ttsModelVariant || 'quantized';
+  const spec = kokoro.MODEL_VARIANTS[variant] || kokoro.MODEL_VARIANTS.quantized;
+  const modelReady = kokoro.isModelReady(variant);
+  const voiceReady = kokoro.isVoiceReady(settings.ttsVoice || 'af_heart');
+  const hasConsent = kokoro.hasConsent();
+  const running = kokoro.kokoroStatus().running;
+  return {
+    status: modelReady && voiceReady
+      ? (running ? 'ready' : 'downloaded')
+      : (hasConsent ? 'not-downloaded' : 'needs-consent'),
+    modelReady,
+    voiceReady,
+    hasConsent,
+    running,
+    variant,
+    sizeBytes: spec.sizeBytes,
+    filename: spec.filename,
+    error: kokoro.kokoroStatus().error || ''
+  };
+}
+
 function publishWhisperHealth(health) {
   const summary = whisperHealthSummary(health);
   lastHealth = {
@@ -895,6 +975,236 @@ function publishWhisperHealth(health) {
   // Phase H: while a model downloads or loads, the pill mirrors the real
   // progress; on ordinary health states this is a no-op null sync.
   syncIslandDownload(whisperIslandDownload(summary));
+}
+
+function selectedAsrEngine() {
+  return ASR_ENGINES.find((engine) => engine.id === settings?.asrEngine) || ASR_ENGINES[0];
+}
+
+function usingOptionalAsr() {
+  return settings?.sttProvider === 'local' && selectedAsrEngine().id !== 'whisper';
+}
+
+function asrLaunchConfig(model = settings?.asrEngine) {
+  return {
+    model: String(model || settings.asrEngine),
+    device: settings.asrDevice,
+    computeType: settings.asrComputeType,
+    language: settings.asrLanguage || '',
+    chunkSeconds: settings.asrChunkSeconds
+  };
+}
+
+function asrSummary(status = asrLastStatus, extra = {}) {
+  return summarizeAsr({
+    status,
+    engineId: settings?.asrEngine || 'whisper',
+    running: Boolean(asrService?.isRunning()),
+    error: asrLastError,
+    ...extra
+  });
+}
+
+function publishAsrHealth(status, extra = {}) {
+  if (status !== undefined) asrLastStatus = status;
+  const summary = asrSummary(asrLastStatus, extra);
+  lastHealth = {
+    ...lastHealth,
+    asr: summary,
+    checkedAt: new Date().toISOString()
+  };
+  sendToDashboard('health:updated', structuredClone(lastHealth));
+  return summary;
+}
+
+function stopAsrWatch(token = 0) {
+  if (token && token !== asrWatchToken) return;
+  asrWatchToken += 1;
+  clearInterval(asrWatchTimer);
+  asrWatchTimer = null;
+}
+
+function asrBusy() {
+  return asrTranscribing
+    || Boolean(asrLastStatus?.download_active)
+    || BUSY_STATES.has(String(asrLastStatus?.status || '').toLowerCase());
+}
+
+function startAsrWatch() {
+  if (!asrService) return;
+  const token = ++asrWatchToken;
+  clearInterval(asrWatchTimer);
+  let polling = false;
+  const tick = async () => {
+    if (token !== asrWatchToken || polling) return;
+    polling = true;
+    try {
+      if (!asrService.isRunning()) {
+        asrLastStatus = null;
+        stopAsrWatch(token);
+        publishAsrHealth();
+        return;
+      }
+      const status = await asrService.peekStatus();
+      if (token !== asrWatchToken) return;
+      if (status) {
+        asrLastStatus = status;
+        asrLastError = '';
+        publishAsrHealth();
+      }
+      const busy = asrTranscribing
+        || Boolean(status?.download_active)
+        || BUSY_STATES.has(String(status?.status || '').toLowerCase());
+      if (!busy) stopAsrWatch(token);
+    } catch (error) {
+      if (token !== asrWatchToken) return;
+      asrLastError = cleanError(error);
+      stopAsrWatch(token);
+      publishAsrHealth();
+    } finally {
+      polling = false;
+    }
+  };
+  // Install the interval before the first tick so a tick that immediately
+  // stops the watch cannot leave a stale timer behind.
+  asrWatchTimer = setInterval(() => void tick(), LIMITS.ASR_PROGRESS_POLL_MS);
+  void tick();
+}
+
+async function ensureAsrStatus() {
+  if (!asrService?.isRunning()) {
+    return { status: null, summary: publishAsrHealth(null) };
+  }
+  try {
+    const status = await asrService.peekStatus();
+    if (status) {
+      asrLastStatus = status;
+      asrLastError = '';
+    }
+    return { status, summary: publishAsrHealth(status) };
+  } catch (error) {
+    asrLastError = cleanError(error);
+    return { status: null, summary: publishAsrHealth(asrLastStatus) };
+  }
+}
+
+async function asrHealthSnapshot() {
+  if (!usingOptionalAsr()) return asrSummary();
+  if (!asrService?.isRunning()) return asrSummary(null);
+  try {
+    const status = await asrService.peekStatus();
+    if (status) {
+      asrLastStatus = status;
+      asrLastError = '';
+    }
+    return asrSummary(status);
+  } catch (error) {
+    return asrSummary(asrLastStatus, { serviceError: cleanError(error) });
+  }
+}
+
+async function checkAsrModels() {
+  const engine = optionalEngine(settings.asrEngine);
+  if (!engine) throw new Error('Choose an optional speech engine first. Whisper stays on the bundled server.');
+  if (!asrService) throw new Error('The optional ASR service is unavailable in this build.');
+  try {
+    const payload = await asrService.models(asrLaunchConfig(engine.id));
+    const status = payload?.status || await asrService.peekStatus();
+    asrLastStatus = status || null;
+    asrLastError = '';
+    return {
+      ok: true,
+      models: normalizeAsrModels(payload, engine.id),
+      summary: publishAsrHealth(asrLastStatus)
+    };
+  } catch (error) {
+    asrLastError = cleanError(error);
+    publishAsrHealth(asrLastStatus);
+    throw error;
+  }
+}
+
+async function loadAsrModel(model = settings.asrEngine) {
+  const target = String(model || '').trim();
+  const engine = optionalEngine(target);
+  if (!engine) throw new Error('Only the optional speech engines can be loaded here.');
+  if (target !== settings.asrEngine) throw new Error('Save the selected speech engine before loading it.');
+  if (currentTurn || turnRunning) throw new Error('Finish or cancel the current turn before loading a speech model.');
+  if (asrBusy()) throw new Error('An ASR model is already downloading, loading, or transcribing. Wait or cancel it first.');
+  if (!asrService) throw new Error('The optional ASR service is unavailable in this build.');
+  asrLastError = '';
+  try {
+    const payload = await asrService.load(asrLaunchConfig(target), {
+      model: target,
+      device: settings.asrDevice,
+      compute_type: settings.asrComputeType,
+      language: settings.asrLanguage || null
+    });
+    const status = payload?.status || await asrService.peekStatus();
+    asrLastStatus = status || null;
+    const summary = publishAsrHealth(asrLastStatus);
+    startAsrWatch();
+    return summary;
+  } catch (error) {
+    asrLastError = cleanError(error);
+    publishAsrHealth(asrLastStatus);
+    throw error;
+  }
+}
+
+async function downloadAsrModel(model = settings.asrEngine) {
+  const target = String(model || '').trim();
+  const engine = optionalEngine(target);
+  if (!engine) throw new Error('Only the optional speech engines can be downloaded here.');
+  if (target !== settings.asrEngine) throw new Error('Save the selected speech engine before downloading it.');
+  if (asrBusy()) throw new Error('An ASR model is already downloading, loading, or transcribing. Wait or cancel it first.');
+  if (!asrService) throw new Error('The optional ASR service is unavailable in this build.');
+  asrLastError = '';
+  try {
+    await asrService.download(asrLaunchConfig(target), target);
+    const status = await asrService.peekStatus();
+    asrLastStatus = status || null;
+    const summary = publishAsrHealth(asrLastStatus);
+    startAsrWatch();
+    return summary;
+  } catch (error) {
+    asrLastError = cleanError(error);
+    publishAsrHealth(asrLastStatus);
+    throw error;
+  }
+}
+
+async function cancelAsrModel() {
+  if (!asrService?.isRunning()) return publishAsrHealth(null);
+  try {
+    const payload = await asrService.cancel();
+    const status = payload?.status || await asrService.peekStatus();
+    asrLastStatus = status || null;
+    asrLastError = '';
+    return publishAsrHealth(asrLastStatus);
+  } catch (error) {
+    asrLastError = cleanError(error);
+    publishAsrHealth(asrLastStatus);
+    throw error;
+  }
+}
+
+async function unloadAsrModel() {
+  if (asrTranscribing || currentTurn || turnRunning) {
+    throw new Error('Finish or cancel the current turn before unloading the speech model.');
+  }
+  if (!asrService?.isRunning()) return publishAsrHealth(null);
+  try {
+    const payload = await asrService.unload();
+    asrLastStatus = payload?.status || await asrService.peekStatus();
+    asrLastError = '';
+    stopAsrWatch();
+    return publishAsrHealth(asrLastStatus);
+  } catch (error) {
+    asrLastError = cleanError(error);
+    publishAsrHealth(asrLastStatus);
+    throw error;
+  }
 }
 
 async function ensureWhisper() {
@@ -1038,8 +1348,58 @@ async function transcribeAudio(audio, mime, signal) {
     const result = await services.cloudTranscribe(settings, key, bytes, mime, signal);
     return result.text.slice(0, LIMITS.MAX_TRANSCRIPT_CHARS);
   }
+  const engine = selectedAsrEngine();
+  if (engine.id !== 'whisper') {
+    if (!asrService) throw new Error('The optional ASR service is unavailable in this build.');
+    // Dictation never starts the optional service or downloads a model by
+    // itself. Load is an explicit dashboard action so a mis-selected engine
+    // cannot pull several gigabytes in the middle of a recording.
+    if (!asrService.isRunning()) {
+      throw new Error(`${engine.label} is not loaded. Open Dictation and choose Load model before recording.`);
+    }
+    const knownReady = asrLastStatus?.status === 'ready' && asrLastStatus.active_model === engine.id;
+    if (!knownReady) {
+      const readyStatus = await asrService.peekStatus().catch(() => null);
+      if (readyStatus?.status !== 'ready' || readyStatus.active_model !== engine.id) {
+        throw new Error(`${engine.label} is not loaded. Open Dictation and choose Load model before recording.`);
+      }
+      asrLastStatus = readyStatus;
+    }
+    if (asrBusy()) {
+      throw new Error('The speech engine is already loading or transcribing. Wait or cancel it before dictating.');
+    }
+    asrTranscribing = true;
+    asrLastError = '';
+    startAsrWatch();
+    try {
+      const result = await asrService.transcribe(bytes, mime, {
+        model: engine.id,
+        language: settings.asrLanguage || undefined,
+        wordTimestamps: settings.asrWordTimestamps === true,
+        vad: settings.asrVad !== false,
+        timeout: LIMITS.ASR_TRANSCRIBE_TIMEOUT_MS,
+        signal
+      });
+      if (Array.isArray(result?.warnings) && result.warnings.length) {
+        logger.warn('asr', result.warnings.join(' | ').slice(0, 1000));
+      }
+      const text = String(result?.text || '');
+      if (!text.trim()) throw new Error('The speech model returned no text.');
+      return text.slice(0, LIMITS.MAX_TRANSCRIPT_CHARS);
+    } finally {
+      asrTranscribing = false;
+      if (asrService?.isRunning()) startAsrWatch();
+    }
+  }
   await ensureWhisper();
-  const result = await services.transcribe(`http://127.0.0.1:${whisperPort}`, bytes, mime, settings.whisperModel, signal);
+  const result = await services.transcribe(
+    `http://127.0.0.1:${whisperPort}`,
+    bytes,
+    mime,
+    settings.whisperModel,
+    signal,
+    { language: settings.asrLanguage || '' }
+  );
   return result.text.slice(0, LIMITS.MAX_TRANSCRIPT_CHARS);
 }
 
@@ -1049,7 +1409,7 @@ async function healthChecks() {
   const providerConfig = settings.providers[providerName] || localConfig;
   const providerKey = providerNeedsKey(providerName) ? secrets[providerName] || '' : '';
   const ollamaInstalled = Boolean(services.ollamaExecutable());
-  const [ollamaResult, whisperResult, remoteChatResult] = await Promise.all([
+  const [ollamaResult, whisperResult, remoteChatResult, asrResult] = await Promise.all([
     (async () => {
       try {
         const models = await services.listModels('local', localConfig, '');
@@ -1097,7 +1457,8 @@ async function healthChecks() {
       } catch (error) {
         return { ok: false, provider: providerName, model: wanted, message: `Not reachable: ${cleanError(error)}` };
       }
-    })()
+    })(),
+    asrHealthSnapshot()
   ]);
   if (whisperResult.switching || ['downloading', 'loading'].includes(whisperResult.status)) startWhisperWatch();
   const chatResult = providerName === 'local'
@@ -1108,6 +1469,7 @@ async function healthChecks() {
     ollama: ollamaResult,
     chat: chatResult,
     whisper: whisperResult,
+    asr: asrResult,
     checkedAt: new Date().toISOString()
   };
   sendToDashboard('health:updated', lastHealth);
@@ -1117,7 +1479,7 @@ async function healthChecks() {
 function warmServices() {
   setTimeout(async () => {
     await healthChecks().catch((error) => logger.warn('health', cleanError(error)));
-    if (settings.sttProvider === 'local') {
+    if (settings.sttProvider === 'local' && settings.asrEngine === 'whisper') {
       try {
         await ensureWhisper();
         await healthChecks();
@@ -1174,6 +1536,14 @@ async function clearLocalData() {
     services.stopKokoro();
   } catch {
     // No Kokoro server was loaded.
+  }
+  try {
+    asrService?.stop();
+    stopAsrWatch();
+    asrLastStatus = null;
+    asrLastError = '';
+  } catch {
+    // No optional ASR service was loaded.
   }
   // Windows may keep the model files busy while taskkill unwinds.
   await new Promise((resolve) => setTimeout(resolve, 500));
@@ -1594,10 +1964,26 @@ function cleanChatReply(value) {
   return chatDisplayText(value).trim();
 }
 
+function replyLanguageInstruction() {
+  const raw = String(settings?.asrLanguage || '').trim();
+  if (!raw) return '';
+  const base = raw.split(/[-_]/)[0].toLowerCase();
+  if (!/^[a-z]{2,20}$/.test(base)) return '';
+  try {
+    const label = new Intl.DisplayNames(['en'], { type: 'language' }).of(base);
+    if (!label) return '';
+    return `Reply in ${label.charAt(0).toUpperCase()}${label.slice(1)}.`;
+  } catch {
+    return '';
+  }
+}
+
 function chatSystemPrompt() {
   const notes = memory.length ? memory.join(' | ') : '(none)';
+  const replyLanguage = replyLanguageInstruction();
   return [
     'You are Voxa, a concise desktop assistant.',
+    ...(replyLanguage ? [replyLanguage] : []),
     'This is a typed chat inside a small overlay. Answer directly and keep replies short unless the user asks for detail.',
     'Typed chat cannot use desktop tools or perform actions. Never claim you opened, typed, clicked, or changed anything.',
     'If the user asks for a desktop action, tell them to use voice or agent mode.',
@@ -1870,8 +2256,10 @@ function systemPrompt(target) {
   const notes = recentNotes.length
     ? `${recentNotes.join(' | ')}${memory.length > recentNotes.length ? ` (${memory.length - recentNotes.length} more available)` : ''}`
     : '(none)';
+  const replyLanguage = replyLanguageInstruction();
   return [
     'You are Voxa, a concise desktop voice assistant.',
+    ...(replyLanguage ? [replyLanguage] : []),
     'Answer ordinary questions directly in one to three short sentences.',
     'Use tools when the user asks you to perform an action on their computer.',
     'Never claim an action succeeded unless a tool result says it did.',
@@ -2855,6 +3243,12 @@ function registerIpc() {
   });
   handle('whisper:load', (model) => switchWhisperModel(model));
   handle('whisper:cancel', () => cancelWhisperSwitch());
+  handle('asr:status', async () => (await ensureAsrStatus()).summary);
+  handle('asr:models', () => checkAsrModels());
+  handle('asr:load', (model) => loadAsrModel(model || settings.asrEngine));
+  handle('asr:download', (model) => downloadAsrModel(model || settings.asrEngine));
+  handle('asr:cancel', () => cancelAsrModel());
+  handle('asr:unload', () => unloadAsrModel());
   handle('health:check', () => healthChecks());
   handle('microphone:list', () => queueRecorderOperation(() => recorderRequest('enumerate', {}, 20000)));
   handle('microphone:test', async () => {
@@ -2912,28 +3306,7 @@ function registerIpc() {
     overlay?.setPreviewOptions({ slowMotion: Boolean(options?.slowMotion) });
     return true;
   });
-  handle('tts:health', () => {
-    const kokoro = require('./lib/tts-kokoro.cjs');
-    const variant = settings.ttsModelVariant || 'quantized';
-    const spec = kokoro.MODEL_VARIANTS[variant] || kokoro.MODEL_VARIANTS.quantized;
-    const modelReady = kokoro.isModelReady(variant);
-    const voiceReady = kokoro.isVoiceReady(settings.ttsVoice || 'af_heart');
-    const hasConsent = kokoro.hasConsent();
-    const running = kokoro.kokoroStatus().running;
-    return {
-      status: modelReady && voiceReady
-        ? (running ? 'ready' : 'downloaded')
-        : (hasConsent ? 'not-downloaded' : 'needs-consent'),
-      modelReady,
-      voiceReady,
-      hasConsent,
-      running,
-      variant,
-      sizeBytes: spec.sizeBytes,
-      filename: spec.filename,
-      error: kokoro.kokoroStatus().error || ''
-    };
-  });
+  handle('tts:health', () => kokoroModelHealth());
   handle('tts:download', async () => {
     if (kokoroDownloadController) throw new Error('A Kokoro download is already running.');
     const kokoro = require('./lib/tts-kokoro.cjs');
@@ -3248,6 +3621,8 @@ app.on('before-quit', () => {
   desktop.disposeFocusHelper();
   services.stopWhisper();
   services.stopKokoro();
+  asrService?.stop();
+  stopAsrWatch();
   overlay?.destroy();
   if (recorderWindow && !recorderWindow.isDestroyed()) recorderWindow.destroy();
 });
@@ -3299,6 +3674,19 @@ async function initialize() {
     settings = store.loadSettings(defaults(userName), userName, logger, isValidHotkey);
     normalizeSettings();
     await resolveWhisperPort();
+    // The optional ASR service is instantiated here but never started here.
+    // Selecting an optional engine only changes the route; Load/Download/Check
+    // status are the explicit actions that spawn its Python process.
+    asrService = createAsrService({
+      log: logger,
+      appRoot: app.getAppPath(),
+      userDataDir: USER_DATA_DIR,
+      cacheDir: path.join(USER_DATA_DIR, 'asr-models'),
+      whisperCacheDir: path.join(USER_DATA_DIR, 'whisper-models'),
+      resourcesPath: process.resourcesPath,
+      isPackaged: app.isPackaged
+    });
+    lastHealth.asr = summarizeAsr({ engineId: settings.asrEngine, running: false });
     secrets = store.readSecrets(logger);
     if (settings.fallbackEnabled && isCloudProvider(settings.fallbackProvider) && !secrets[settings.fallbackProvider]) {
       settings.fallbackEnabled = false;
@@ -3374,9 +3762,9 @@ async function initialize() {
     });
     applyAutostart();
     if (!GALLERY) warmServices();
-    // Initial Kokoro health check
-    const kokoro = require('./lib/tts-kokoro.cjs');
-    kokoro.kokoroHealth().then(publishKokoroHealth).catch((err) => logger.warn('kokoro', `Initial health check failed: ${err.message}`));
+    // Initial Kokoro model check: report file readiness, not whether the
+    // synthesis server happens to be running (it starts lazily on first use).
+    publishKokoroHealth(kokoroModelHealth());
     logger.info('app', 'Startup complete');
     // SMTC watcher: real system media metadata + transport. Skipped for the
     // gallery preview build and self-test workers; keep the pill honest.

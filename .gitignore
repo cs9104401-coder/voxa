@@ -8,6 +8,8 @@ build/
 __pycache__/
 *.log
 whisper-server/.venv/
+whisper-server/.venv-asr/
+whisper-server/.venv-asr-qwen/
 whisper-server/build/
 whisper-server/dist/
 whisper-server/dist-backup*/

@@ -18,6 +18,12 @@ const WHISPER_PRESETS = {
   accurate: { label: 'Accurate', model: 'large-v3', description: 'Best accuracy with the largest download.' },
   custom: { label: 'Custom', model: '', description: 'Choose any installed or downloadable model.' }
 };
+const ASR_ENGINE_FALLBACK = [
+  { id: 'whisper', label: 'Whisper (bundled)', backend: 'faster-whisper', sizeBytes: 0, languageHint: true, deviceHint: 'Uses the Whisper model and compute setting below. Supports a language hint.' },
+  { id: 'parakeet-tdt-0.6b-v3', label: 'NVIDIA Parakeet TDT 0.6B v3', backend: 'transformers-tdt', sizeBytes: 2508311120, languageHint: false, deviceHint: '25 European languages, detected internally. The language hint is ignored. Token timestamps; no language label.' },
+  { id: 'qwen3-asr-1.7b', label: 'Qwen3-ASR 1.7B', backend: 'qwen-asr', sizeBytes: 4700000000, languageHint: true, deviceHint: '30 languages with automatic detection, long-form input, and an optional language hint.' },
+  { id: 'granite-speech-5.0-470m-turboctc', label: 'IBM Granite Speech 5.0 470M TurboCTC', backend: 'granite-transformers', sizeBytes: 946311576, languageHint: false, deviceHint: 'Compact multilingual CTC model. It detects the language internally; the hint is ignored. Text only.' }
+];
 // Kokoro voice catalogue and language labels come from lib/tts-text.cjs over
 // app:state, so the dashboard never keeps a duplicate list.
 function ttsVoiceOptions(selected) {
@@ -132,6 +138,63 @@ function isCloudProvider(name) {
   return Boolean(name && name !== 'none' && !['local', FREELLMAPI_PROVIDER].includes(name));
 }
 
+function asrEngines() {
+  const source = Array.isArray(data.asrEngines) && data.asrEngines.length ? data.asrEngines : ASR_ENGINE_FALLBACK;
+  return source.map((engine) => ({
+    ...engine,
+    id: String(engine.id || ''),
+    label: String(engine.label || engine.id || ''),
+    backend: String(engine.backend || ''),
+    deviceHint: String(engine.deviceHint || engine.notes || ''),
+    languageHint: engine.languageHint === true,
+    sizeBytes: Number(engine.sizeBytes ?? engine.approx_size_bytes) || 0
+  })).filter((engine) => engine.id);
+}
+
+function asrEngineInfo(id) {
+  return asrEngines().find((engine) => engine.id === id)
+    || asrEngines().find((engine) => engine.id === 'whisper')
+    || ASR_ENGINE_FALLBACK[0];
+}
+
+function savedAsrEngine() {
+  return settings.asrEngine || 'whisper';
+}
+
+function optionalAsrSelected() {
+  return settings.sttProvider !== 'cloud' && savedAsrEngine() !== 'whisper';
+}
+
+function asrBadge(status = {}) {
+  const state = String(status.status || '');
+  if (state === 'ready') return { text: 'Ready', kind: 'good' };
+  if (state === 'downloading') {
+    const percent = status.progress?.percent;
+    return { text: percent == null ? 'Downloading' : `${percent}%`, kind: status.progress?.stalled ? 'bad' : 'info' };
+  }
+  if (state === 'loading' || state === 'preparing') return { text: 'Loading', kind: 'info' };
+  if (state === 'error') return { text: 'Error', kind: 'bad' };
+  if (state === 'mismatch') return { text: 'Mismatch', kind: 'bad' };
+  if (state === 'canceled') return { text: 'Canceled', kind: 'info' };
+  if (state === 'idle') return { text: 'Idle', kind: 'info' };
+  if (state === 'stopped') return { text: 'Stopped', kind: 'info' };
+  return { text: 'Unknown', kind: 'info' };
+}
+
+function asrChipStatus(status = {}) {
+  const badge = asrBadge(status);
+  return {
+    text: `Speech ${badge.text}`,
+    kind: badge.kind,
+    title: status.message || 'Optional speech engine status.'
+  };
+}
+
+function speechChipStatus() {
+  if (!optionalAsrSelected()) return serviceStatus(data.health?.whisper, 'Whisper');
+  return asrChipStatus(data.health?.asr || {});
+}
+
 function serviceStatus(service = {}, name) {
   if (service.status === 'downloading') {
     const percent = service.progress?.percent;
@@ -205,9 +268,9 @@ function updateHealthBadges() {
   const chatService = data.health?.chat || data.health?.ollama;
   const statuses = {
     healthOllama: serviceStatus(chatService, provider === 'local' ? 'Ollama' : providerLabel(provider)),
-    healthWhisper: serviceStatus(data.health?.whisper, 'Whisper'),
+    healthWhisper: speechChipStatus(),
     settingsHealthOllama: serviceStatus(data.health?.ollama, 'Ollama'),
-    settingsHealthWhisper: serviceStatus(data.health?.whisper, 'Whisper')
+    settingsHealthWhisper: speechChipStatus()
   };
   for (const [id, status] of Object.entries(statuses)) {
     const element = document.getElementById(id);
@@ -270,6 +333,125 @@ function kokoroProgressPanel() {
   </div>`;
 }
 
+const KOKORO_HEALTH_TIMEOUT_MS = 2000;
+
+// Map the main-process readiness payload onto the three states the card
+// promises: Not downloaded, Downloaded, Error. Active downloads are the one
+// transient exception so progress stays honest while the bytes arrive.
+function kokoroCardState(raw) {
+  const status = raw && typeof raw === 'object' ? raw : {};
+  const kind = String(status.status || '').toLowerCase();
+  const modelReady = status.modelReady === true;
+  const voiceReady = status.voiceReady === true;
+  const errorText = String(status.error || '').trim();
+  if (kind === 'downloading' || kind === 'loading') {
+    return {
+      label: 'Downloading',
+      tone: 'info',
+      meta: kind === 'loading' ? 'Loading the model files…' : 'Downloading the model files…',
+      note: 'Keep Voxa open while the download finishes.',
+      action: 'none',
+      cancel: true
+    };
+  }
+  if ((modelReady && voiceReady) || kind === 'downloaded' || kind === 'ready') {
+    return {
+      label: 'Downloaded',
+      tone: 'good',
+      meta: 'Model and voice pack are ready.',
+      note: 'Kokoro can speak replies on this device.',
+      action: 'none',
+      cancel: false
+    };
+  }
+  if (kind === 'error' || kind === 'unreachable' || errorText) {
+    return {
+      label: 'Error',
+      tone: 'bad',
+      meta: errorText || 'Could not read the model status.',
+      note: 'Retry the download or check the AppData/kokoro folder.',
+      action: 'retry',
+      cancel: false
+    };
+  }
+  if (kind === 'not-downloaded' || kind === 'needs-consent') {
+    return {
+      label: 'Not downloaded',
+      tone: 'neutral',
+      meta: 'Model files are not downloaded yet.',
+      note: 'One-time download required for natural voice replies.',
+      action: 'download',
+      cancel: false
+    };
+  }
+  return {
+    label: 'Error',
+    tone: 'bad',
+    meta: 'Could not read the model status.',
+    note: 'Try again or reopen Settings.',
+    action: 'retry',
+    cancel: false
+  };
+}
+
+function updateKokoroCard() {
+  const badge = document.getElementById('kokoroStatusBadge');
+  if (!badge) return;
+  const state = kokoroCardState(data.health?.kokoro);
+  badge.textContent = state.label;
+  badge.className = `badge ${state.tone}`;
+  const meta = document.getElementById('kokoroSelectedMeta');
+  if (meta) meta.textContent = state.meta;
+  const actionNote = document.getElementById('kokoroActionNote');
+  if (actionNote) actionNote.textContent = state.note;
+  const action = document.getElementById('kokoroAction');
+  if (action) {
+    action.hidden = state.action === 'none';
+    action.textContent = state.action === 'retry' ? 'Retry download' : 'Download model';
+  }
+  const cancel = document.getElementById('kokoroCancel');
+  if (cancel) cancel.hidden = !state.cancel;
+}
+
+// A missing IPC handler, a wedged prompt, or a renderer thrown before the
+// reply must not leave the card on "Checking" forever. The timeout turns any
+// non-answer into the explicit Error state.
+async function fetchKokoroHealth(timeoutMs = KOKORO_HEALTH_TIMEOUT_MS) {
+  let timer;
+  try {
+    const health = await Promise.race([
+      api.ttsHealth(),
+      new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error('Model status check timed out.')), timeoutMs);
+      })
+    ]);
+    if (!health || typeof health !== 'object') {
+      return { status: 'error', error: 'The app returned an empty model status.' };
+    }
+    return health;
+  } catch (error) {
+    console.error('Kokoro health check failed', error);
+    return { status: 'error', error: error?.message || 'Could not read the model status.' };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function isKokoroModelHealth(health) {
+  if (!health || typeof health !== 'object') return false;
+  // Server probes from older builds only carried { ok, status } and must not
+  // overwrite file readiness ("unreachable" is not "not downloaded").
+  return Object.hasOwn(health, 'modelReady')
+    || Object.hasOwn(health, 'voiceReady')
+    || Object.hasOwn(health, 'hasConsent');
+}
+
+function applyKokoroHealth(health) {
+  data.health = { ...data.health, kokoro: health };
+  updateKokoroProgress();
+  updateKokoroCard();
+}
+
 function updateKokoroProgress() {
   const status = data.health?.kokoro || {};
   const panel = document.getElementById('dictationKokoroProgress');
@@ -297,7 +479,10 @@ function updateKokoroProgress() {
 }
 
 function updateWhisperProgress() {
-  const state = whisperProgressState(data.health?.whisper);
+  const selectedEngine = $('#asrEngine')?.value || savedAsrEngine();
+  const state = selectedEngine === 'whisper'
+    ? whisperProgressState(data.health?.whisper)
+    : { visible: false, status: 'hidden', percent: null, text: '', stalled: false, cancellable: false };
   const targets = [
     ['whisperProgressRow', 'whisperProgressText', 'whisperProgressBar', 'whisperProgressPercent'],
     ['dictationWhisperProgress', 'dictationWhisperText', 'dictationWhisperBar', 'dictationWhisperPercent']
@@ -436,6 +621,152 @@ function updateWhisperModelControls() {
               : downloaded == null
                 ? 'Model status is unavailable. Check again.'
                 : isActive ? 'This model is ready for dictation.' : 'Ready to load for dictation.';
+  }
+}
+
+function localOllamaModel() {
+  return settings.providers?.local?.model || 'qwen3:8b';
+}
+
+function asrEngineCard() {
+  const engine = asrEngineInfo(savedAsrEngine());
+  return `<div class="whisper-model-card" id="asrModelCard" ${savedAsrEngine() === 'whisper' ? 'hidden' : ''}>
+    <div class="row-side" style="justify-content:space-between;align-items:flex-start">
+      <div class="row-main"><b id="asrSelectedName">${esc(engine.label)}</b><small class="card-note" id="asrSelectedMeta">Optional engine. Check status or load it when you are ready.</small></div>
+      <span class="badge info" id="asrStatusBadge">Not checked</span>
+    </div>
+    <div class="whisper-facts">
+      <span>Runtime <b id="asrBackend">${esc(engine.backend || 'Optional Python service')}</b></span>
+      <span>Artifacts <b id="asrSize">${esc(formatBytes(engine.sizeBytes))}</b></span>
+      <span>Device <b id="asrDeviceFact">Not loaded</b></span>
+    </div>
+    <div class="row-side" style="justify-content:space-between;margin-top:10px;flex-wrap:wrap">
+      <span class="card-note" id="asrActionNote">Nothing is downloaded or loaded until you choose an action.</span>
+      <span class="row-side" style="gap:8px">
+        <button class="button" id="asrCheck" type="button" data-action="asr-check">Check status</button>
+        <button class="button" id="asrDownload" type="button" data-action="asr-download">Download model</button>
+        <button class="button primary" id="asrLoad" type="button" data-action="asr-load">Load model</button>
+        <button class="button" id="asrCancel" type="button" data-action="asr-cancel" hidden>Cancel</button>
+        <button class="button" id="asrUnload" type="button" data-action="asr-unload" hidden>Unload</button>
+      </span>
+    </div>
+    <div class="whisper-download" id="asrProgress" hidden>
+      <div class="row-side" style="justify-content:space-between"><b id="asrProgressTitle">Speech model</b><span class="badge info" id="asrProgressPercent">Working</span></div>
+      <div class="progress-track"><i id="asrProgressBar"></i></div>
+      <small class="card-note" id="asrProgressText"></small>
+    </div>
+    <p class="card-note">The optional runtime stays local and runs in a separate process. It is never bundled with Whisper and is never started just by saving settings.</p>
+  </div>`;
+}
+
+function updateAsrControls() {
+  const select = $('#asrEngine');
+  const selected = select?.value || savedAsrEngine();
+  const engine = asrEngineInfo(selected);
+  const saved = savedAsrEngine();
+  const isWhisper = selected === 'whisper';
+  const unsaved = selected !== saved;
+  const optionalFields = $('#asrOptionalFields');
+  if (optionalFields) optionalFields.hidden = isWhisper;
+  for (const field of $$('.whisper-only-field')) field.hidden = !isWhisper;
+  const note = $('#asrEngineNote');
+  if (note) note.textContent = engine.deviceHint || '';
+  const languageNote = $('#asrLanguageNote');
+  const languageInput = $('#asrLanguage');
+  const supportsLanguage = engine.languageHint === true;
+  if (languageNote) {
+    languageNote.textContent = supportsLanguage
+      ? 'Use an ISO code such as en. Leave blank to auto-detect.'
+      : `${engine.label} detects the language internally and ignores this hint. Choose Whisper or Qwen3-ASR to force English.`;
+    languageNote.className = supportsLanguage ? 'card-note' : 'card-note fallback-warning';
+  }
+  if (languageInput) {
+    languageInput.setAttribute('aria-invalid', supportsLanguage ? 'false' : 'true');
+    languageInput.title = supportsLanguage ? '' : `${engine.label} ignores the speech language hint.`;
+  }
+  const card = $('#asrModelCard');
+  if (card) card.hidden = isWhisper;
+  const whisperCard = $('#whisperModelCard');
+  if (whisperCard) whisperCard.hidden = !isWhisper;
+  if (isWhisper || !card) return;
+
+  const health = unsaved
+    ? { status: 'stopped', message: 'Save dictation settings to apply the selected engine.', busy: false, downloaded: null }
+    : (data.health?.asr || {});
+  const status = String(health.status || 'stopped');
+  const busy = Boolean(health.busy);
+  const ready = status === 'ready';
+  const badgeInfo = unsaved ? { text: 'Unsaved', kind: 'info' } : asrBadge(health);
+  const name = $('#asrSelectedName');
+  const meta = $('#asrSelectedMeta');
+  const badge = $('#asrStatusBadge');
+  const backend = $('#asrBackend');
+  const size = $('#asrSize');
+  const device = $('#asrDeviceFact');
+  if (name) name.textContent = engine.label;
+  if (meta) meta.textContent = unsaved ? 'Save dictation settings to apply this engine.' : health.message || 'Status not checked.';
+  if (badge) {
+    badge.textContent = badgeInfo.text;
+    badge.className = `badge ${badgeInfo.kind}`;
+    badge.title = health.message || '';
+  }
+  if (backend) backend.textContent = health.backend || engine.backend || 'Optional Python service';
+  if (size) size.textContent = formatBytes(health.approxSizeBytes || engine.sizeBytes);
+  if (device) device.textContent = ready
+    ? [health.device, health.computeType].filter(Boolean).join(' · ') || 'Ready'
+    : health.status === 'error' ? 'Unavailable' : 'Not loaded';
+
+  const check = $('#asrCheck');
+  const download = $('#asrDownload');
+  const load = $('#asrLoad');
+  const cancel = $('#asrCancel');
+  const unload = $('#asrUnload');
+  if (check) check.disabled = false;
+  if (download) {
+    download.hidden = ready || health.downloaded === true;
+    download.disabled = unsaved || busy;
+  }
+  if (load) {
+    load.disabled = unsaved || busy || ready || health.available === false;
+    load.textContent = status === 'error' || status === 'canceled'
+      ? 'Retry load'
+      : health.downloaded === false ? 'Download & load' : 'Load model';
+  }
+  if (cancel) cancel.hidden = !busy;
+  if (unload) {
+    unload.hidden = !health.activeModel || busy;
+    unload.disabled = unsaved || busy;
+  }
+  const actionNote = $('#asrActionNote');
+  if (actionNote) {
+    actionNote.textContent = unsaved
+      ? 'Save first; actions use the saved speech-engine settings.'
+      : health.message || 'Check status to read the model cache. Loading fetches missing files only when you choose it.';
+  }
+
+  const progress = $('#asrProgress');
+  if (progress) {
+    const visible = !unsaved && Boolean(busy || ['preparing', 'downloading', 'loading'].includes(status));
+    progress.hidden = !visible;
+    if (visible) {
+      const title = $('#asrProgressTitle');
+      const text = $('#asrProgressText');
+      const percent = $('#asrProgressPercent');
+      const bar = $('#asrProgressBar');
+      const pct = health.progress?.percent;
+      if (title) title.textContent = `${engine.label}${status === 'loading' || status === 'preparing' ? ' · loading' : ' · download'}`;
+      if (text) text.textContent = health.message || 'Working…';
+      if (percent) {
+        percent.textContent = status === 'downloading'
+          ? Number.isFinite(pct) ? `${pct}%` : 'Working'
+          : 'Loading';
+        percent.className = `badge ${health.progress?.stalled ? 'bad' : 'info'}`;
+      }
+      if (bar) {
+        bar.style.width = Number.isFinite(pct) ? `${pct}%` : '';
+        bar.classList.toggle('indeterminate', status !== 'downloading' || !Number.isFinite(pct));
+      }
+    }
   }
 }
 
@@ -671,7 +1002,7 @@ function dashboard() {
     <div class="hero-copy">
       <div class="hero-chips">
         ${healthChip('healthOllama', serviceStatus(health.ollama, 'Ollama'))}
-        ${healthChip('healthWhisper', serviceStatus(health.whisper, 'Whisper'))}
+        ${healthChip('healthWhisper', speechChipStatus())}
         <span class="chip"><b>${esc(providerLabel(provider))}</b>${esc(config.model || 'No model selected')}</span>
       </div>
       <h1 class="hero-title">${esc(greeting)}, ${esc(name)}.</h1>
@@ -752,12 +1083,23 @@ function dictation() {
     <article class="card"><h2 class="card-title">Dictation shortcut</h2><p class="card-note">Hold the shortcut to record. Releasing it sends the transcript. Ctrl+Space may conflict with Windows input switching.</p><div class="row-side"><button class="button" data-edit-hotkey="dictation">Edit · ${esc(settings.dictationHotkey || 'Ctrl+Q')}</button>${toggle('dictationEnabled', settings.dictationEnabled !== false, 'Enable dictation', 'dictationEnabled')}</div></article>
     <article class="card"><h2 class="card-title">Speech recognition</h2>
       <div class="form-grid">
-        <label class="field">Transcription<select class="select" id="sttProvider"><option value="local" ${settings.sttProvider !== 'cloud' ? 'selected' : ''}>Local Whisper</option><option value="cloud" ${settings.sttProvider === 'cloud' ? 'selected' : ''}>Cloud API</option></select></label>
+        <label class="field">Transcription<select class="select" id="sttProvider"><option value="local" ${settings.sttProvider !== 'cloud' ? 'selected' : ''}>Local</option><option value="cloud" ${settings.sttProvider === 'cloud' ? 'selected' : ''}>Cloud API</option></select></label>
+        <label class="field">Speech engine<select class="select" id="asrEngine">${asrEngines().map((engine) => `<option value="${esc(engine.id)}" ${savedAsrEngine() === engine.id ? 'selected' : ''}>${esc(engine.label)}</option>`).join('')}</select><small class="card-note" id="asrEngineNote">${esc(asrEngineInfo(savedAsrEngine()).deviceHint || '')}</small></label>
         <label class="field">Cloud service<select class="select" id="sttCloudProvider">${['openai', 'groq'].map((provider) => `<option value="${provider}" ${settings.sttCloudProvider === provider ? 'selected' : ''}>${provider}</option>`).join('')}</select></label>
         <label class="field">Cloud model<input class="input" id="sttModel" value="${esc(settings.sttModel || 'whisper-1')}"></label>
-        <label class="field">Performance preset<select class="select" id="performancePreset">${Object.entries(WHISPER_PRESETS).map(([id, item]) => `<option value="${esc(id)}" ${preset === id ? 'selected' : ''}>${esc(item.label)}${item.model ? ` · ${esc(item.model)}` : ''}</option>`).join('')}</select><small class="card-note" id="performancePresetNote">${esc(presetInfo.description)}</small></label>
-        <label class="field">Whisper model<select class="select" id="whisper">${whisperModelOptions(selectedModel)}</select></label>
-        <label class="field">Compute<select class="select" id="device"><option value="cpu" ${settings.whisperDevice !== 'cuda' ? 'selected' : ''}>CPU · int8</option><option value="cuda" ${settings.whisperDevice === 'cuda' ? 'selected' : ''}>NVIDIA GPU · float16</option></select></label>
+        <label class="field whisper-only-field">Performance preset<select class="select" id="performancePreset">${Object.entries(WHISPER_PRESETS).map(([id, item]) => `<option value="${esc(id)}" ${preset === id ? 'selected' : ''}>${esc(item.label)}${item.model ? ` · ${esc(item.model)}` : ''}</option>`).join('')}</select><small class="card-note" id="performancePresetNote">${esc(presetInfo.description)}</small></label>
+        <label class="field whisper-only-field">Whisper model<select class="select" id="whisper">${whisperModelOptions(selectedModel)}</select></label>
+        <label class="field whisper-only-field">Compute<select class="select" id="device"><option value="cpu" ${settings.whisperDevice !== 'cuda' ? 'selected' : ''}>CPU · int8</option><option value="cuda" ${settings.whisperDevice === 'cuda' ? 'selected' : ''}>NVIDIA GPU · float16</option></select></label>
+        <label class="field">Speech language<input class="input" id="asrLanguage" maxlength="40" placeholder="Auto / model default" value="${esc(settings.asrLanguage || '')}"><small class="card-note" id="asrLanguageNote">Use an ISO code such as en. Leave blank to auto-detect. Whisper and Qwen3-ASR honour this hint.</small></label>
+        <div class="field full" id="asrOptionalFields" ${savedAsrEngine() === 'whisper' ? 'hidden' : ''}>
+          <div class="form-grid">
+            <label class="field">Device<select class="select" id="asrDevice">${['auto', 'cpu', 'cuda'].map((value) => `<option value="${value}" ${settings.asrDevice === value ? 'selected' : ''}>${value === 'auto' ? 'Auto · GPU when compatible' : value.toUpperCase()}</option>`).join('')}</select><small class="card-note">CUDA is explicit: if you choose it, an unavailable GPU is an error, not a silent switch.</small></label>
+            <label class="field">Compute<select class="select" id="asrComputeType">${['auto', 'float32', 'float16', 'bfloat16'].map((value) => `<option value="${value}" ${settings.asrComputeType === value ? 'selected' : ''}>${value === 'auto' ? 'Auto' : value}</option>`).join('')}</select></label>
+            <label class="field">Chunk length · seconds<input class="input" id="asrChunkSeconds" type="number" min="1" max="120" step="1" value="${esc(settings.asrChunkSeconds ?? 30)}"><small class="card-note">Parakeet and Granite use chunks; Qwen handles long-form audio natively.</small></label>
+            <div class="row field full"><div class="row-main"><b>Request word timestamps</b><small>Only surfaced when a backend returns native word timing. Tokens are never relabeled as words.</small></div>${toggle('asrWordTimestamps', settings.asrWordTimestamps === true, 'Request word timestamps', 'asrWordTimestamps')}</div>
+            <div class="row field full"><div class="row-main"><b>Voice activity detection</b><small>Trim silence before local transcription. This does not change microphone capture.</small></div>${toggle('asrVad', settings.asrVad !== false, 'Voice activity detection', 'asrVad')}</div>
+          </div>
+        </div>
         <label class="field">Microphone<select class="select" id="mic"><option value="">System default</option>${microphones.map((item) => `<option value="${esc(item.id)}" ${selected === item.id ? 'selected' : ''}>${esc(item.label)}</option>`).join('')}</select></label>
         <button class="button" id="refreshMic" type="button">Refresh microphones</button>
         <div class="field"><span>Input level</span><div class="input-meter"><i id="settingsMicLevel"></i></div></div>
@@ -788,6 +1130,7 @@ function dictation() {
       </article>
       ${whisperModelCard()}
       ${whisperProgressPanel()}
+      ${asrEngineCard()}
       <p class="card-note">Models download into AppData. Downloads run in the background, show real progress here and on the Dashboard, and can be canceled or retried. Switching keeps the current model active until the new one is ready.</p>
     </article>
     <button class="button primary" data-action="save-page">Save dictation settings</button>
@@ -1303,7 +1646,7 @@ function settingsPage() {
       <p class="card-note" id="updateReleaseNotes" style="white-space:pre-wrap" hidden></p>
       <div class="row"><div class="row-main"><b>Automatically check for updates</b><small>Check GitHub Releases after launch and every six hours.</small></div>${toggle('autoCheckUpdates', settings.autoCheckUpdates !== false, 'Automatically check for updates', 'autoCheckUpdates')}</div>
     </article>
-    <article class="card"><h2 class="card-title">Diagnostics</h2><div class="row-side"><span class="badge info">Mode · ${esc(settings.mode || 'agent')}</span><span class="badge ${hotkey.mode === 'uiohook' ? 'good' : 'bad'}">Hotkey · ${esc(hotkey.mode || 'Unknown')}</span>${healthChip('settingsHealthOllama', serviceStatus(health.ollama, 'Ollama'))}${healthChip('settingsHealthWhisper', serviceStatus(health.whisper, 'Whisper'))}</div><p class="card-note">${esc(hotkey.error || 'Global shortcuts are active.')}</p><div class="row-side" style="margin:12px 0"><button class="button" data-action="test-overlay">Test overlay</button><button class="button" data-action="test-voice">Test voice</button><button class="button" data-page-link="logs">Open logs</button></div></article>
+    <article class="card"><h2 class="card-title">Diagnostics</h2><div class="row-side"><span class="badge info">Mode · ${esc(settings.mode || 'agent')}</span><span class="badge ${hotkey.mode === 'uiohook' ? 'good' : 'bad'}">Hotkey · ${esc(hotkey.mode || 'Unknown')}</span>${healthChip('settingsHealthOllama', serviceStatus(health.ollama, 'Ollama'))}${healthChip('settingsHealthWhisper', speechChipStatus())}</div><p class="card-note">${esc(hotkey.error || 'Global shortcuts are active.')}</p><div class="row-side" style="margin:12px 0"><button class="button" data-action="test-overlay">Test overlay</button><button class="button" data-action="test-voice">Test voice</button><button class="button" data-page-link="logs">Open logs</button></div></article>
   </div>`;
 }
 
@@ -1416,17 +1759,24 @@ function updateShell() {
   const needsKey = providerNeedsKey(provider) && !data.keyStatus?.[provider];
   const whisperStatus = data.health?.whisper?.status;
   const whisperPercent = data.health?.whisper?.progress?.percent;
-  const preparing = whisperStatus === 'downloading' || whisperStatus === 'loading';
+  const asrStatus = data.health?.asr?.status;
+  const asrPercent = data.health?.asr?.progress?.percent;
+  const speechStatus = optionalAsrSelected() ? asrStatus : whisperStatus;
+  const speechPercent = optionalAsrSelected() ? asrPercent : whisperPercent;
+  const preparing = speechStatus === 'downloading' || speechStatus === 'loading' || speechStatus === 'preparing';
   status.classList.toggle('bad', !chatOk && !preparing);
   $('#appStatusText').textContent = preparing
-    ? whisperStatus === 'downloading'
-      ? whisperPercent == null ? 'Downloading speech model' : `Downloading speech model ${whisperPercent}%`
+    ? speechStatus === 'downloading'
+      ? speechPercent == null ? 'Downloading speech model' : `Downloading speech model ${speechPercent}%`
       : 'Loading speech model'
     : chatOk ? `${providerName} and ready` : needsKey ? `${providerName} key required` : provider === 'local' ? 'Check local services' : `${providerName} unavailable`;
   updateDockHint();
   updateHealthBadges();
   updateWhisperModelControls();
   updateWhisperProgress();
+  updateKokoroCard();
+  updateKokoroProgress();
+  updateAsrControls();
   updateOllamaSetup();
 }
 
@@ -1513,6 +1863,15 @@ function collectPagePatch() {
       patch.performancePreset = 'custom';
     }
     patch.whisperDevice = $('#device')?.value || settings.whisperDevice;
+    if ($('#asrEngine')) {
+      patch.asrEngine = $('#asrEngine').value;
+      patch.asrDevice = $('#asrDevice')?.value || settings.asrDevice;
+      patch.asrComputeType = $('#asrComputeType')?.value || settings.asrComputeType;
+      patch.asrLanguage = $('#asrLanguage')?.value ?? settings.asrLanguage;
+      patch.asrChunkSeconds = Number($('#asrChunkSeconds')?.value ?? settings.asrChunkSeconds);
+      patch.asrWordTimestamps = $('#asrWordTimestamps')?.checked ?? settings.asrWordTimestamps === true;
+      patch.asrVad = $('#asrVad')?.checked ?? settings.asrVad !== false;
+    }
     patch.microphoneId = $('#mic')?.value ?? settings.microphoneId;
     patch.ttsEngine = $('#ttsEngine')?.value || settings.ttsEngine;
     patch.ttsVoice = $('#ttsVoice')?.value || settings.ttsVoice;
@@ -2073,6 +2432,14 @@ function wire() {
   if (micTest) micTest.onclick = () => void runMicTest();
   const performancePreset = $('#performancePreset');
   if (performancePreset) performancePreset.onchange = () => void chooseWhisperPreset(performancePreset.value);
+  const asrEngine = $('#asrEngine');
+  if (asrEngine) {
+    asrEngine.onchange = () => {
+      settingsDirty = true;
+      updateAsrControls();
+      updateWhisperProgress();
+    };
+  }
   const whisperSelect = $('#whisper');
   if (whisperSelect) whisperSelect.onchange = () => void chooseWhisperModel(whisperSelect.value);
   const refreshLogs = $('#refreshLogs');
@@ -2128,6 +2495,75 @@ async function handleAction(action, button) {
       settingsDirty = false;
       note('Saved permissions were reset. Agent Mode will ask every time.');
       renderAll();
+      return;
+    }
+    if (action === 'asr-check') {
+      if (settingsDirty) return note('Save dictation settings before checking the optional speech engine.');
+      button.disabled = true;
+      try {
+        const result = await api.asrModels();
+        data.health = data.health || {};
+        data.health.asr = result?.summary || data.health.asr;
+        updateShell();
+        note(result?.summary?.message || 'Speech engine status updated.');
+      } catch (error) {
+        note(error.message || 'Could not check the optional speech engine.');
+      } finally {
+        button.disabled = false;
+        updateAsrControls();
+      }
+      return;
+    }
+    if (action === 'asr-load' || action === 'asr-download') {
+      if (settingsDirty) return note('Save dictation settings before loading or downloading a speech model.');
+      if (settings.asrEngine === 'whisper') return note('Whisper uses the bundled server. Choose an optional engine first.');
+      button.disabled = true;
+      try {
+        const summary = action === 'asr-load'
+          ? await api.asrLoad(settings.asrEngine)
+          : await api.asrDownload(settings.asrEngine);
+        data.health = data.health || {};
+        data.health.asr = summary || data.health.asr;
+        updateShell();
+        note(summary?.message || (action === 'asr-load' ? 'Preparing the speech model.' : 'Starting the model download.'));
+      } catch (error) {
+        note(error.message || 'The optional speech engine action failed.');
+      } finally {
+        button.disabled = false;
+        updateAsrControls();
+      }
+      return;
+    }
+    if (action === 'asr-cancel') {
+      button.disabled = true;
+      try {
+        const summary = await api.asrCancel();
+        data.health = data.health || {};
+        data.health.asr = summary || data.health.asr;
+        updateShell();
+        note('Speech engine work canceled.');
+      } catch (error) {
+        note(error.message || 'Could not cancel the speech engine action.');
+      } finally {
+        button.disabled = false;
+        updateAsrControls();
+      }
+      return;
+    }
+    if (action === 'asr-unload') {
+      button.disabled = true;
+      try {
+        const summary = await api.asrUnload();
+        data.health = data.health || {};
+        data.health.asr = summary || data.health.asr;
+        updateShell();
+        note('Speech model unloaded.');
+      } catch (error) {
+        note(error.message || 'Could not unload the speech model.');
+      } finally {
+        button.disabled = false;
+        updateAsrControls();
+      }
       return;
     }
     if (action === 'whisper-switch') {
@@ -2298,11 +2734,15 @@ async function handleAction(action, button) {
     if (action === 'kokoro-download') {
       button.disabled = true;
       try {
-        await api.ttsDownload();
+        const result = await api.ttsDownload();
+        if (result?.message) note(result.message);
       } catch (error) {
         note(error.message || 'Kokoro download failed.');
       } finally {
         button.disabled = false;
+        // The progress events already update the card; re-read the files so a
+        // missed event still lands on Not downloaded, Downloaded, or Error.
+        applyKokoroHealth(await fetchKokoroHealth());
       }
     }
     if (action === 'kokoro-cancel') {
@@ -2363,14 +2803,9 @@ async function load() {
     }
     settings = data.settings || {};
     settings._microphones = [];
-    // Initial Kokoro status request
-    try {
-      const kokoroHealth = await api.ttsHealth();
-      if (kokoroHealth) data.health = { ...data.health, kokoro: kokoroHealth };
-    } catch (error) {
-      console.error('Initial kokoro health check failed', error);
-      data.health = { ...data.health, kokoro: { status: 'unknown' } };
-    }
+    // Initial Kokoro status request, bounded so the card cannot stay on
+    // "Checking" if the IPC bridge never answers.
+    data.health = { ...data.health, kokoro: await fetchKokoroHealth() };
     renderAll();
     const initial = location.hash.slice(1);
     nav(renderers[initial] ? initial : 'dashboard', true);
@@ -2466,7 +2901,8 @@ api.on('memory-updated', (memory) => {
   data.memory = Array.isArray(memory) ? memory : [];
 });
 api.on('health:updated', (health) => {
-  data.health = health;
+  if (!health || typeof health !== 'object') return;
+  data.health = { ...data.health, ...health };
   updateShell();
 });
 api.on('ollama:pull-progress', (progress) => {
@@ -2487,8 +2923,8 @@ api.on('tts:stop-audio', () => {
 });
 
 api.on('tts:health-updated', (health) => {
-  data.health = { ...data.health, kokoro: health };
-  updateKokoroProgress();
+  if (!isKokoroModelHealth(health)) return;
+  applyKokoroHealth(health);
 });
 
 window.addEventListener('hashchange', () => {

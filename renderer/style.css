@@ -49,3 +49,9 @@
 .link-button{border:0;padding:0;background:transparent;color:var(--accent);font-size:11px;font-weight:650;text-decoration:underline}
 .fallback-warning{color:var(--warning)}
 @media(prefers-reduced-motion:reduce){.combo-loading i{animation:none}}
+/* Native select popups: Chromium keeps the dark theme on the closed control but
+   paints the option list with the platform default unless the option colours
+   are pinned. One shared rule covers every dashboard page; the notch loads its
+   own overlay styles and keeps its dedicated .vxe-select colours. */
+select{color-scheme:dark}
+select option,select optgroup{background:#1a1412;color:#fff}

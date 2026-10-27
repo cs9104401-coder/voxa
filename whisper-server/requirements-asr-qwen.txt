@@ -1,0 +1,37 @@
+# Optional ASR runtime: Qwen3-ASR 1.7B
+#
+# qwen-asr 0.0.6 pins transformers==4.57.6, which conflicts with the
+# transformers>=5.16 runtime used by Parakeet and Granite. Qwen therefore needs
+# its own interpreter. Point Voxa at it when you want to use this engine:
+#
+#   py -3.12 -m venv whisper-server\.venv-asr-qwen
+#   .\whisper-server\.venv-asr-qwen\Scripts\python.exe -m pip install --upgrade pip
+#   .\whisper-server\.venv-asr-qwen\Scripts\python.exe -m pip install -r whisper-server\requirements-asr-qwen.txt
+#   $env:VOXA_ASR_PYTHON = "C:\path\to\my-voice-app\whisper-server\.venv-asr-qwen\Scripts\python.exe"
+#
+# The app uses one optional service at a time. Switch VOXA_ASR_PYTHON (and
+# restart Voxa or change the speech settings) to move between Qwen and the
+# Transformers 5.x Parakeet/Granite environment. Do not install Parakeet or
+# Granite in this environment.
+#
+# CUDA: install the PyTorch wheel that supports your GPU before this file.
+# CPU works without CUDA. Offline use needs both the Qwen3-ASR weights and, for
+# word timestamps, the separate Qwen3-ForcedAligner-0.6B weights in the cache.
+
+torch>=2.6
+qwen-asr==0.0.6
+
+# Localhost service
+fastapi==0.162.0
+uvicorn[standard]==0.54.0
+python-multipart==0.0.32
+httpx>=0.27
+
+# Audio decoding, microphone CLI, cache paths
+numpy>=2.0,<3
+av>=18.0
+soundfile>=0.14
+sounddevice>=0.5
+# transformers 4.57.6 (pinned by qwen-asr) requires huggingface-hub<1.0.
+huggingface_hub>=0.34,<1.0
+packaging>=24

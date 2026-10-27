@@ -5,6 +5,7 @@ import asyncio
 import gc
 import logging
 import os
+import re
 import threading
 import time
 import urllib.request
@@ -37,7 +38,7 @@ from typing import Any
 
 import numpy as np
 import uvicorn
-from fastapi import Body, FastAPI, File, HTTPException, UploadFile
+from fastapi import Body, FastAPI, File, Form, HTTPException, UploadFile
 from faster_whisper import WhisperModel
 from huggingface_hub import HfApi, hf_hub_url
 from huggingface_hub.constants import HF_HUB_CACHE
@@ -129,9 +130,21 @@ def warmup_model(model: WhisperModel) -> None:
         pass
 
 
-def transcribe_bytes(model: WhisperModel, audio: bytes) -> str:
-    segments, _info = model.transcribe(BytesIO(audio), beam_size=5, vad_filter=True)
+def transcribe_bytes(model: WhisperModel, audio: bytes, language: str | None = None) -> str:
+    segments, _info = model.transcribe(BytesIO(audio), beam_size=5, vad_filter=True, language=language)
     return "".join(segment.text for segment in segments).strip()
+
+
+LANGUAGE_HINT_PATTERN = re.compile(r"^[A-Za-z]{2,3}(?:[-_][A-Za-z]{2,4})?$")
+
+
+def normalize_language(value: str | None) -> str | None:
+    text = str(value or "").strip().lower()
+    if not text:
+        return None
+    if not LANGUAGE_HINT_PATTERN.fullmatch(text):
+        raise ValueError("Language must be a short ISO code such as en. Leave it blank to auto-detect.")
+    return text.split("-", 1)[0].split("_", 1)[0]
 
 
 def allowed_model_file(filename: str) -> bool:
@@ -807,13 +820,18 @@ async def cancel_model_load() -> dict[str, Any]:
 
 
 @app.post("/v1/audio/transcriptions")
-async def transcribe(file: UploadFile = File(...)) -> dict[str, str]:
+async def transcribe(file: UploadFile = File(...), language: str | None = Form(None)) -> dict[str, str]:
     content_type = (file.content_type or "").lower()
     if content_type and not (
         content_type.startswith("audio/")
         or content_type in {"application/octet-stream", "video/webm"}
     ):
         raise HTTPException(status_code=415, detail="Upload an audio file.")
+
+    try:
+        language_hint = normalize_language(language)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     audio = await file.read(MAX_AUDIO_BYTES + 1)
     if not audio:
@@ -828,8 +846,10 @@ async def transcribe(file: UploadFile = File(...)) -> dict[str, str]:
 
     try:
         async with app.state.transcribe_lock:
-            text = await asyncio.to_thread(transcribe_bytes, model, audio)
+            text = await asyncio.to_thread(transcribe_bytes, model, audio, language_hint)
         return {"text": text}
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:
         logger.exception("Transcription failed")
         raise HTTPException(status_code=500, detail=str(exc)) from exc

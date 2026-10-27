@@ -5,7 +5,7 @@ const path = require('path');
 const { spawnSync } = require('child_process');
 
 const root = path.resolve(__dirname, '..');
-const SKIP = new Set(['node_modules', 'dist', 'build', '.git', '.venv', 'reference', '.claude']);
+const SKIP = new Set(['node_modules', 'dist', 'build', '.git', '.venv', '.venv-asr', '.venv-asr-qwen', '__pycache__', 'reference', '.claude']);
 const files = [];
 (function walk(dir) {
   for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
@@ -43,9 +43,13 @@ for (const f of clientFiles) {
   grab(t, /ipcRenderer\.(?:invoke|send|sendSync)\(\s*['"`]([^'"`]+)['"`]/g).forEach((c) => invoked.add(c));
   grab(t, /ipcRenderer\.(?:on|once)\(\s*['"`]([^'"`]+)['"`]/g).forEach((c) => listened.add(c));
 }
+// Preload subscribes through its own on(channel) allowlist helper, so most
+// event names are not literal ipcRenderer.on() arguments. Treat a channel with
+// a preload on() wrapper as listenable when checking for dead main sends.
+const wrappedEvents = new Set(grab(read(path.join(root, 'preload.cjs')), /\bon\(\s*['"`]([^'"`]+)['"`]/g));
 for (const c of invoked) if (!handled.has(c)) problems.push(`IPC: preload/renderer calls "${c}" but main has no handler`);
 for (const c of listened) if (!sent.has(c)) warnings.push(`IPC: renderer listens to "${c}" but main never sends it (or sends it via a variable)`);
-for (const c of sent) if (!listened.has(c)) warnings.push(`IPC: main sends "${c}" but nothing listens`);
+for (const c of sent) if (!listened.has(c) && !wrappedEvents.has(c)) warnings.push(`IPC: main sends "${c}" but nothing listens`);
 for (const c of handled) if (!invoked.has(c)) warnings.push(`IPC: main handles "${c}" but nothing calls it`);
 
 // 3. Top-level renderer names that shadow browser globals (caused the history.replaceState crash)
@@ -86,12 +90,23 @@ for (const f of js.filter((x) => /overlay/.test(rel(x)))) {
   if (/\.(setBounds|setSize)\(/.test(t)) warnings.push(`overlay: ${rel(f)} moves/resizes the window; fine for repositioning, not for state changes`);
 }
 
-// 7. Python server syntax
+// 7. Python syntax: bundled servers plus the optional ASR package
+const venvAsrPy = path.join(root, 'whisper-server', '.venv-asr', 'Scripts', 'python.exe');
 const venvPy = path.join(root, 'whisper-server', '.venv', 'Scripts', 'python.exe');
-const py = fs.existsSync(venvPy) ? venvPy : 'python';
-const pr = spawnSync(py, ['-m', 'py_compile', path.join(root, 'whisper-server', 'server.py')], { encoding: 'utf8' });
-if (pr.error) warnings.push('python: not found, skipped server.py check');
-else if (pr.status !== 0) problems.push(`python: server.py\n${(pr.stderr || '').trim()}`);
+const py = fs.existsSync(venvAsrPy) ? venvAsrPy : fs.existsSync(venvPy) ? venvPy : 'python';
+const pyFiles = files.filter((f) => {
+  const name = rel(f);
+  return name.startsWith('asr/') || /^whisper-server\/[^/]+\.py$/.test(name);
+});
+if (pyFiles.length) {
+  const pr = spawnSync(py, ['-m', 'py_compile', ...pyFiles.map((f) => path.relative(root, f))], {
+    cwd: root,
+    encoding: 'utf8'
+  });
+  if (pr.error) warnings.push(`python: not found, skipped ${pyFiles.length} Python file checks`);
+  else if (pr.status !== 0) problems.push(`python: ASR/server syntax\n${(pr.stderr || pr.stdout || '').trim()}`);
+  else console.log(`Checked ${pyFiles.length} Python files with ${path.basename(py)}.`);
+}
 
 // 8. Verify services exports
 const servicesContent = read(path.join(root, 'lib', 'services.cjs'));

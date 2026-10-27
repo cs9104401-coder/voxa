@@ -9,7 +9,7 @@ const root = __dirname;
 const reportPath = path.join(root, 'selftest-report.txt');
 const runtimePath = path.join(root, '.selftest-runtime.json');
 const results = [];
-const generatedDirectories = new Set(['node_modules', '.git', 'dist', 'build', '.venv', '__pycache__']);
+const generatedDirectories = new Set(['node_modules', '.git', 'dist', 'build', '.venv', '.venv-asr', '.venv-asr-qwen', '__pycache__']);
 
 function record(name, ok, detail = '') {
   results.push({ name, ok: Boolean(ok), detail: String(detail || '').replace(/\0/g, '').slice(0, 5000) });
@@ -457,6 +457,65 @@ function checkTtsSettings() {
   }
 }
 
+function checkAsrSettings() {
+  try {
+    const { ASR_ENGINES, defaults } = require('./lib/constants.cjs');
+    const { summarizeAsr } = require('./lib/asr-health.cjs');
+    const base = defaults('TestUser');
+    const required = ['asrEngine', 'asrDevice', 'asrComputeType', 'asrLanguage', 'asrWordTimestamps', 'asrVad', 'asrChunkSeconds'];
+    const missing = required.filter((key) => !(key in base));
+    const ids = ASR_ENGINES.map((engine) => engine.id);
+    const failures = [
+      ...missing.map((key) => `missing default: ${key}`),
+      ...(Number(base.settingsVersion) < 8 ? [`settingsVersion is ${base.settingsVersion}, expected 8+`] : []),
+      ...(base.asrEngine !== 'whisper' ? [`asrEngine default is ${base.asrEngine}, expected whisper`] : []),
+      ...(base.asrLanguage !== 'en' ? [`asrLanguage default is ${base.asrLanguage || '(blank)'}, expected en`] : []),
+      ...(new Set(ids).size !== ids.length ? ['ASR engine ids are not unique'] : []),
+      ...(ids[0] !== 'whisper' ? ['Whisper is not the first ASR engine'] : []),
+      ...(!ASR_ENGINES.find((engine) => engine.id === 'whisper')?.languageHint ? ['Whisper does not advertise a language hint'] : []),
+      ...(!ASR_ENGINES.find((engine) => engine.id === 'qwen3-asr-1.7b')?.languageHint ? ['Qwen3-ASR does not advertise a language hint'] : []),
+      ...(ASR_ENGINES.find((engine) => engine.id === 'parakeet-tdt-0.6b-v3')?.languageHint === true ? ['Parakeet must not advertise a language hint'] : []),
+      ...(ASR_ENGINES.find((engine) => engine.id === 'granite-speech-5.0-470m-turboctc')?.languageHint === true ? ['Granite must not advertise a language hint'] : []),
+      ...(!['auto', 'cpu', 'cuda'].includes(base.asrDevice) ? [`invalid asrDevice: ${base.asrDevice}`] : []),
+      ...(!['auto', 'float32', 'float16', 'bfloat16'].includes(base.asrComputeType) ? [`invalid asrComputeType: ${base.asrComputeType}`] : []),
+      ...(!Number.isFinite(base.asrChunkSeconds) || base.asrChunkSeconds < 1 || base.asrChunkSeconds > 120 ? [`asrChunkSeconds out of range: ${base.asrChunkSeconds}`] : []),
+      ...(typeof base.asrWordTimestamps !== 'boolean' || typeof base.asrVad !== 'boolean' ? ['ASR toggles are not boolean'] : [])
+    ];
+    record(
+      'ASR settings defaults',
+      failures.length === 0,
+      failures.length ? failures.join('; ') : `${required.length} ASR settings present; ${ASR_ENGINES.length} engines with a unique catalog.`
+    );
+
+    const summary = summarizeAsr({
+      engineId: 'parakeet-tdt-0.6b-v3',
+      running: true,
+      status: {
+        status: 'ready',
+        active_model: 'parakeet-tdt-0.6b-v3',
+        available: true,
+        capabilities: { token_timestamps: true, word_timestamps: false }
+      }
+    });
+    const healthOk = summary.status === 'ready'
+      && summary.capabilities.token_timestamps === true
+      && summary.capabilities.word_timestamps === false
+      && !Object.hasOwn(summary, 'words')
+      && !Object.hasOwn(summary, 'tokens')
+      && !Object.hasOwn(summary, 'segments');
+    record(
+      'ASR health normalization',
+      healthOk,
+      healthOk
+        ? 'Ready state preserves native token timing and never invents word or segment timestamps.'
+        : `Unexpected ASR summary: ${JSON.stringify(summary).slice(0, 500)}`
+    );
+  } catch (error) {
+    record('ASR settings defaults', false, error.stack || error.message);
+    record('ASR health normalization', false, error.stack || error.message);
+  }
+}
+
 function checkIslandDownload() {
   try {
     const {
@@ -582,6 +641,7 @@ function run() {
   checkIslandDownload();
   checkIslandDwell();
   checkTtsSettings();
+  checkAsrSettings();
   if (process.argv.includes('--static-only')) {
     record('Runtime checks', true, 'Skipped because --static-only was requested.');
     formatReport('Voxa static self-test report');

@@ -45,7 +45,7 @@ Voxa is an independent project.
 
 ## Setup
 
-Requirements: Windows 10/11, Node.js 22.12 or newer, Python 3.11+ for building the bundled speech engine, and the Windows C++ build tools for the native hotkey module.
+Requirements: Windows 10/11, Node.js 22.12 or newer, Python 3.11+ for building the bundled speech engine, and the Windows C++ build tools for the native hotkey module. The optional Parakeet, Granite, and Qwen engines need an extra Python environment; see [docs/asr.md](docs/asr.md).
 
 ```powershell
 py -3 -m venv whisper-server\.venv
@@ -80,6 +80,23 @@ Voxa ships a single-file `voxa-whisper.exe` built with PyInstaller, so users do 
 
 The selected faster-whisper model is downloaded fully on first use into `%APPDATA%\my-voice-app\whisper-models` and is reused on later runs. Voxa waits for the download and shows a live progress bar on the Dashboard and Dictation pages. You can also choose cloud transcription in **Dictation**.
 
+#### Optional engines
+
+**Speech engine** on the **Dictation** page also offers NVIDIA Parakeet TDT 0.6B v3, Qwen3-ASR 1.7B, and IBM Granite Speech 5.0 470M TurboCTC. They use a separate, lazily started localhost service and never change the bundled Whisper path. Selecting one does not download or load anything; use **Check status**, **Download model**, or **Load model**. Inference stays on the machine after the optional Python environment and model files are present.
+
+```powershell
+# Parakeet and Granite can share a Transformers 5.x environment
+py -3.11 -m venv whisper-server\.venv-asr
+.\whisper-server\.venv-asr\Scripts\python.exe -m pip install -r whisper-server\requirements-asr-parakeet.txt
+
+# Qwen pins an older transformers release, so use a separate interpreter
+py -3.12 -m venv whisper-server\.venv-asr-qwen
+.\whisper-server\.venv-asr-qwen\Scripts\python.exe -m pip install -r whisper-server\requirements-asr-qwen.txt
+$env:VOXA_ASR_PYTHON = "C:\path\to\my-voice-app\whisper-server\.venv-asr-qwen\Scripts\python.exe"
+```
+
+Parakeet reports token timestamps, not word timestamps. Qwen timestamps require the separate `Qwen3-ForcedAligner-0.6B` weights; Granite reports no timestamps or language label. Parakeet and Granite also choose the language internally and ignore the **Speech language** hint; use bundled Whisper or Qwen3-ASR to force English. English is the default speech language and reply language. See [docs/asr.md](docs/asr.md) for the capability table, CUDA-wheel requirements, CLI, environment variables, cache details, packaging, and current verification status.
+
 Build the standalone engine directly with:
 
 ```powershell
@@ -109,7 +126,7 @@ npm run dist
 2. Builds the bundled Whisper server with `npm run build:whisper`.
 3. Runs electron-builder and writes `dist\Voxa-Setup-1.3.4.exe`.
 
-The installer creates a **Voxa** desktop shortcut and Start Menu entry and includes an uninstaller. The app is packaged with ASAR; `node_modules\uiohook-napi` is explicitly unpacked through `build.asarUnpack` so its native prebuild loads in the installed build. The PyInstaller output is copied to `resources\whisper-server\voxa-whisper.exe` with `extraResources`. The embedded Kokoro Python runtime and `kokoro_server.py` are copied there too, so natural voice replies need no system Python.
+The installer creates a **Voxa** desktop shortcut and Start Menu entry and includes an uninstaller. The app is packaged with ASAR; `node_modules\uiohook-napi` is explicitly unpacked through `build.asarUnpack` so its native prebuild loads in the installed build. The optional `asr` Python package is included and unpacked too, but no Python runtime, virtual environment, or model weights are bundled. The PyInstaller output is copied to `resources\whisper-server\voxa-whisper.exe` with `extraResources`. The embedded Kokoro Python runtime and `kokoro_server.py` are copied there too, so natural voice replies need no system Python.
 
 For a faster unpacked test build, use `npm run dist:dir`; it writes an unpacked app under `dist\win-unpacked` without creating the installer.
 
@@ -143,7 +160,7 @@ The command writes `selftest-report.txt` and exits nonzero if any check fails. I
 
 1. Parses every project JavaScript file while skipping generated dependency trees.
 2. Verifies required dashboard/notch markup, renderer CSP, preload invoke/send/event allowlists, and dashboard/overlay/recorder IPC role separation.
-3. Tests permission modes, strict tool schemas, secret redaction, approval decisions and timeouts, agent-loop round/failure/time limits, HTTPS URL policy, UTF-16 decoding, and settings security policy.
+3. Tests permission modes, strict tool schemas, secret redaction, approval decisions and timeouts, agent-loop round/failure/time limits, HTTPS URL policy, UTF-16 decoding, settings security policy, ASR settings defaults, and ASR health normalization.
 4. Starts a separate Electron worker that checks settings and shortcut parsing, loads the native hotkey hook, enumerates microphones, verifies the exact Ollama model, starts Whisper, transcribes a Windows-generated speech sample, shows and measures the notch, opens every dashboard page, and exercises live history/log filters and renderer console errors.
 
 The runtime worker uses the normal local user data and activation log. It does not save settings or send provider requests, but it may start/download the configured Whisper model. Ollama, a working Whisper environment, and at least one microphone must be available for the full run. The generated speech sample means no speaking is required. The suite does not simulate a physical microphone hold or a complete model-chosen desktop action; those still require a manual voice test. Use the static-only pass to skip Electron and service checks:
@@ -153,3 +170,10 @@ node selftest.cjs --static-only
 ```
 
 Static-only runs also write `selftest-report.txt`.
+
+The optional ASR package has its own mock-first test suite, plus an opt-in real service check:
+
+```powershell
+npm run test:asr
+npm run test:asr:integration
+```

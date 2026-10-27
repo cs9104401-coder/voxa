@@ -1,0 +1,39 @@
+# Optional ASR runtime: NVIDIA Parakeet TDT 0.6B v3
+#
+# Use a dedicated environment (Python 3.11 or 3.12). The bundled Whisper server
+# does not need this file and stays isolated.
+#
+#   py -3.11 -m venv whisper-server\.venv-asr
+#   .\whisper-server\.venv-asr\Scripts\python.exe -m pip install --upgrade pip
+#   .\whisper-server\.venv-asr\Scripts\python.exe -m pip install -r whisper-server\requirements-asr-parakeet.txt
+#
+# CUDA: install the PyTorch wheel for your GPU before this file, for example a
+# cu128 (or newer) wheel for RTX 50-series (sm_120). A cu124 wheel exposes the
+# card through torch.cuda but cannot run kernels on it; Voxa detects that case
+# and reports the reason instead of silently falling back.
+#
+# The same environment can serve Granite Speech because both backends share
+# the transformers>=5.20 runtime used by Parakeet.
+
+torch>=2.6
+# Keep torchaudio on the same build/index as torch. For CUDA, install both from
+# the same PyTorch wheel index before this file.
+torchaudio>=2.6
+transformers>=5.20,<6
+accelerate>=1.0
+safetensors>=0.4
+librosa>=0.10
+
+# Localhost service
+fastapi==0.162.0
+uvicorn[standard]==0.54.0
+python-multipart==0.0.32
+httpx>=0.27
+
+# Audio decoding, microphone CLI, model discovery
+numpy>=2.0,<3
+av>=18.0
+soundfile>=0.14
+sounddevice>=0.5
+huggingface_hub>=2.2,<3
+packaging>=24

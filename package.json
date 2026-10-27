@@ -9,6 +9,8 @@
     "start": "electron .",
     "ui-gallery": "electron . --ui-gallery",
     "selftest": "node selftest.cjs",
+    "test:asr": "node scripts/asr-test.cjs",
+    "test:asr:integration": "node scripts/asr-test.cjs --integration --no-python",
     "postinstall": "electron-rebuild -f -w uiohook-napi",
     "build:icon": "node scripts/generate-icon.cjs",
     "build:whisper": "node scripts/build-whisper.cjs",
@@ -32,7 +34,8 @@
     "asar": true,
     "asarUnpack": [
       "node_modules/uiohook-napi/**/*",
-      "node_modules/node-gyp-build/**/*"
+      "node_modules/node-gyp-build/**/*",
+      "asr/**/*"
     ],
     "directories": {
       "output": "dist",
@@ -44,9 +47,11 @@
       "brand.cjs",
       "lib/**/*",
       "renderer/**/*",
+      "asr/**/*",
       "assets/**/*",
       "!**/*.map",
       "!**/__pycache__/**/*",
+      "!asr/tests/**/*",
       "!whisper-server/**/*",
       "!scripts/**/*",
       "!dist/**/*"
