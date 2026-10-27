@@ -110,7 +110,8 @@ const EVENT_CHANNELS = new Set([
   'recorder:stop',
   'recorder:cancel',
   'recorder:request',
-  'updater:status'
+  'updater:status',
+  'window:state'
 ]);
 
 function invoke(channel, ...args) {
@@ -167,6 +168,7 @@ contextBridge.exposeInMainWorld('voiceAgent', {
   ttsDownload: () => invoke('tts:download'),
   ttsCancelDownload: () => invoke('tts:cancel-download'),
   windowAction: (action) => invoke('window:action', action),
+  onWindowState: (callback) => on('window:state', callback),
   respondApproval: (id, allowed) => send('approval:respond', { id, allowed }),
   on,
   chat: {

@@ -36,12 +36,37 @@
 
 .dashboard-body {
   position: relative;
-  background: var(--vx-stage);
+  /* Do not paint the stage on <body>: with a transparent <html>, Chromium
+     propagates the body background to the canvas, which ignores the body's
+     border-radius and turns the window back into a square. The stage lives on
+     the clipped ::before layer instead. */
+  background: transparent;
   border: 0;
-  border-radius: var(--vx-r-md);
+  /* The window itself is transparent; this radius is the visible OS-window
+     silhouette. Keep it equal to the inner shell radius so the stage frame
+     stays an even 12px around the panel. */
+  border-radius: var(--vx-r-xl);
   padding: var(--vx-frame-pad);
   overflow: hidden;
+  isolation: isolate;
+  box-shadow: none;
   font-family: var(--vx-font-body);
+}
+
+.dashboard-body::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  border-radius: inherit;
+  background: var(--vx-stage);
+  pointer-events: none;
+}
+
+/* Windows maximizes to the work-area rectangle. Square corners are correct
+   there, and a rounded body would expose the desktop at each corner. */
+.dashboard-body.window-maximized {
+  border-radius: 0;
 }
 
 /* ---------- Shell: one rounded gradient panel ---------- */

@@ -405,9 +405,13 @@ function createDashboard(show = false) {
     minWidth: 860,
     minHeight: 580,
     frame: false,
+    transparent: true,
+    backgroundColor: '#00000000',
+    // Keep the standard Windows thick frame so native edge and corner resizing
+    // keeps working; the transparent renderer paints the rounded silhouette.
+    thickFrame: true,
     show: false,
     title: APP_NAME,
-    backgroundColor: '#0e0d0b',
     webPreferences: {
       preload: path.join(__dirname, 'preload.cjs'),
       contextIsolation: true,
@@ -419,6 +423,15 @@ function createDashboard(show = false) {
     }
   });
   dashboardWindow.setMenuBarVisibility(false);
+  // The renderer owns the rounded window silhouette, so it has to know when
+  // Windows maximizes the window (where square corners are correct).
+  const sendWindowState = () => {
+    if (!dashboardWindow || dashboardWindow.isDestroyed()) return;
+    dashboardWindow.webContents.send('window:state', { maximized: dashboardWindow.isMaximized() });
+  };
+  dashboardWindow.on('maximize', sendWindowState);
+  dashboardWindow.on('unmaximize', sendWindowState);
+  dashboardWindow.webContents.on('did-finish-load', sendWindowState);
   dashboardWindow.webContents.setWindowOpenHandler(({ url }) => {
     openExternalLink(url);
     return { action: 'deny' };

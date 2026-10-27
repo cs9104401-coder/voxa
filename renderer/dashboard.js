@@ -2381,6 +2381,10 @@ async function load() {
   }
 }
 
+api.onWindowState(({ maximized } = {}) => {
+  document.body.classList.toggle('window-maximized', Boolean(maximized));
+});
+
 api.on('settings:refresh', (target) => {
   if (settingsDirty) {
     note('You have unsaved changes. Save or reload before refreshing settings.');
