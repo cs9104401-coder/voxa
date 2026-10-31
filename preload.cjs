@@ -171,7 +171,7 @@ contextBridge.exposeInMainWorld('voiceAgent', {
   clearHistory: () => invoke('history:clear'),
   clearAllData: () => invoke('data:clear-all'),
   refreshApps: () => invoke('apps:refresh'),
-  readLogs: () => invoke('logs:read'),
+  readLogs: (options) => invoke('logs:read', options),
   previewOverlay: (status, message) => invoke('overlay:preview', status, message),
   testOverlay: () => invoke('overlay:test'),
   setOverlayOptions: (options) => invoke('overlay:gallery-options', options),

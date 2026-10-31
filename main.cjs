@@ -23,6 +23,8 @@ const { optionalEngine, summarizeAsr, normalizeAsrModels, BUSY_STATES } = requir
 const { createRecorderManager } = require('./lib/recorder.cjs');
 const { createOverlay } = require('./lib/overlay.cjs');
 const { createHotkeys, isValidHotkey } = require('./lib/hotkeys.cjs');
+const voiceMode = require('./lib/voice-mode.cjs');
+const cuaMcp = require('./lib/cua-mcp.cjs');
 const mediaSmtc = require('./lib/media-smtc.cjs');
 const ttsText = require('./lib/tts-text.cjs');
 const {
@@ -42,6 +44,16 @@ const SELF_TEST = process.argv.includes('--selftest-worker') || Boolean(process.
 const RECORDER_PARTITION = 'persist:voxa-recorder';
 const WHISPER_PORT = LIMITS.WHISPER_PORT;
 let whisperPort = WHISPER_PORT;
+// These built-ins overlap cua-driver. They stay available as a fallback when
+// the driver cannot start, but are rejected while cua tools are attached so a
+// desktop task cannot silently bypass target inspection, confirmation, and the
+// driving state.
+const CUA_REPLACED_BUILTINS = new Map([
+  ['open_app', 'cua_launch_app'],
+  ['close_app', 'cua_kill_app'],
+  ['type_text', 'cua_type_text'],
+  ['press_keys', 'cua_press_key']
+]);
 
 function portAvailable(port) {
   return new Promise((resolve) => {
@@ -169,6 +181,7 @@ let hideDisposition = 'hide';
 // real hide starts (reset by new messages, replies or speech).
 const CHAT_LINGER_MS = 10000;
 let speechController = null;
+let voiceConfirmation = null;
 let quitting = false;
 
 function userDataDirFromArgv(argv) {
@@ -343,6 +356,7 @@ function buildDashboardState() {
   if (!Array.isArray(health.whisper?.models) || health.whisper.models.length === 0) {
     health.whisper = whisperHealthSummary(health.whisper || {});
   }
+  const logPage = logger.readPage(LIMITS.MAX_LOG_LINES);
   return {
     appName: APP_NAME,
     appVersion: app.getVersion(),
@@ -353,12 +367,16 @@ function buildDashboardState() {
     memory: [...memory],
     health,
     asrEngines: structuredClone(ASR_ENGINES),
-    activationLogs: logger.read(LIMITS.MAX_LOG_LINES),
+    activationLogs: logPage.lines,
+    logsCursor: logPage.nextBefore,
+    logsHasMore: logPage.hasMore,
+    logsTotal: logPage.total,
     hotkey: hotkeyStatus(),
     apps: apps.appNames(80),
     ttsVoices: ttsText.allVoices(),
     ttsLanguages: ttsText.LANG_LABELS,
-    keyStatus: Object.fromEntries(Object.keys(settings.providers).map((provider) => [provider, Boolean(secrets[provider])]))
+    keyStatus: Object.fromEntries(Object.keys(settings.providers).map((provider) => [provider, Boolean(secrets[provider])])),
+    profileGuard: store.getProfileGuard()
   };
 }
 
@@ -376,6 +394,7 @@ function normalizeSettings() {
   }
   settings.permissionMode = permissions.normalizePermissionMode(settings.permissionMode);
   settings.permissionCustom = permissions.normalizeCustomPermissions(settings.permissionCustom);
+  settings.voiceCommandMode = voiceMode.normalizeVoiceCommandMode(settings.voiceCommandMode);
   if (!['agent', 'dictation'].includes(settings.mode)) settings.mode = 'agent';
   if (!['island', 'notch'].includes(settings.overlayStyle)) settings.overlayStyle = 'island';
   if (!Object.hasOwn(WHISPER_PRESETS, settings.performancePreset)) settings.performancePreset = 'custom';
@@ -673,11 +692,22 @@ function applyAutostart() {
   }
 }
 
+let profileWriteWarned = false;
 function persistSettings() {
+  const guard = store.getProfileGuard();
+  if (guard.tooNew) {
+    if (!profileWriteWarned) {
+      profileWriteWarned = true;
+      logger.warn('settings', `${store.settingsProfileMessage(guard)} Saved nothing.`);
+    }
+    return;
+  }
   store.writeJson('settings.json', settings);
 }
 
 function saveSettingsPatch(patch) {
+  const guard = store.getProfileGuard();
+  if (guard.tooNew) throw new Error(store.settingsProfileMessage(guard));
   const next = { ...settings, ...store.sanitizeSettingsPatch(patch, settings, isValidHotkey) };
   if (next.chatProvider === 'local') {
     next.activeMode = 'local';
@@ -1476,6 +1506,40 @@ async function healthChecks() {
   return structuredClone(lastHealth);
 }
 
+async function ensureAsrReady() {
+  if (!usingOptionalAsr() || !asrService) return null;
+  if (currentTurn || turnRunning || asrBusy()) return asrSummary();
+  const engine = selectedAsrEngine();
+  asrLastError = '';
+  try {
+    await asrService.ensureStarted(asrLaunchConfig(engine.id));
+    const status = await asrService.peekStatus().catch(() => null);
+    if (status) {
+      asrLastStatus = status;
+      publishAsrHealth(status);
+    }
+    if (status?.status === 'ready' && status.active_model === engine.id) {
+      logger.info('asr', `${engine.label} was already loaded at startup.`);
+      return asrSummary(status);
+    }
+    if (status?.available === false) {
+      logger.warn('asr', `${engine.label} is not available in this Python environment; skipping the automatic load.`);
+      return asrSummary(status);
+    }
+    if (status?.downloaded === false) {
+      logger.info('asr', `${engine.label} is not downloaded yet; skipping the automatic load. Download it from Dictation settings.`);
+      return asrSummary(status);
+    }
+    logger.info('asr', `Auto-loading ${engine.label} on startup.`);
+    return await loadAsrModel(engine.id);
+  } catch (error) {
+    asrLastError = cleanError(error);
+    publishAsrHealth(asrLastStatus);
+    logger.warn('asr', `Could not auto-start the speech service: ${asrLastError}`);
+    return asrSummary(asrLastStatus);
+  }
+}
+
 function warmServices() {
   setTimeout(async () => {
     await healthChecks().catch((error) => logger.warn('health', cleanError(error)));
@@ -1485,6 +1549,13 @@ function warmServices() {
         await healthChecks();
       } catch (error) {
         logger.warn('whisper server', cleanError(error));
+      }
+    } else if (usingOptionalAsr()) {
+      try {
+        await ensureAsrReady();
+        await healthChecks();
+      } catch (error) {
+        logger.warn('asr', cleanError(error));
       }
     }
   }, 1200).unref?.();
@@ -1593,6 +1664,41 @@ async function requireTurnTarget(turn) {
   return target;
 }
 
+// type_text needs a concrete window even when the turn began from the
+// dashboard (where Voxa itself was focused). Prefer an app opened during this
+// turn, then the window captured at key-down, then the most recently opened
+// app. typeText() focuses the chosen window before inserting anything.
+async function resolveTypingTarget(turn) {
+  if (turn.openedApp?.name) {
+    const opened = await desktop.findAppWindow(turn.openedApp.name, {
+      timeoutMs: 4000,
+      signal: turn.controller.signal
+    }).catch((error) => {
+      if (error.cancelled) throw error;
+      logger.warn('focus', `Could not find the opened app window: ${cleanError(error)}`);
+      return null;
+    });
+    if (opened) {
+      turn.target = opened;
+      logger.info('focus', `Typing target from opened app: ${desktop.describeWindow(opened)}`);
+      return opened;
+    }
+  }
+  if (turn.target?.id) return turn.target;
+  if (lastOpenedApp?.name) {
+    const recent = await desktop.findAppWindow(lastOpenedApp.name, {
+      timeoutMs: 1500,
+      signal: turn.controller.signal
+    }).catch(() => null);
+    if (recent) {
+      turn.target = recent;
+      logger.info('focus', `Typing target from last opened app: ${desktop.describeWindow(recent)}`);
+      return recent;
+    }
+  }
+  return requireTurnTarget(turn);
+}
+
 function clearTurnTimers(turn) {
   if (turn?.tailTimer) clearTimeout(turn.tailTimer);
   if (turn?.audioTimer) clearTimeout(turn.audioTimer);
@@ -1607,6 +1713,14 @@ function clearTurnTimers(turn) {
 
 function finishTurn(turn) {
   if (!turn) return;
+  if (voiceConfirmation && voiceConfirmation.turnId === turn.id) {
+    const pending = voiceConfirmation;
+    voiceConfirmation = null;
+    clearTimeout(pending.stopTimer);
+    clearTimeout(pending.timeoutTimer);
+    recorderManager?.cancel(pending.sessionId, 'turn ended');
+    pending.reject(new Error('The turn ended before the answer was recorded.'));
+  }
   clearTurnTimers(turn);
   if (approvalGate.cancelTurn(turn.id)) clearApprovalFallback();
   if (currentTurn === turn) currentTurn = null;
@@ -1836,8 +1950,13 @@ async function beginTurn(mode, origin = 'hotkey') {
     processing: false,
     target: null,
     targetPromise: null,
+    openedApp: null,
     transcript: '',
     toolsExecuted: false,
+    cuaRequested: false,
+    cuaPids: new Set(),
+    cuaWindows: new Set(),
+    cuaWindowsByPid: new Map(),
     approvalCount: 0,
     approvalDecisions: new Map(),
     executedActions: new Set()
@@ -2246,7 +2365,7 @@ function toolSchemas() {
   });
 }
 
-function systemPrompt(target) {
+function systemPrompt(target, { cua = false } = {}) {
   const allApps = apps.discoverApps();
   const appNames = allApps.slice(0, LIMITS.MAX_PROMPT_APPS).map((item) => item.name);
   const installed = appNames.length
@@ -2266,6 +2385,17 @@ function systemPrompt(target) {
     'After web_search, do not claim you found, read, or summarized results; say you opened the search in the browser and ask the user to look at it.',
     'Routine actions may run without a prompt based on the saved permission mode; sensitive actions still require approval.',
     'Use close_app to close an app by name; never use press_keys or Alt+F4 to close an app. Pass the app name. Set force only when the user says "force close" or "kill".',
+    ...(cua ? [
+      'Desktop tools whose names start with cua_ control real Windows apps through cua-driver. Whenever a request needs an app, window, field, menu, or exact UI action, use the cua_ tools for every step instead of the built-in open_app, type_text, press_keys, click, or close_app tools. The built-in open_app, close_app, type_text, and press_keys tools are rejected while cua tools are attached.',
+      'Follow this order for an app task: (1) cua_launch_app or cua_list_windows, (2) cua_get_window_state with that exact pid and window_id, (3) act with tokens from that read, (4) read the window again to verify. A read only gathers context; do not stop after cua_list_windows or cua_get_window_state. Keep calling tools until the requested action is done and verified.',
+      'Never call cua_type_text or cua_set_value before cua_get_window_state. Pass the document or field element_token exactly as returned; the token already identifies the window and you should also pass its pid and window_id when known.',
+      'Modern Notepad and other WinUI apps need an element_token for text entry. If a result says the target is missing, read the window and retry with a token instead of typing into whatever has focus. If an app is already open with a document the user did not ask you to change, call cua_launch_app to open a fresh window instead of typing into the existing document.',
+      'For a save shortcut, call cua_press_key with key "s", modifiers ["ctrl"], the same pid and window_id, and delivery_mode "foreground". Background delivery can silently drop modifiers and type the bare key. Use scope "desktop" only for a global shortcut. Do not use a keys array with cua_press_key.',
+      'If a Save as dialog appears, call cua_list_windows and cua_get_window_state for the dialog window, then click its Save button with delivery_mode "foreground". Background clicks on standard dialogs can report success without doing anything. Check that the document is no longer marked modified before saying it was saved.',
+      'Use cua_bring_to_front only when an app must be visible, and include window_id when a pid owns several windows. Prefer background delivery and let the driver report when foreground input is required.',
+      'After changing an app, verify the result with a fresh cua_get_window_state or cua_verify_state before saying it worked. Never claim success from an isError, denied, or error result.',
+      'Do not use cua_kill_app, Alt+F4, or destructive keyboard shortcuts unless the user explicitly asked to close or delete something. Voxa asks the user out loud before destructive actions.'
+    ] : []),
     'If the user denies approval, accept it and do not retry the same action.',
     'Do not end with generic questions such as "Anything else?".',
     `Focused app when the turn began: ${target?.title || 'unknown'}.`,
@@ -2359,11 +2489,12 @@ async function prepareTool(turn, name, args, providerName) {
     const text = String(args.text || '').trim();
     if (!text) throw new Error('There is no text to type.');
     if (text.length > LIMITS.MAX_TOOL_TEXT_CHARS) throw new Error('The text is too long to type.');
+    const describedTarget = turn.openedApp?.name || turn.target?.title || 'the target app';
     return {
       title: 'Type this text into the focused app?',
-      detail: `App: ${turn.target?.title || 'the app that was focused when you started'}\n\n${text.slice(0, 1000)}`,
+      detail: `App: ${describedTarget}\n\n${text.slice(0, 1000)}`,
       run: async () => {
-        const target = await requireTurnTarget(turn);
+        const target = await resolveTypingTarget(turn);
         const result = await desktop.typeText(text, target, turn.controller.signal);
         const title = result?.foreground?.title || target.title || 'the target app';
         return `Typed ${text.length} character${text.length === 1 ? '' : 's'} into ${title}.`;
@@ -2392,6 +2523,7 @@ async function prepareTool(turn, name, args, providerName) {
       run: async () => {
         const opened = await apps.openAppByName(query);
         lastOpenedApp = { name: opened.name, launch: opened.launch || '' };
+        turn.openedApp = { name: opened.name, launch: opened.launch || '' };
         return `Opened ${opened.name}.`;
       }
     };
@@ -2571,6 +2703,368 @@ async function executeTool(turn, call, providerName = settings.chatProvider) {
   }
 }
 
+function parseCuaArguments(rawArguments) {
+  let args;
+  if (rawArguments === undefined || rawArguments === null || rawArguments === '') {
+    args = {};
+  } else if (typeof rawArguments === 'string') {
+    if (rawArguments.length > LIMITS.CUA_MAX_ARGUMENT_CHARS) throw new Error('The model sent desktop arguments that are too large.');
+    try {
+      args = JSON.parse(rawArguments);
+    } catch {
+      throw new Error('The model sent invalid desktop arguments.');
+    }
+  } else if (typeof rawArguments === 'object' && !Array.isArray(rawArguments)) {
+    args = rawArguments;
+  } else {
+    throw new Error('The model sent invalid desktop arguments.');
+  }
+  if (!args || typeof args !== 'object' || Array.isArray(args)) throw new Error('The model sent invalid desktop arguments.');
+  return args;
+}
+
+function cuaStatusMessage(name, args) {
+  switch (name) {
+    case 'launch_app': return `Opening ${args?.name || args?.path || 'the app'}…`;
+    case 'kill_app': return 'Closing the app…';
+    case 'list_apps': return 'Looking at installed apps…';
+    case 'list_windows': return 'Looking at open windows…';
+    case 'get_window_state': return 'Reading the window…';
+    case 'verify_state': return 'Checking the window…';
+    case 'bring_to_front': return 'Bringing the app forward…';
+    case 'click': return 'Clicking…';
+    case 'type_text': return 'Typing…';
+    case 'press_key':
+    case 'hotkey': return 'Pressing keys…';
+    case 'set_value': return 'Filling the field…';
+    case 'scroll': return 'Scrolling…';
+    case 'drag': return 'Dragging…';
+    default: return 'Using the desktop…';
+  }
+}
+
+function cuaConfirmationDetail(reason) {
+  const action = reason?.detail || 'make a destructive change';
+  return `Voxa will ${action}. This can discard work and cannot be undone.`;
+}
+
+function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, Math.max(0, ms)));
+}
+
+function speechEstimateMs(text) {
+  const words = String(text || '').trim().split(/\s+/).filter(Boolean).length;
+  const speed = Math.max(0.5, Number(settings.ttsSpeed) || 1);
+  return Math.min(15000, 700 + (words / (2.9 * speed)) * 1000);
+}
+
+function recordVoiceConfirmation(turn) {
+  return new Promise((resolve, reject) => {
+    if (!recorderManager) {
+      reject(new Error('The microphone is unavailable.'));
+      return;
+    }
+    const session = recorderManager.start({ deviceId: settings.microphoneId, origin: 'confirmation' });
+    if (!session) {
+      reject(new Error('The microphone is busy.'));
+      return;
+    }
+    const pending = {
+      sessionId: session.id,
+      turnId: turn.id,
+      resolve,
+      reject,
+      stopTimer: null,
+      timeoutTimer: null
+    };
+    voiceConfirmation = pending;
+    // Stop after a short fixed window: the reply is a yes/no answer, not a
+    // dictation, so waiting for a release gesture would strand the turn.
+    pending.stopTimer = setTimeout(() => {
+      if (voiceConfirmation === pending) recorderManager.stop(session.id);
+    }, LIMITS.CUA_CONFIRM_RECORD_MS);
+    pending.timeoutTimer = setTimeout(() => {
+      if (voiceConfirmation !== pending) return;
+      voiceConfirmation = null;
+      recorderManager.cancel(session.id, 'confirmation timeout');
+      reject(new Error('No spoken answer was captured.'));
+    }, LIMITS.CUA_CONFIRM_TIMEOUT_MS);
+  });
+}
+
+async function askVoiceConfirmation(turn, reason, toolName) {
+  if (!turnAlive(turn)) throw Object.assign(new Error('Cancelled.'), { cancelled: true });
+  if (settings.spokenReplies === false) {
+    // Without speech there is nothing to answer; keep the existing visual
+    // approval path instead of recording into silence.
+    return askApproval(turn, {
+      tool: toolName,
+      title: 'Allow this destructive action?',
+      detail: cuaConfirmationDetail(reason)
+    });
+  }
+  for (let attempt = 1; attempt <= LIMITS.CUA_CONFIRM_ATTEMPTS; attempt += 1) {
+    if (!turnAlive(turn)) throw Object.assign(new Error('Cancelled.'), { cancelled: true });
+    const prompt = attempt === 1
+      ? `Voxa will ${reason.detail}. Say yes to confirm, or no to cancel.`
+      : 'Please say yes to confirm, or no to cancel.';
+    logger.info('cua', `Spoken confirmation ${attempt}/${LIMITS.CUA_CONFIRM_ATTEMPTS}: ${reason.kind}`);
+    const spoke = await speakReply(turn, prompt, { force: true });
+    if (spoke) await delay(speechEstimateMs(prompt));
+    overlay.setState({
+      status: 'listening',
+      mode: turn.mode,
+      message: 'Say yes to confirm, or no to cancel.',
+      approval: null,
+      canCopy: false,
+      streaming: false
+    });
+    let capture;
+    try {
+      capture = await recordVoiceConfirmation(turn);
+    } catch (error) {
+      logger.warn('cua', `Confirmation recording failed: ${cleanError(error)}`);
+      break;
+    }
+    if (!turnAlive(turn)) throw Object.assign(new Error('Cancelled.'), { cancelled: true });
+    const audio = toBuffer(capture.audio);
+    if (!audio.length || Number(capture.rms) < LIMITS.SILENCE_RMS) {
+      logger.info('cua', 'Confirmation recording was empty or silent.');
+      continue;
+    }
+    let transcript;
+    try {
+      transcript = await transcribeAudio(audio, capture.mime, turn.controller.signal);
+    } catch (error) {
+      if (turn.controller.signal.aborted) throw Object.assign(new Error('Cancelled.'), { cancelled: true });
+      logger.warn('cua', `Confirmation transcription failed: ${cleanError(error)}`);
+      break;
+    }
+    const decision = voiceMode.parseVoiceConfirmation(transcript);
+    logger.info('cua', `Confirmation heard "${transcript.slice(0, 120)}" -> ${decision === null ? 'unclear' : decision ? 'yes' : 'no'}`);
+    if (decision === true) {
+      overlay.setState({ status: 'thinking', message: 'Confirmed. Working on it…', approval: null });
+      return true;
+    }
+    if (decision === false) {
+      await speakReply(turn, 'Okay, cancelled.', { force: true });
+      return false;
+    }
+    await speakReply(turn, 'I did not catch a yes or no.', { force: true });
+    await delay(speechEstimateMs('I did not catch a yes or no.'));
+  }
+  overlay.setState({ status: 'thinking', message: 'No confirmation heard. Nothing was changed.', approval: null });
+  return false;
+}
+
+function isSaveShortcut(base, args) {
+  return base === 'press_key'
+    && String(args?.key).toLowerCase() === 's'
+    && Array.isArray(args?.modifiers)
+    && args.modifiers.map((modifier) => String(modifier).toLowerCase()).includes('ctrl');
+}
+
+async function verifySaveResult(client, args, signal) {
+  const pid = Number(args?.pid) || 0;
+  const windowId = Number(args?.window_id) || 0;
+  if (!pid) return '';
+  const lines = [];
+  try {
+    const list = await client.callTool('cua_list_windows', { pid }, { signal });
+    if (list.ok) {
+      const pattern = /^\s*-\s+.*?"([^"]*)"\s+\[window_id:\s*(\d+)\]/gm;
+      let match;
+      while ((match = pattern.exec(list.text || ''))) {
+        if (/^save( as)?$/i.test(match[1].trim())) {
+          lines.push(`A "${match[1].trim()}" dialog is open (window_id ${match[2]}). The file is not saved yet. Call cua_get_window_state for that dialog, then click its Save button with delivery_mode "foreground".`);
+          break;
+        }
+      }
+    }
+  } catch {}
+  if (!lines.length && windowId) {
+    try {
+      const state = await client.callTool('cua_get_window_state', {
+        pid,
+        window_id: windowId,
+        include_screenshot: false,
+        max_elements: 40
+      }, { signal });
+      if (state.ok) {
+        const modified = /^- Window "\*/m.test(state.text || '') || /TabItem "[^"]*Modified\./i.test(state.text || '');
+        if (modified) lines.push('The document is still marked modified, so the save did not complete. Read the window again and finish the save before answering.');
+        else lines.push('The document is no longer marked modified, so the save completed.');
+      }
+    } catch {}
+  }
+  return lines.length ? `\nVerification: ${lines.join(' ')}` : '';
+}
+
+async function executeCuaTool(turn, call, providerName, client) {
+  const name = call?.function?.name || '';
+  if (!cuaMcp.isCuaToolName(name)) return { ok: false, error: 'That desktop action is unavailable.' };
+  if (!turnAlive(turn)) return { ok: false, error: 'Turn cancelled.' };
+  if (!client) return { ok: false, error: 'The desktop driver is unavailable right now.' };
+  const base = cuaMcp.cuaBaseName(name);
+  let args;
+  try {
+    args = parseCuaArguments(call?.function?.arguments);
+  } catch (error) {
+    return { ok: false, error: cleanError(error) };
+  }
+  // A pid that owns several windows is ambiguous: cua may reject the call, or
+  // worse, deliver a bare key into the focused document. Resolve the window
+  // when this turn has seen exactly one for the app, and otherwise ask the
+  // model for the window_id it already read.
+  const knownWindows = Number(args?.pid) > 0 ? turn.cuaWindowsByPid?.get(String(args.pid)) : null;
+  if (base === 'press_key' && knownWindows && !Number(args?.window_id) && args?.scope !== 'desktop') {
+    if (knownWindows.size === 1) {
+      args.window_id = [...knownWindows][0];
+    } else if (knownWindows.size > 1) {
+      return {
+        ok: false,
+        error: `cua_press_key needs a window_id because that app has ${knownWindows.size} windows. Use one of: ${[...knownWindows].join(', ')}.`
+      };
+    }
+  }
+  if ((base === 'type_text' || base === 'set_value') && knownWindows?.size === 1
+    && !Number(args?.window_id) && !args?.element_token) {
+    args.window_id = [...knownWindows][0];
+  }
+  // Background delivery can drop a modifier and type the bare key into the
+  // document, so shortcuts always take the explicit foreground path.
+  if (base === 'press_key' && Array.isArray(args?.modifiers) && args.modifiers.length > 0
+    && args?.scope !== 'desktop') {
+    args.delivery_mode = 'foreground';
+  }
+  // Standard Windows dialogs ignore posted clicks and still report success.
+  // A window-scoped click is therefore delivered with foreground input; the
+  // driver restores the previous foreground window afterwards.
+  if (base === 'click' && args?.scope !== 'desktop') {
+    args.delivery_mode = 'foreground';
+  }
+  const argsSummary = summarizeToolArgs(name, args);
+  const fingerprint = permissions.actionFingerprint(name, JSON.stringify(args));
+  const executed = turn.executedActions || (turn.executedActions = new Set());
+  if (!cuaMcp.CUA_READ_ONLY_TOOLS.has(name) && executed.has(fingerprint)) {
+    return { ok: false, duplicate: true, error: 'That desktop action already ran in this turn, so it was not repeated.' };
+  }
+
+  const hasTarget = Number(args?.pid) > 0 || Number(args?.window_id) > 0
+    || (typeof args?.element_token === 'string' && args.element_token.trim() !== '');
+  if ((base === 'type_text' || base === 'set_value') && !hasTarget && args?.scope !== 'desktop') {
+    if (!turn.cuaPids?.size && !turn.cuaWindows?.size) {
+      return {
+        ok: false,
+        error: 'No window has been inspected for this task. Call cua_list_windows, then cua_get_window_state for the exact window, and pass the document field element_token to cua_type_text.'
+      };
+    }
+    // A target was inspected earlier, so typing into the focused window is a
+    // deliberate request and goes through the spoken confirmation below.
+  }
+  if (base === 'press_key' && !hasTarget && args?.scope !== 'desktop') {
+    return {
+      ok: false,
+      error: 'cua_press_key needs pid and window_id, or scope "desktop" for a global shortcut. Read the window first with cua_get_window_state.'
+    };
+  }
+
+  const destructive = cuaMcp.destructiveCuaReason(base, args, {
+    pids: turn.cuaPids,
+    windows: turn.cuaWindows
+  });
+  if (destructive) {
+    logger.info('cua', `Destructive action needs confirmation: ${base} (${destructive.kind})`);
+    const allowed = await askVoiceConfirmation(turn, destructive, name);
+    if (!turnAlive(turn)) return { ok: false, error: 'Turn cancelled.' };
+    if (!allowed) return { ok: false, denied: true, error: 'The user denied this desktop action.' };
+  } else {
+    const permission = permissions.resolvePermission(settings, name);
+    if (settings.agentFullAccess === true) {
+      logger.info('permission', `${name} allowed by full access.`);
+    } else if (permission.requiresApproval) {
+      const decisions = turn.approvalDecisions || (turn.approvalDecisions = new Map());
+      if (decisions.has(fingerprint)) {
+        if (!decisions.get(fingerprint)) return { ok: false, denied: true, error: 'The user denied this desktop action.' };
+      } else {
+        const pending = turn.pendingApprovals || (turn.pendingApprovals = new Map());
+        let allowed;
+        if (pending.has(fingerprint)) {
+          allowed = await pending.get(fingerprint);
+        } else {
+          const decision = askApproval(turn, {
+            tool: name,
+            title: `Allow Voxa to ${base.replaceAll('_', ' ')}?`,
+            detail: `Desktop action: ${argsSummary}`
+          });
+          pending.set(fingerprint, decision);
+          try {
+            allowed = await decision;
+          } finally {
+            pending.delete(fingerprint);
+          }
+          if (!turnAlive(turn)) return { ok: false, error: 'Turn cancelled.' };
+          decisions.set(fingerprint, allowed);
+        }
+        if (!allowed) return { ok: false, denied: true, error: 'The user denied this desktop action.' };
+      }
+    } else {
+      logger.info('permission', `${name} allowed by ${permission.mode} permission mode.`);
+    }
+  }
+
+  if (!turnAlive(turn)) return { ok: false, error: 'Turn cancelled.' };
+  // The mascot only enters the driving state around a real driver call.
+  overlay.setState({ status: 'driving', message: cuaStatusMessage(base, args), approval: null });
+  try {
+    const result = await client.callTool(name, args, { signal: turn.controller.signal });
+    if (result.isError) {
+      logger.warn('cua', `action=${name} args=${argsSummary} result=error`);
+      return { ok: false, error: cleanError(result.text) || 'The desktop action failed.' };
+    }
+    executed.add(fingerprint);
+    const pids = turn.cuaPids || (turn.cuaPids = new Set());
+    const windows = turn.cuaWindows || (turn.cuaWindows = new Set());
+    const windowsByPid = turn.cuaWindowsByPid || (turn.cuaWindowsByPid = new Map());
+    for (const target of result.targets || []) {
+      if (target.pid) pids.add(target.pid);
+      if (target.windowId) {
+        windows.add(target.windowId);
+        if (target.pid) {
+          const key = String(target.pid);
+          const seen = windowsByPid.get(key) || new Set();
+          seen.add(target.windowId);
+          windowsByPid.set(key, seen);
+        }
+      }
+    }
+    if (turnAlive(turn)) overlay.setState({ status: 'verifying', message: 'Checking the result…', approval: null });
+    logger.info('cua', `action=${name} args=${argsSummary} result=ok`);
+    let message = result.text || `Completed ${base.replaceAll('_', ' ')}.`;
+    const firstTarget = result.targets?.[0];
+    if (base === 'launch_app' && firstTarget?.pid) {
+      message += `\nNext step: call cua_get_window_state with pid ${firstTarget.pid}${firstTarget.windowId ? ` and window_id ${firstTarget.windowId}` : ''}. Pass a returned element_token to cua_type_text.`;
+    } else if (base === 'get_window_state' && Number(args?.pid) > 0 && Number(args?.window_id) > 0) {
+      message += `\nNext step: pass an element_token from this read to cua_type_text or cua_set_value. Supply pid ${args.pid} and window_id ${args.window_id} to cua_press_key when saving.`;
+    } else if (base === 'press_key' && String(args?.key).toLowerCase() === 's'
+      && Array.isArray(args?.modifiers) && args.modifiers.map((m) => String(m).toLowerCase()).includes('ctrl')) {
+      message += `\nNext step: if a Save as dialog opened, call cua_list_windows, read the dialog, click its Save button, then read the document again to confirm it is no longer modified.`;
+    } else if (base === 'type_text' && Number(args?.pid) > 0 && Number(args?.window_id) > 0) {
+      message += `\nNext step: verify the text with cua_get_window_state, then save with cua_press_key using key "s", modifiers ["ctrl"], delivery_mode "foreground", pid ${args.pid}, and window_id ${args.window_id}. If a Save as dialog appears, read its window and click Save.`;
+    }
+    if (isSaveShortcut(base, args)) {
+      message += await verifySaveResult(client, args, turn.controller.signal);
+    }
+    return { ok: true, message };
+  } catch (error) {
+    if (error.cancelled || turn.controller.signal.aborted) return { ok: false, cancelled: true, error: 'Turn cancelled.' };
+    logger.warn('cua', `action=${name} args=${argsSummary} result=error error=${cleanError(error)}`);
+    return { ok: false, error: cleanError(error) };
+  } finally {
+    if (turnAlive(turn)) overlay.setState({ status: 'thinking', message: 'Thinking…', approval: null });
+  }
+}
+
 function recentVoiceHistory() {
   const recent = history
     .filter((turn) => turn && turn.said && turn.did && turn.did !== 'Dictated into the focused app.')
@@ -2583,27 +3077,49 @@ function recentVoiceHistory() {
   return recent.reverse();
 }
 
-async function runConversation(turn, transcript, providerName, target) {
+async function runConversation(turn, transcript, providerName, target, { useTools = true } = {}) {
   const key = providerNeedsKey(providerName) ? secrets[providerName] : '';
   if (providerNeedsKey(providerName) && !key) throw new Error(`Add an API key for ${providerName} in the dashboard.`);
   const conversationSettings = providerName === settings.chatProvider ? settings : { ...settings, chatProvider: providerName };
-  const messages = [{ role: 'system', content: systemPrompt(target) }];
+  const useCua = Boolean(useTools && turn.cuaRequested);
+  const messages = [{ role: 'system', content: systemPrompt(target, { cua: useCua }) }];
+  if (!useTools) {
+    messages[0].content += ' No tools are attached to this request. Answer conversationally and do not claim any action.';
+  }
   for (const past of recentVoiceHistory()) {
     messages.push({ role: 'user', content: String(past.said) });
     messages.push({ role: 'assistant', content: String(past.did) });
   }
   messages.push({ role: 'user', content: transcript });
-  const tools = toolSchemas();
-  const result = await runAgentLoop({
-    messages,
-    isAlive: () => turnAlive(turn),
-    signal: turn.controller.signal,
-    onTimeout: () => {
-      turn.controller.abort();
-      if (currentTurn !== turn) return;
-      logger.error('turn', `The agent timed out after ${Math.round(LIMITS.AGENT_TIMEOUT_MS / 1000)} seconds.`);
-      finishTurn(turn);
-      overlay.show({
+  let cuaClient = null;
+  let tools = useTools ? toolSchemas() : [];
+  if (useCua) {
+    cuaClient = cuaMcp.createCuaClient({ log: logger });
+    try {
+      await cuaClient.start(turn.controller.signal);
+      const cuaTools = cuaClient.definitions();
+      tools = tools.concat(cuaTools);
+      logger.info('cua', `Attached ${cuaTools.length} desktop tools from ${cuaClient.source}.`);
+    } catch (error) {
+      logger.warn('cua', `Desktop driver unavailable: ${cleanError(error)}`);
+      await cuaClient.close();
+      cuaClient = null;
+      messages[0].content += ' The desktop driver is unavailable right now, so desktop actions cannot run. Answer without claiming any desktop action happened.';
+    }
+  }
+  const cuaEnabled = Boolean(cuaClient);
+  const timeoutMs = cuaEnabled ? LIMITS.CUA_AGENT_TIMEOUT_MS : LIMITS.AGENT_TIMEOUT_MS;
+  try {
+    const result = await runAgentLoop({
+      messages,
+      isAlive: () => turnAlive(turn),
+      signal: turn.controller.signal,
+      onTimeout: () => {
+        turn.controller.abort();
+        if (currentTurn !== turn) return;
+        logger.error('turn', `The agent timed out after ${Math.round(timeoutMs / 1000)} seconds.`);
+        finishTurn(turn);
+        overlay.show({
         status: 'error',
         mode: turn.mode,
         message: 'The assistant took too long and was stopped. Try a shorter request.',
@@ -2613,11 +3129,11 @@ async function runConversation(turn, transcript, providerName, target) {
       });
       scheduleOverlayHide(6000);
     },
-    maxRounds: LIMITS.MAX_TOOL_ROUNDS,
-    maxToolCalls: LIMITS.MAX_TOOL_CALLS,
+    maxRounds: cuaEnabled ? LIMITS.CUA_MAX_TOOL_ROUNDS : LIMITS.MAX_TOOL_ROUNDS,
+    maxToolCalls: cuaEnabled ? LIMITS.CUA_MAX_TOOL_CALLS : LIMITS.MAX_TOOL_CALLS,
     maxConsecutiveFailures: LIMITS.MAX_CONSECUTIVE_TOOL_FAILURES,
-    timeoutMs: LIMITS.AGENT_TIMEOUT_MS,
-    maxToolResultChars: LIMITS.MAX_TOOL_TEXT_CHARS,
+    timeoutMs,
+    maxToolResultChars: cuaEnabled ? LIMITS.CUA_MAX_TOOL_RESULT_CHARS : LIMITS.MAX_TOOL_TEXT_CHARS,
     messageToText: (message) => {
       const raw = services.messageText(message?.content);
       return raw ? cleanReply(raw) : '';
@@ -2625,19 +3141,41 @@ async function runConversation(turn, transcript, providerName, target) {
     callModel: (conversation) => services.chat(conversationSettings, key, conversation, tools, turn.controller.signal),
     executeTool: async (call) => {
       turn.toolsExecuted = true;
-      const toolResult = await executeTool(turn, call, providerName);
-      logger.info('tool result', `${call.function?.name || 'unknown'}: ${toolResult.ok ? 'ok' : cleanError(toolResult.error)}`);
+      const name = call.function?.name || '';
+      const replacement = cuaEnabled ? CUA_REPLACED_BUILTINS.get(name) : '';
+      const toolResult = replacement
+        ? {
+          ok: false,
+          error: `The built-in ${name} tool is unavailable while desktop tools are attached. Use ${replacement} for this step instead.`
+        }
+        : cuaMcp.isCuaToolName(name)
+          ? await executeCuaTool(turn, call, providerName, cuaClient)
+          : await executeTool(turn, call, providerName);
+      logger.info('tool result', `${name || 'unknown'}: ${toolResult.ok ? 'ok' : cleanError(toolResult.error)}`);
       return toolResult;
     }
   });
-  return result.content;
+    return result.content;
+  } finally {
+    if (cuaClient) await cuaClient.close();
+  }
 }
 
 async function runAgent(turn, transcript) {
   const target = await turn.targetPromise;
   const provider = settings.chatProvider;
+  // Read the mode on every command so a settings change applies to the very
+  // next voice request without restarting Voxa.
+  const commandMode = voiceMode.normalizeVoiceCommandMode(settings.voiceCommandMode);
+  const classification = commandMode === 'always'
+    ? { kind: 'task', task: true, reason: 'always mode' }
+    : voiceMode.classifyVoiceCommand(transcript);
+  turn.voiceCommandMode = commandMode;
+  turn.cuaRequested = classification.task === true;
+  turn.classification = classification;
+  logger.info('voice mode', `mode=${commandMode} kind=${classification.kind} cua=${turn.cuaRequested ? 'on' : 'off'} reason=${classification.reason}`);
   try {
-    return await runConversation(turn, transcript, provider, target);
+    return await runConversation(turn, transcript, provider, target, { useTools: turn.cuaRequested });
   } catch (error) {
     if (error.cancelled || !turnAlive(turn)) throw error;
     const canFallback = !turn.toolsExecuted
@@ -2650,7 +3188,7 @@ async function runAgent(turn, transcript) {
     if (!canFallback) throw error;
     logger.warn('model', `${provider} failed; trying ${settings.fallbackProvider}: ${cleanError(error)}`);
     overlay.setState({ status: 'thinking', message: `Local model unavailable. Trying ${settings.fallbackProvider}…` });
-    return runConversation(turn, transcript, settings.fallbackProvider, target);
+    return runConversation(turn, transcript, settings.fallbackProvider, target, { useTools: turn.cuaRequested });
   }
 }
 
@@ -2666,10 +3204,10 @@ function sendToPlayer(channel, payload) {
   }
   return sendToDashboard(channel, payload);
 }
-async function speakReply(turn, text) {
-  if (!settings.spokenReplies) return;
+async function speakReply(turn, text, { force = false } = {}) {
+  if (!settings.spokenReplies && !force) return false;
   const speech = stripForSpeech(text);
-  if (!speech) return;
+  if (!speech) return false;
   speechController?.abort(); sendToPlayer('tts:stop-audio', {});
   speechController = new AbortController();
   const controller = speechController;
@@ -2679,8 +3217,10 @@ async function speakReply(turn, text) {
     await services.speakStreaming(speech, tts, controller.signal, logger, (buffer) => {
       sendToPlayer('tts:play-audio', buffer);
     });
+    return true;
   } catch (error) {
     logger.warn('speech', cleanError(error));
+    return false;
   } finally {
     if (speechController === controller) {
       speechController = null;
@@ -3179,9 +3719,10 @@ function registerIpc() {
     try {
       const result = await services.checkHealth(provider, base, key, null, base.model);
       clearModelCache(provider);
+      const target = result.model || base.model || 'the selected model';
       const message = result.modelAvailable
-        ? `Connection successful · ${result.model}`
-        : `Connected, but ${result.model} is not in the model list.`;
+        ? `Connection successful · ${target} at ${url}`
+        : `Connected to ${url}, but ${target} is not in the model list.`;
       // Phase E feed: health probes produce cards, successful or not — the
       // missing-model case is a warning tone rather than a hard error.
       pushFeedEvent({
@@ -3193,12 +3734,17 @@ function registerIpc() {
       return {
         ok: Boolean(result.modelAvailable),
         connected: true,
-        message
+        message,
+        url
       };
     } catch (error) {
-      const message = cleanError(error);
+      const detail = cleanError(error);
+      const message = /fetch failed|failed to fetch|ECONNREFUSED|ENOTFOUND|EAI_AGAIN|socket hang up/i.test(detail)
+        ? `Could not reach ${url}. Check the base URL and that the service is running.`
+        : `The provider test failed at ${url}: ${detail}`;
+      logger.warn('provider', `${provider} test at ${url} failed: ${detail}`);
       pushFeedEvent({ title: `${providerFeedLabel(provider)} connection failed`, body: message, kind: 'error', tone: 'highlight' });
-      return { ok: false, message };
+      return { ok: false, connected: false, message, url };
     }
   });
   handle('provider:detect', () => services.detectFreeLlmApi());
@@ -3299,7 +3845,11 @@ function registerIpc() {
   });
   handle('data:clear-all', () => clearLocalData());
   handle('apps:refresh', () => apps.refreshApps(logger).map((item) => item.name));
-  handle('logs:read', () => logger.read(LIMITS.MAX_LOG_LINES));
+  handle('logs:read', (options = {}) => {
+    const limit = Math.min(Math.max(Number(options?.limit) || LIMITS.MAX_LOG_LINES, 1), 5000);
+    const before = typeof options?.before === 'string' ? options.before : '';
+    return logger.readPage(limit, before);
+  });
   handle('overlay:preview', (status, message) => previewOverlay(status, message));
   handle('overlay:test', () => previewOverlay('listening', 'Overlay test from the dashboard.'));
   handle('overlay:gallery-options', (options = {}) => {
@@ -3556,6 +4106,15 @@ function registerIpc() {
   }, ['recorder', 'dashboard']);
   listen('recorder:test-progress', (text) => sendToDashboard('microphone:test-progress', String(text || '')), ['recorder']);
   listen('recorder:audio', (payload) => {
+    if (voiceConfirmation && payload?.sessionId === voiceConfirmation.sessionId) {
+      const pending = voiceConfirmation;
+      voiceConfirmation = null;
+      clearTimeout(pending.stopTimer);
+      clearTimeout(pending.timeoutTimer);
+      if (!pending.turnId || currentTurn?.id === pending.turnId) pending.resolve(payload);
+      else pending.reject(new Error('The turn ended before the answer was recorded.'));
+      return;
+    }
     const turn = currentTurn;
     if (!turn || !payload || payload.sessionId !== turn.recorderId) {
       logger.warn('recording', 'Ignored audio from a stale recording session.');
@@ -3581,6 +4140,14 @@ function registerIpc() {
   listen('recorder:error', (payload) => {
     const message = String(payload?.message || payload || 'Microphone error.');
     logger.error('recorder', message);
+    if (voiceConfirmation && payload?.sessionId === voiceConfirmation.sessionId) {
+      const pending = voiceConfirmation;
+      voiceConfirmation = null;
+      clearTimeout(pending.stopTimer);
+      clearTimeout(pending.timeoutTimer);
+      pending.reject(new Error(message));
+      return;
+    }
     const turn = currentTurn;
     if (turn && (!payload?.sessionId || payload.sessionId === turn.recorderId)) {
       if (turn.recorderId) recorderManager?.cancel(turn.recorderId, 'microphone error');

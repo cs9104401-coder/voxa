@@ -127,6 +127,79 @@ function checkToolSchema() {
   }
 }
 
+function checkVoiceCommandMode() {
+  try {
+    const voice = require('./lib/voice-mode.cjs');
+    const cua = require('./lib/cua-mcp.cjs');
+    const { defaults } = require('./lib/constants.cjs');
+    const weather = voice.classifyVoiceCommand("what's the weather");
+    const notepad = voice.classifyVoiceCommand('open Notepad and type hello, then save it');
+    const close = voice.classifyVoiceCommand('close Notepad');
+    const joke = voice.classifyVoiceCommand('tell me a joke');
+    const schema = {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        pid: { type: 'integer' },
+        text: { type: 'string' },
+        session: { type: 'string' }
+      },
+      required: ['text']
+    };
+    const prepared = cua.prepareArguments('type_text', { text: 'hello', session: 'stale', extra: true }, schema);
+    const windowDefaults = cua.prepareArguments('get_window_state', { pid: 1, window_id: 2 }, {
+      type: 'object',
+      additionalProperties: false,
+      required: ['pid', 'window_id'],
+      properties: {
+        pid: { type: 'integer' },
+        window_id: { type: 'integer' },
+        include_screenshot: { type: 'boolean' },
+        full_output: { type: 'boolean' },
+        tree_format: { type: 'string', enum: ['markdown', 'elements', 'both'] },
+        max_elements: { type: 'integer', minimum: 1 }
+      }
+    });
+    const destructive = [
+      ['kill app', cua.destructiveCuaReason('kill_app', { pid: 10 })],
+      ['alt f4', cua.destructiveCuaReason('hotkey', { keys: ['alt', 'f4'] })],
+      ['blind typing', cua.destructiveCuaReason('type_text', { text: 'hello' }, { pids: new Set(), windows: new Set() })],
+      ['unknown click', cua.destructiveCuaReason('click', { target: { kind: 'window', pid: 99 } }, { pids: new Set([1]), windows: new Set() })]
+    ];
+    const safe = [
+      ['ctrl s', cua.destructiveCuaReason('hotkey', { keys: ['ctrl', 's'] })],
+      ['known typing', cua.destructiveCuaReason('type_text', { text: 'hello', pid: 10 }, { pids: new Set([10]), windows: new Set() })],
+      ['token typing', cua.destructiveCuaReason('type_text', { text: 'hello', element_token: 's0000002a:11' }, { pids: new Set(), windows: new Set() })],
+      ['list windows', cua.destructiveCuaReason('list_windows', {})]
+    ];
+    const cases = [
+      ['default is smart', defaults('Tester').voiceCommandMode === 'smart'],
+      ['invalid mode falls back', voice.normalizeVoiceCommandMode('sometimes') === 'smart'],
+      ['always mode survives', voice.normalizeVoiceCommandMode('always') === 'always'],
+      ['weather is a question', weather.task === false && weather.kind === 'question'],
+      ['notepad request is a task', notepad.task === true && notepad.kind === 'task'],
+      ['close is a task', close.task === true],
+      ['joke is a question', joke.task === false],
+      ['yes parses', voice.parseVoiceConfirmation('Yes, go ahead') === true],
+      ['no parses', voice.parseVoiceConfirmation('No, cancel that') === false],
+      ['unclear parses null', voice.parseVoiceConfirmation('maybe later') === null],
+      ['cua names are namespaced', cua.isCuaToolName('cua_launch_app') && !cua.isCuaToolName('launch_app')],
+      ['session and unknown args stripped', !Object.hasOwn(prepared, 'session') && !Object.hasOwn(prepared, 'extra') && prepared.text === 'hello'],
+      ['window defaults applied', windowDefaults.include_screenshot === false && windowDefaults.tree_format === 'markdown' && windowDefaults.max_elements === 300],
+      ...destructive.map(([name, value]) => [name, Boolean(value)]),
+      ...safe.map(([name, value]) => [name, value === null])
+    ];
+    const failures = cases.filter(([, ok]) => !ok).map(([name]) => name);
+    record(
+      'Voice command routing',
+      failures.length === 0,
+      failures.length ? `Failed: ${failures.join('; ')}` : `${cases.length} smart/always, confirmation, and desktop-safety cases passed.`
+    );
+  } catch (error) {
+    record('Voice command routing', false, error.stack || error.message);
+  }
+}
+
 function checkLogRedaction() {
   try {
     const logger = require('./lib/logger.cjs');
@@ -635,6 +708,7 @@ function run() {
   checkIpcPairs();
   checkPermissionPolicy();
   checkToolSchema();
+  checkVoiceCommandMode();
   checkLogRedaction();
   checkTtsNormaliser();
   checkTtsSegmenter();

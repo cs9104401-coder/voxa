@@ -33,6 +33,7 @@
 .pill[data-state=listening][data-visible=true] .pill-glow{animation:island-glow calc(2s * var(--motion)) ease-in-out infinite}
 .pill[data-state=answer][data-speaking=true][data-visible=true] .pill-glow{opacity:.58;animation:island-glow calc(2.6s * var(--motion)) ease-in-out infinite}
 .pill[data-state=approval][data-visible=true] .pill-glow{opacity:.5;animation:island-glow calc(3.4s * var(--motion)) ease-in-out infinite}
+.pill[data-state=driving][data-visible=true] .pill-glow{opacity:.48;animation:island-glow calc(1.6s * var(--motion)) ease-in-out infinite}
 .pill-clip{position:absolute;inset:0;overflow:hidden;border-radius:inherit}
 .pill-content{position:absolute;top:0;bottom:0;left:50%;width:max(var(--content-width,640px),100%);transform:translateX(-50%);display:flex;flex-direction:column;color:var(--island-text)}
 /* --- Expanded tab rail (Stage 2): three 36px round tabs left, settings right.
@@ -69,7 +70,7 @@
 .pill[data-size=medium] .status-icon{width:24px;height:24px}
 .pill[data-size=expanded] .status-icon{width:22px;height:22px}
 .status-icon .glyph{display:none;width:100%;height:100%;fill:none;stroke:currentColor;stroke-width:1.75;stroke-linecap:round;stroke-linejoin:round}
-.pill:not([data-state=thinking]):not([data-state=executing]):not([data-state=verifying]):not([data-state=done]):not([data-state=error]) .glyph-mark{display:block}
+.pill:not([data-state=thinking]):not([data-state=driving]):not([data-state=executing]):not([data-state=verifying]):not([data-state=done]):not([data-state=error]) .glyph-mark{display:block}
 /* --- Companion: CSS activation orb (Siri-style; pure styling + tiny inline SVG
    variants; no assets, no Apple art — hand-built gradient layers only) --- */
 /* The companion is an avatar in the header grid: it fills the status icon's blob
@@ -191,7 +192,9 @@
 .glyph-check path{stroke-dasharray:30;stroke-dashoffset:30}
 .pill[data-state=done] .glyph-check path{animation:island-check calc(.55s * var(--motion)) cubic-bezier(.3,.8,.3,1) forwards}
 .dots{display:none;align-items:center;justify-content:center;gap:3px;width:100%;height:100%}
-.pill[data-state=thinking] .dots,.pill[data-state=executing] .dots,.pill[data-state=verifying] .dots{display:flex}
+.pill[data-state=thinking] .dots,.pill[data-state=driving] .dots,.pill[data-state=executing] .dots,.pill[data-state=verifying] .dots{display:flex}
+.pill[data-state=driving] .status-icon{color:#ffb14d}
+.pill[data-state=driving] .dots i{background:#ffb14d;animation-duration:.72s}
 .pill[data-state] .dots i{width:4px;height:4px;border-radius:50%;background:currentColor;animation:island-dot 1.1s ease-in-out infinite}
 .pill[data-state] .dots i:nth-child(2){animation-delay:.14s}
 .pill[data-state] .dots i:nth-child(3){animation-delay:.28s}

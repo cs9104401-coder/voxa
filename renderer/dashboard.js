@@ -58,6 +58,10 @@ const PERMISSION_MODES = [
   ['routine', 'Allow Routine Actions', 'Open files, folders, apps, and websites without repeated prompts. Sensitive actions still ask.'],
   ['custom', 'Custom', 'Choose which routine action categories Voxa may use without asking.']
 ];
+const VOICE_COMMAND_MODES = [
+  ['smart', 'Smart', 'Answer plain questions directly; attach desktop tools only to task-like commands.'],
+  ['always', 'Always', 'Send every agent command to the model with desktop tools attached.']
+];
 const PERMISSION_CATEGORIES = [
   ['open_files', 'Open files', 'Open documents and media from your user folders.'],
   ['open_folders', 'Open folders', 'Navigate to ordinary folders inside Home, Desktop, Documents, Downloads, Pictures, Music, or Videos.'],
@@ -91,6 +95,14 @@ let gallerySlowMotion = false;
 let galleryLoop = false;
 let gallerySequenceToken = 0;
 let gallerySequenceRunning = false;
+let healthRefreshTimer = null;
+let healthRefreshBusy = false;
+let logsCursor = '';
+let logsHasMore = false;
+let logsTotal = 0;
+let logFilterTimer = null;
+let historyReady = false;
+let userMenuWired = false;
 
 function esc(value) {
   return String(value ?? '').replace(/[&<>"']/g, (character) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[character]));
@@ -105,12 +117,47 @@ function note(text) {
   toastTimer = setTimeout(() => toast.classList.remove('visible'), 3200);
 }
 
+function friendlyError(error, fallback = 'Something went wrong.') {
+  let message = String(error?.message || error || fallback).split(/\r?\n/)[0].trim();
+  message = message.replace(/^Error invoking remote method '[^']*':\s*/i, '');
+  message = message.replace(/^(?:Error|TypeError|RangeError|ReferenceError):\s*/i, '');
+  if (/fetch failed|failed to fetch/i.test(message)) {
+    return 'Could not reach the server. Check the base URL and that the service is running.';
+  }
+  if (/Community URL must use HTTPS/i.test(message)) {
+    return 'Community URL must start with https://.';
+  }
+  return message || fallback;
+}
+
+function endpointLabel(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return '';
+  try {
+    const url = new URL(raw);
+    url.username = '';
+    url.password = '';
+    return url.href.replace(/\/$/, '');
+  } catch {
+    return raw;
+  }
+}
+
+function modelListMessage(provider, endpoint, error) {
+  const where = endpoint ? ` at ${endpoint}` : ` for ${providerLabel(provider)}`;
+  return `Couldn't load models${where}. ${friendlyError(error, 'The provider did not respond.')}`;
+}
+
 function icon(path) {
   return `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="${path}"/></svg>`;
 }
 
 function chip(text, kind = '') {
   return `<span class="badge ${kind}">${esc(text)}</span>`;
+}
+
+function countLabel(count, singular, plural = `${singular}s`) {
+  return `${count} ${count === 1 ? singular : plural}`;
 }
 
 const FREELLMAPI_PROVIDER = 'freellmapi';
@@ -905,14 +952,14 @@ function heading(title, subtitle, avatar = false) {
 }
 
 function modeCard(mode, title, copy, hotkey, enabled) {
-  return `<article class="card mode-card" data-edit-hotkey="${mode}">
+  return `<article class="card mode-card" data-edit-hotkey="${mode}" tabindex="0">
     <div class="mode-top">
       <span class="mode-icon">${icon(mode === 'dictation' ? 'M9 3h6v12H9zM5 11a7 7 0 0 0 14 0M12 18v3' : 'M12 3v3m0 12v3M4 8h4m8 0h4M4 16h4m8 0h4')}</span>
       <div class="mode-title"><h3>${esc(title)}</h3><p>${esc(copy)}</p></div>
       <span class="mode-status"><i class="status-dot ${enabled ? '' : 'off'}"></i>${enabled ? 'Ready' : 'Off'}</span>
     </div>
     <div class="mode-hotkey">Hold ${String(hotkey).split('+').map(keycap).join(' + ')} in any text field</div>
-    <div class="mode-bottom"><span>Click to edit shortcut</span>${toggle(`${mode}Enabled`, enabled, `${title} enabled`, `${mode}Enabled`)}</div>
+    <div class="mode-bottom"><span>Click to edit shortcut</span>${toggle(`mode-${mode}Enabled`, enabled, `${title} enabled`, `${mode}Enabled`)}</div>
   </article>`;
 }
 
@@ -923,6 +970,7 @@ function gallery() {
     ['listening', 'Listening', 'Listening · release to ask'],
     ['thinking', 'Thinking', 'Thinking…'],
     ['executing', 'Executing', 'Opening Notepad…'],
+    ['driving', 'Driving', 'Typing into Notepad…'],
     ['verifying', 'Verifying', 'Checking the result…'],
     ['answer', 'Answer', 'Here is a sample answer from Voxa. The island grows to fit the card, and the height follows the text as it streams in.'],
     ['chat', 'Chat', ''],
@@ -955,6 +1003,7 @@ async function playGallerySequence() {
     ['listening', 'Listening · release to ask', 900],
     ['thinking', 'Thinking…', 900],
     ['executing', 'Opening Notepad…', 900],
+    ['driving', 'Typing into Notepad…', 900],
     ['answer', 'Here is a sample answer from Voxa. Words fade in as the island settles into its expanded card, and the height follows the content without a jump.', 2200],
     ['chat', '', 2000],
     ['approval', 'Allow this sample action? Nothing will run in the gallery.', 1500],
@@ -1060,7 +1109,7 @@ function historyResults() {
     const day = new Date(turn.time).toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' });
     (days[day] ||= []).push(turn);
   });
-  const content = Object.entries(days).map(([day, items]) => `<div class="section-head"><h2>${esc(day)}</h2>${chip(`${items.length} turns`)}</div><div class="card rows-card">${items.map((turn) => `<div class="row"><span class="row-icon">${icon('M12 4v16m-7-8h14')}</span><div class="row-main"><b>${esc(turn.said)}</b><small>${esc(turn.did)}</small></div><small>${new Date(turn.time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</small></div>`).join('')}</div>`).join('');
+  const content = Object.entries(days).map(([day, items]) => `<div class="section-head"><h2>${esc(day)}</h2>${chip(countLabel(items.length, 'turn'))}</div><div class="card rows-card">${items.map((turn) => `<div class="row"><span class="row-icon">${icon('M12 4v16m-7-8h14')}</span><div class="row-main"><b>${esc(turn.said)}</b><small>${esc(turn.did)}</small></div><small>${new Date(turn.time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</small></div>`).join('')}</div>`).join('');
   return content || '<div class="empty">No matching turns yet.</div>';
 }
 
@@ -1080,7 +1129,7 @@ function dictation() {
   const presetInfo = WHISPER_PRESETS[preset];
   return `${heading('Dictation', 'Set up how Voxa listens and types.')}
   <div class="page-stack">
-    <article class="card"><h2 class="card-title">Dictation shortcut</h2><p class="card-note">Hold the shortcut to record. Releasing it sends the transcript. Ctrl+Space may conflict with Windows input switching.</p><div class="row-side"><button class="button" data-edit-hotkey="dictation">Edit · ${esc(settings.dictationHotkey || 'Ctrl+Q')}</button>${toggle('dictationEnabled', settings.dictationEnabled !== false, 'Enable dictation', 'dictationEnabled')}</div></article>
+    <article class="card"><h2 class="card-title">Dictation shortcut</h2><p class="card-note">Hold the shortcut to record. Releasing it sends the transcript. Ctrl+Space may conflict with Windows input switching.</p><div class="row-side"><button class="button" data-edit-hotkey="dictation">Edit · ${esc(settings.dictationHotkey || 'Ctrl+Q')}</button>${toggle('page-dictationEnabled', settings.dictationEnabled !== false, 'Enable dictation', 'dictationEnabled')}</div></article>
     <article class="card"><h2 class="card-title">Speech recognition</h2>
       <div class="form-grid">
         <label class="field">Transcription<select class="select" id="sttProvider"><option value="local" ${settings.sttProvider !== 'cloud' ? 'selected' : ''}>Local</option><option value="cloud" ${settings.sttProvider === 'cloud' ? 'selected' : ''}>Cloud API</option></select></label>
@@ -1254,7 +1303,7 @@ function renderComboList(combo) {
     status.innerHTML = '<span class="combo-loading"><i></i>Loading models…</span>';
   } else if (state.error) {
     status.hidden = false;
-    status.innerHTML = `<span class="combo-error">Couldn't load models: ${esc(state.error)}</span> <button type="button" class="link-button" data-combo-retry>Retry</button>`;
+    status.innerHTML = `<span class="combo-error">${esc(state.error)}</span> <button type="button" class="link-button" data-combo-retry>Retry</button>`;
   } else {
     status.hidden = true;
     status.innerHTML = '';
@@ -1387,7 +1436,7 @@ async function refreshComboModels(combo, { force = false } = {}) {
     state.models = [];
     state.loaded = false;
     state.loading = false;
-    state.error = String(error?.message || 'The provider did not respond.').replace(/^Error invoking remote method '[^']*':\s*(?:Error:\s*)?/, '').split(/\r?\n/)[0].trim();
+    state.error = modelListMessage(provider, endpointLabel(config.url || settings.providers?.[provider]?.url), error);
   }
   updateComboMeta(combo);
   renderComboList(combo);
@@ -1570,7 +1619,11 @@ function agent() {
     .map((name) => `<option value="${esc(name)}" ${fallbackProvider === name ? 'selected' : ''}>${esc(name === 'none' ? 'None' : providerLabel(name))}</option>`).join('');
   return `${heading('Agent', 'Choose a model and the actions it can request.')}
   <div class="page-stack">
-    <article class="card"><h2 class="card-title">Agent shortcut</h2><p class="card-note">Hold both keys to ask. Releasing either sends the request. Alt shortcuts are detected but Windows may also react to them.</p><div class="row-side"><button class="button" data-edit-hotkey="agent">Edit · ${esc(settings.agentHotkey || 'Alt+Q')}</button>${toggle('agentEnabled', settings.agentEnabled !== false, 'Enable agent', 'agentEnabled')}</div></article>
+    <article class="card"><h2 class="card-title">Agent shortcut</h2><p class="card-note">Hold both keys to ask. Releasing either sends the request. Alt shortcuts are detected but Windows may also react to them.</p><div class="row-side"><button class="button" data-edit-hotkey="agent">Edit · ${esc(settings.agentHotkey || 'Alt+Q')}</button>${toggle('page-agentEnabled', settings.agentEnabled !== false, 'Enable agent', 'agentEnabled')}</div></article>
+    <article class="card"><h2 class="card-title">Voice commands</h2><p class="card-note">Choose when Agent voice commands can use desktop tools. The setting is read on every command.</p>
+      <label class="field" style="margin-top:12px">Desktop tool routing<select class="select" id="voiceCommandMode">${VOICE_COMMAND_MODES.map(([id, label]) => `<option value="${id}" ${(settings.voiceCommandMode || 'smart') === id ? 'selected' : ''}>${esc(label)}</option>`).join('')}</select></label>
+      ${VOICE_COMMAND_MODES.map(([id, label, detail]) => `<p class="card-note"><b>${esc(label)}</b> — ${esc(detail)}</p>`).join('')}
+    </article>
     <article class="card"><h2 class="card-title">Provider</h2>
       <div class="form-grid">
         <label class="field">Provider<select class="select" id="chatProvider">${providerOptions}</select></label>
@@ -1658,14 +1711,45 @@ function about() {
 function filteredLogLines() {
   const query = logQuery.trim().toLowerCase();
   return (data.activationLogs || [])
-    .filter((line) => !query || String(line).toLowerCase().includes(query))
-    .slice(-500);
+    .filter((line) => !query || String(line).toLowerCase().includes(query));
+}
+
+function logsSummary(matchCount) {
+  const loaded = (data.activationLogs || []).length;
+  const total = Math.max(loaded, Number(logsTotal) || 0);
+  if (logQuery.trim()) {
+    const matches = countLabel(matchCount, 'matching line');
+    return total > loaded ? `${matches} in the last ${loaded} of ${total} lines.` : `${matches} of ${total}.`;
+  }
+  if (!loaded) return 'No lines loaded.';
+  if (total > loaded) return `Showing the last ${loaded} of ${total} lines · older lines available.`;
+  return `Showing all ${countLabel(total, 'line')}.`;
+}
+
+function logsEmptyText() {
+  return logQuery.trim() ? 'No matching lines.' : 'No log lines yet.';
 }
 
 function logsPage() {
-  const lines = filteredLogLines().join('\n');
+  const filtered = filteredLogLines();
   return `${heading('Logs', 'Activation, microphone, transcription, model, and tool events.')}
-  <div class="page-stack"><article class="card"><div class="row-side"><input id="logFilter" class="input" aria-label="Filter logs" placeholder="Filter logs" value="${esc(logQuery)}"><span class="card-note">Saved to your local activation log.</span><button class="button" id="refreshLogs">Refresh</button></div><pre class="log-box" id="logsPage">${esc(lines)}</pre></article></div>`;
+  <div class="page-stack"><article class="card"><div class="row-side"><input id="logFilter" class="input" aria-label="Filter logs" placeholder="Filter logs" value="${esc(logQuery)}"><span class="card-note">Saved to your local activation log.</span><button class="button" id="refreshLogs">Refresh</button></div><pre class="log-box" id="logsPage" ${filtered.length ? '' : 'hidden'}>${esc(filtered.join('\n'))}</pre><div class="empty" id="logsEmpty" ${filtered.length ? 'hidden' : ''}>${logsEmptyText()}</div>
+  <div class="row-side" style="margin-top:10px;justify-content:space-between"><span class="card-note" id="logsSummary">${esc(logsSummary(filtered.length))}</span>${logsHasMore ? '<button class="button" id="loadMoreLogs">Load more</button>' : ''}</div></article></div>`;
+}
+
+function renderLogFilter() {
+  const filtered = filteredLogLines();
+  const box = $('#logsPage');
+  if (!box) return;
+  box.textContent = filtered.join('\n');
+  box.hidden = filtered.length === 0;
+  const empty = $('#logsEmpty');
+  if (empty) {
+    empty.hidden = filtered.length > 0;
+    empty.textContent = logsEmptyText();
+  }
+  const summary = $('#logsSummary');
+  if (summary) summary.textContent = logsSummary(filtered.length);
 }
 
 const renderers = {
@@ -1680,7 +1764,21 @@ const renderers = {
   about
 };
 
+function updateProfileGuard() {
+  const bar = $('#profileGuard');
+  if (!bar) return;
+  const guard = data.profileGuard;
+  if (!guard?.tooNew) {
+    bar.hidden = true;
+    bar.textContent = '';
+    return;
+  }
+  bar.hidden = false;
+  bar.textContent = `Settings are read-only. This profile was created by a newer Voxa (settings v${guard.foundVersion}; this build supports v${guard.supportedVersion}). Update Voxa to change settings. Your file was not modified.`;
+}
+
 function renderAll() {
+  updateProfileGuard();
   for (const [name, render] of Object.entries(renderers)) {
     const page = $(`#page-${name}`);
     if (page) page.innerHTML = render();
@@ -1751,7 +1849,6 @@ function updateShell() {
     community.hidden = !settings.communityUrl;
     community.href = settings.communityUrl || '#';
   }
-  const status = $('#appStatus');
   const provider = settings.chatProvider || 'local';
   const providerName = providerLabel(provider);
   const chat = data.health?.chat;
@@ -1764,12 +1861,14 @@ function updateShell() {
   const speechStatus = optionalAsrSelected() ? asrStatus : whisperStatus;
   const speechPercent = optionalAsrSelected() ? asrPercent : whisperPercent;
   const preparing = speechStatus === 'downloading' || speechStatus === 'loading' || speechStatus === 'preparing';
-  status.classList.toggle('bad', !chatOk && !preparing);
-  $('#appStatusText').textContent = preparing
+  const statusBad = !chatOk && !preparing;
+  for (const dot of $$('#appStatus, #appStatusDock')) dot.classList.toggle('bad', statusBad);
+  const statusText = preparing
     ? speechStatus === 'downloading'
       ? speechPercent == null ? 'Downloading speech model' : `Downloading speech model ${speechPercent}%`
       : 'Loading speech model'
     : chatOk ? `${providerName} and ready` : needsKey ? `${providerName} key required` : provider === 'local' ? 'Check local services' : `${providerName} unavailable`;
+  for (const label of $$('#appStatusText, #appStatusTextDock')) label.textContent = statusText;
   updateDockHint();
   updateHealthBadges();
   updateWhisperModelControls();
@@ -1818,7 +1917,7 @@ async function refreshMicrophones() {
   }
 }
 
-function nav(page, force = false) {
+function nav(page, force = false, historyMode = 'push') {
   if (!renderers[page]) page = 'dashboard';
   const previous = activePage;
   activePage = page;
@@ -1829,11 +1928,17 @@ function nav(page, force = false) {
   });
   $$('.page').forEach((section) => section.classList.toggle('active', section.id === `page-${page}`));
   $('.page-scroll').scrollTop = 0;
+  const hash = `#${page}`;
   try {
-    window.history.replaceState(null, '', `#${page}`);
+    if (historyMode === 'replace' || (historyMode === 'push' && !historyReady)) {
+      window.history.replaceState(null, '', hash);
+      historyReady = true;
+    } else if (historyMode === 'push' && window.location.hash !== hash) {
+      window.history.pushState(null, '', hash);
+    }
   } catch {
     try {
-      window.location.hash = page;
+      if (historyMode !== 'none') window.location.hash = page;
     } catch {}
   }
   if (previous === page && !force) return;
@@ -1897,6 +2002,7 @@ function collectPagePatch() {
       };
     }
     patch.providers = providersPatch;
+    if ($('#voiceCommandMode')) patch.voiceCommandMode = $('#voiceCommandMode').value;
     if ($('#permissionMode')) {
       patch.permissionMode = $('#permissionMode').value;
       patch.permissionCustom = {};
@@ -1962,7 +2068,7 @@ async function savePage() {
       startMicMonitor();
     }
   } catch (error) {
-    note(error.message || 'Could not save settings.');
+    note(friendlyError(error, 'Could not save settings.'));
   }
 }
 
@@ -1993,7 +2099,7 @@ async function saveInlineToggle(input) {
     restoreFieldValues(fieldValues);
   } catch (error) {
     input.checked = !previous;
-    note(error.message || 'Could not save that setting.');
+    note(friendlyError(error, 'Could not save that setting.'));
   }
 }
 
@@ -2107,11 +2213,12 @@ function keyToken(event) {
   return '';
 }
 
-function editHotkey(mode) {
+function editHotkey(mode, trigger) {
   const modal = document.createElement('div');
   modal.className = 'modal-shade';
-  modal.innerHTML = `<div class="modal" role="dialog" aria-modal="true"><h2>Edit ${esc(mode)} shortcut</h2><p>Press a key combination. Ctrl+Space can conflict with Windows input switching; F9 and Alt+Q are safe defaults.</p><div class="row-side"><button class="button" data-hotkey-preset="F9">F9</button><button class="button" data-hotkey-preset="Alt+Q">Alt+Q</button><button class="button" data-hotkey-preset="Ctrl+Space">Ctrl+Space</button></div><button id="capture" class="button primary" style="width:100%;margin-top:12px">Click, then press your keys</button><div id="captureValue" style="padding:15px 0;color:var(--muted)">Waiting…</div><div id="hotkeyWarning" class="card-note"></div><div class="modal-actions"><button id="cancel" class="button">Cancel</button><button id="use" class="button primary" disabled>Use shortcut</button></div></div>`;
+  modal.innerHTML = `<div class="modal" role="dialog" aria-modal="true" aria-labelledby="hotkeyTitle" aria-describedby="hotkeyHelp"><h2 id="hotkeyTitle">Edit ${esc(mode)} shortcut</h2><p id="hotkeyHelp">Press a key combination. Ctrl+Space can conflict with Windows input switching; F9 and Alt+Q are safe defaults.</p><div class="row-side"><button class="button" data-hotkey-preset="F9">F9</button><button class="button" data-hotkey-preset="Alt+Q">Alt+Q</button><button class="button" data-hotkey-preset="Ctrl+Space">Ctrl+Space</button></div><button id="capture" class="button primary" style="width:100%;margin-top:12px">Click, then press your keys</button><div id="captureValue" style="padding:15px 0;color:var(--muted)">Waiting…</div><div id="hotkeyWarning" class="card-note"></div><div class="modal-actions"><button id="cancel" class="button">Cancel</button><button id="use" class="button primary" disabled>Use shortcut</button></div></div>`;
   document.body.append(modal);
+  const previousFocus = trigger && typeof trigger.focus === 'function' ? trigger : document.activeElement;
   const capture = modal.querySelector('#capture');
   const valueBox = modal.querySelector('#captureValue');
   const warning = modal.querySelector('#hotkeyWarning');
@@ -2138,14 +2245,31 @@ function editHotkey(mode) {
     document.removeEventListener('keydown', onKeyDown, true);
     document.removeEventListener('keyup', onKeyUp, true);
     modal.remove();
+    if (previousFocus && document.contains(previousFocus)) previousFocus.focus();
   }
 
   function onKeyDown(event) {
-    if (event.key === 'Escape' && !down.size) {
+    if (event.key === 'Escape') {
       event.preventDefault();
+      event.stopPropagation();
       close();
       return;
     }
+    if (event.key === 'Tab') {
+      const focusables = [...modal.querySelectorAll('button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])')];
+      if (!focusables.length) return;
+      const first = focusables[0];
+      const last = focusables[focusables.length - 1];
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+      return;
+    }
+    if (document.activeElement !== capture) return;
     event.preventDefault();
     event.stopPropagation();
     if (/^(Control|Alt|Shift|Meta)/.test(event.code)) down.set(event.code, '');
@@ -2158,11 +2282,14 @@ function editHotkey(mode) {
   }
 
   function onKeyUp(event) {
-    event.preventDefault();
-    event.stopPropagation();
+    const capturing = document.activeElement === capture;
+    if (capturing) {
+      event.preventDefault();
+      event.stopPropagation();
+    }
     const combo = currentCombo(down);
     down.delete(event.code);
-    if (combo.key && (combo.modifiers > 0 || /^F([1-9]|1[0-2])$/.test(combo.key))) update(combo.value);
+    if (capturing && combo.key && (combo.modifiers > 0 || /^F([1-9]|1[0-2])$/.test(combo.key))) update(combo.value);
   }
 
   modal.querySelectorAll('[data-hotkey-preset]').forEach((button) => {
@@ -2172,6 +2299,7 @@ function editHotkey(mode) {
     };
   });
   capture.onclick = () => capture.focus();
+  capture.addEventListener('blur', () => down.clear());
   modal.querySelector('#cancel').onclick = close;
   use.onclick = async () => {
     if (!value) return;
@@ -2196,6 +2324,19 @@ function editHotkey(mode) {
   capture.focus();
 }
 
+function setUserMenuOpen(open) {
+  const menu = $('#userDropdown');
+  const button = $('#userMenu');
+  if (!menu || !button) return;
+  menu.hidden = !open;
+  button.setAttribute('aria-expanded', String(open));
+  if (open) {
+    menu.querySelector('[role="menuitem"]')?.focus();
+  } else if (menu.contains(document.activeElement)) {
+    button.focus();
+  }
+}
+
 async function saveProfile() {
   await savePage();
 }
@@ -2215,7 +2356,13 @@ function wire() {
   $$('[data-edit-hotkey]').forEach((element) => {
     element.onclick = (event) => {
       if (event.target.closest('.toggle')) return;
-      editHotkey(element.dataset.editHotkey);
+      editHotkey(element.dataset.editHotkey, element);
+    };
+    element.onkeydown = (event) => {
+      if (event.target.closest('.toggle')) return;
+      if (event.key !== 'Enter' && event.key !== ' ') return;
+      event.preventDefault();
+      editHotkey(element.dataset.editHotkey, element);
     };
   });
   $$('.toggle input').forEach((input) => {
@@ -2276,15 +2423,33 @@ function wire() {
 
   const userMenu = $('#userMenu');
   if (userMenu) {
-    userMenu.onclick = () => {
+    userMenu.onclick = (event) => {
+      event.stopPropagation();
       const dropdown = $('#userDropdown');
-      if (dropdown) dropdown.hidden = !dropdown.hidden;
+      if (dropdown) setUserMenuOpen(dropdown.hidden);
     };
+    if (!userMenuWired) {
+      userMenuWired = true;
+      document.addEventListener('pointerdown', (event) => {
+        const dropdown = $('#userDropdown');
+        if (!dropdown || dropdown.hidden) return;
+        const target = event.target instanceof Element ? event.target : null;
+        if (target?.closest('#userMenu') || target?.closest('#userDropdown')) return;
+        setUserMenuOpen(false);
+      }, true);
+      document.addEventListener('keydown', (event) => {
+        const dropdown = $('#userDropdown');
+        if (event.key !== 'Escape' || !dropdown || dropdown.hidden) return;
+        event.preventDefault();
+        event.stopPropagation();
+        setUserMenuOpen(false);
+      }, true);
+    }
   }
   $$('[data-menu]').forEach((button) => {
     button.onclick = () => {
       const action = button.dataset.menu;
-      $('#userDropdown').hidden = true;
+      setUserMenuOpen(false);
       if (action === 'settings' || action === 'about') nav(action);
       else void api.windowAction('quit').catch((error) => note(error.message));
     };
@@ -2310,8 +2475,8 @@ function wire() {
   if (logFilter) {
     logFilter.oninput = () => {
       logQuery = logFilter.value;
-      const box = $('#logsPage');
-      if (box) box.textContent = filteredLogLines().join('\n');
+      clearTimeout(logFilterTimer);
+      logFilterTimer = setTimeout(renderLogFilter, 120);
     };
   }
 
@@ -2446,9 +2611,31 @@ function wire() {
   if (refreshLogs) {
     refreshLogs.onclick = async () => {
       try {
-        data.activationLogs = await api.readLogs();
+        const page = await api.readLogs({ limit: 500 });
+        data.activationLogs = Array.isArray(page?.lines) ? page.lines : [];
+        logsCursor = page?.nextBefore || '';
+        logsHasMore = Boolean(page?.hasMore);
+        logsTotal = Number(page?.total) || data.activationLogs.length;
         refreshPage('logs');
       } catch (error) {
+        note(error.message);
+      }
+    };
+  }
+  const loadMoreLogs = $('#loadMoreLogs');
+  if (loadMoreLogs) {
+    loadMoreLogs.onclick = async () => {
+      loadMoreLogs.disabled = true;
+      try {
+        const page = await api.readLogs({ limit: 500, before: logsCursor });
+        const older = Array.isArray(page?.lines) ? page.lines : [];
+        data.activationLogs = [...older, ...(data.activationLogs || [])];
+        logsCursor = page?.nextBefore || logsCursor;
+        logsHasMore = Boolean(page?.hasMore);
+        logsTotal = Math.max(Number(page?.total) || 0, data.activationLogs.length);
+        refreshPage('logs');
+      } catch (error) {
+        loadMoreLogs.disabled = false;
         note(error.message);
       }
     };
@@ -2621,6 +2808,8 @@ async function handleAction(action, button) {
         data.turns = [];
         data.memory = [];
         data.activationLogs = [];
+        logsCursor = '';
+        logsHasMore = false;
         data.health = { ...(data.health || {}), kokoro: { status: 'needs-consent', modelReady: false, voiceReady: false, hasConsent: false } };
         if (result?.failed?.length) {
           note(`Most data was cleared, but these items could not be removed: ${result.failed.join(', ')}.`);
@@ -2672,17 +2861,35 @@ async function handleAction(action, button) {
       const provider = $('#chatProvider')?.value;
       const status = $('#providerStatus');
       if (!provider) return;
+      const endpoint = endpointLabel($('#chatUrl')?.value.trim() || settings.providers?.[provider]?.url);
       button.disabled = true;
       if (status) status.textContent = 'Testing…';
-      const result = await api.testProvider(provider, {
-        url: $('#chatUrl')?.value.trim(),
-        model: $('#chatModel')?.value.trim()
-      }, $('#chatKey')?.value.trim());
-      button.disabled = false;
-      if (status) status.textContent = result.message;
-      if (result.connected || result.ok) {
-        const combo = $('[data-model-combo][data-model-kind="chat"]');
-        if (combo) void refreshComboModels(combo, { force: true });
+      try {
+        const result = await api.testProvider(provider, {
+          url: $('#chatUrl')?.value.trim(),
+          model: $('#chatModel')?.value.trim()
+        }, $('#chatKey')?.value.trim());
+        const message = friendlyError(result.message, 'The connection test failed.');
+        if (status) status.textContent = message;
+        if (result.connected || result.ok) {
+          const combo = $('[data-model-combo][data-model-kind="chat"]');
+          if (combo) {
+            await refreshComboModels(combo, { force: true });
+            const state = comboState(combo);
+            if (status && state.error) {
+              status.textContent = `${message} The model list did not load: ${state.error}`;
+            }
+          }
+        }
+      } catch (error) {
+        const message = friendlyError(error, 'The connection test failed.');
+        if (status) {
+          status.textContent = endpoint && /^Could not reach the server/i.test(message)
+            ? `Could not reach ${endpoint}. Check the base URL and that the service is running.`
+            : message;
+        }
+      } finally {
+        button.disabled = false;
       }
       return;
     }
@@ -2781,6 +2988,30 @@ async function runMicTest() {
   }
 }
 
+async function refreshHealth({ silent = true } = {}) {
+  if (healthRefreshBusy) return;
+  healthRefreshBusy = true;
+  try {
+    const health = await api.health();
+    if (health && typeof health === 'object') {
+      data.health = { ...data.health, ...health };
+      updateShell();
+    }
+  } catch (error) {
+    if (!silent) note(error.message || 'Could not refresh service status.');
+  } finally {
+    healthRefreshBusy = false;
+  }
+}
+
+function startHealthRefresh() {
+  if (healthRefreshTimer) clearInterval(healthRefreshTimer);
+  healthRefreshTimer = setInterval(() => {
+    if (document.hidden) return;
+    void refreshHealth();
+  }, 5000);
+}
+
 async function load() {
   try {
     data = await api.getState();
@@ -2803,13 +3034,19 @@ async function load() {
     }
     settings = data.settings || {};
     settings._microphones = [];
+    data.activationLogs = Array.isArray(data.activationLogs) ? data.activationLogs : [];
+    logsCursor = typeof data.logsCursor === 'string' ? data.logsCursor : '';
+    logsHasMore = data.logsHasMore === true;
+    logsTotal = Number(data.logsTotal) || data.activationLogs.length;
     // Initial Kokoro status request, bounded so the card cannot stay on
     // "Checking" if the IPC bridge never answers.
     data.health = { ...data.health, kokoro: await fetchKokoroHealth() };
     renderAll();
     const initial = location.hash.slice(1);
-    nav(renderers[initial] ? initial : 'dashboard', true);
-    if (data.gallery) nav('dashboard', true);
+    nav(renderers[initial] ? initial : 'dashboard', true, 'replace');
+    if (data.gallery) nav('dashboard', true, 'replace');
+    void refreshHealth();
+    startHealthRefresh();
   } catch (error) {
     console.error('dashboard load failed', error);
     note(error.message || 'Could not load the workspace.');
@@ -2868,10 +3105,20 @@ api.on('ptt-state', ({ active } = {}) => {
 api.on('log:entry', (entry) => {
   if (!entry) return;
   const line = `${entry.time} [${entry.level}] [${entry.step}]${entry.detail ? ` ${entry.detail}` : ''}`;
+  data.activationLogs = [...(data.activationLogs || []), line].slice(-5000);
+  logsTotal = Math.max(logsTotal + 1, (data.activationLogs || []).length);
   const log = $('#logsPage');
   if (!log) return;
-  if (logQuery.trim() && !line.toLowerCase().includes(logQuery.trim().toLowerCase())) return;
-  log.textContent = `${log.textContent}\n${line}`.split('\n').slice(-500).join('\n');
+  const hidden = logQuery.trim() && !line.toLowerCase().includes(logQuery.trim().toLowerCase());
+  if (!hidden) {
+    log.hidden = false;
+    const next = log.textContent ? `${log.textContent}\n${line}` : line;
+    log.textContent = next.split('\n').slice(-5000).join('\n');
+    const empty = $('#logsEmpty');
+    if (empty) empty.hidden = true;
+  }
+  const summary = $('#logsSummary');
+  if (summary) summary.textContent = logsSummary(filteredLogLines().length);
 });
 api.on('audio-level', ({ peak = 0 } = {}) => {
   const meter = $('#settingsMicLevel');
@@ -2927,20 +3174,34 @@ api.on('tts:health-updated', (health) => {
   applyKokoroHealth(health);
 });
 
+window.addEventListener('popstate', () => {
+  const page = location.hash.slice(1);
+  const next = renderers[page] ? page : 'dashboard';
+  if (next === activePage) return;
+  nav(next, false, 'none');
+});
 window.addEventListener('hashchange', () => {
   const page = location.hash.slice(1);
-  if (renderers[page] && page !== activePage) nav(page);
+  if (renderers[page] && page !== activePage) nav(page, false, 'none');
 });
 window.addEventListener('beforeunload', () => {
   stopMicMonitor();
+  if (healthRefreshTimer) {
+    clearInterval(healthRefreshTimer);
+    healthRefreshTimer = null;
+  }
   if (data.gallery) {
     gallerySequenceToken += 1;
     void api.setOverlayOptions({ slowMotion: false }).catch(() => {});
   }
 });
 document.addEventListener('visibilitychange', () => {
-  if (document.hidden) stopMicMonitor();
-  else if (activePage === 'dictation') startMicMonitor();
+  if (document.hidden) {
+    stopMicMonitor();
+  } else {
+    if (activePage === 'dictation') startMicMonitor();
+    void refreshHealth();
+  }
 });
 
 function markSettingsDirty(event) {

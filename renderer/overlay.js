@@ -280,6 +280,11 @@ function viewFor(snap) {
         state: 'executing',
         options: compactWhenCollapsed({ text: message || 'Working…', mode })
       };
+    case 'driving':
+      return {
+        state: 'driving',
+        options: compactWhenCollapsed({ text: message || 'Driving the desktop…', mode })
+      };
     case 'verifying':
       return {
         state: 'verifying',

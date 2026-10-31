@@ -363,7 +363,8 @@
   white-space: nowrap;
 }
 
-#appStatusText { font-size: var(--vx-fs-label); }
+#appStatusText,
+#appStatusTextDock { font-size: var(--vx-fs-label); }
 
 .dashboard-body .service-dot,
 .dashboard-body .status-dot {
@@ -1100,6 +1101,18 @@
   font-size: var(--vx-fs-small);
 }
 
+.dashboard-body .profile-guard {
+  max-width: 1000px;
+  margin: 0 auto 12px;
+  padding: 11px 14px;
+  border: 1px solid rgba(240, 194, 134, .38);
+  border-radius: var(--vx-r-btn);
+  background: rgba(240, 194, 134, .10);
+  color: var(--vx-warn);
+  font-size: var(--vx-fs-small);
+  line-height: 1.5;
+}
+
 .dashboard-body .toast {
   bottom: var(--vx-sp-5);
   right: var(--vx-sp-5);
@@ -1187,6 +1200,11 @@
 
 .dashboard-body :focus-visible { outline-color: var(--vx-outline); }
 
+.dashboard-body [data-edit-hotkey]:focus-visible {
+  outline: 2px solid var(--vx-outline);
+  outline-offset: 3px;
+}
+
 .dashboard-body .page-scroll::-webkit-scrollbar { width: 10px; height: 10px; }
 
 .dashboard-body .page-scroll::-webkit-scrollbar-thumb {
@@ -1230,6 +1248,19 @@
   .dashboard-body .page-scroll { padding-bottom: 20px; }
   .dashboard-body .voice-dock { margin: 0 14px 14px; min-height: 52px; }
   .dashboard-body .section-head { margin-top: 20px; }
+
+  /* Keep the rail's bottom controls inside the panel at the 860x580 minimum
+     window size; dashboard-shell clips anything that overflows it. */
+  .dashboard-body .sidebar { gap: var(--vx-sp-2); padding: var(--vx-sp-2); }
+  .dashboard-body .brand { padding: var(--vx-sp-1) 0; }
+  .dashboard-body .brand-mark { width: 32px; height: 32px; }
+  .dashboard-body nav { gap: var(--vx-sp-2); }
+  .dashboard-body .nav-item { width: 36px; height: 34px; }
+  .dashboard-body .nav-item svg { width: 16px; height: 16px; }
+  .dashboard-body .sidebar-bottom { gap: 6px; padding-top: var(--vx-sp-2); }
+  .dashboard-body .community { width: 34px; height: 34px; }
+  .dashboard-body .sidebar-bottom .avatar { width: 30px; height: 30px; }
+  .dashboard-body .user-chip { padding: 5px; }
 }
 
 /* ---------- Solid fallback when backdrop-filter is unavailable ---------- */

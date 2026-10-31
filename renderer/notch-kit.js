@@ -25,6 +25,7 @@
     idle:      { lid: .32, by: 0,  ba: 0,   tl: 0,  cheek: .35, es: 1,    lift: 0,  breath: .012, speed: .9,  v: 'open' },
     listening: { lid: .04, by: -2, ba: -3,  tl: -3, cheek: .35, es: 1.1,  lift: 0,  breath: .016, speed: 1.4, v: 'open' },
     thinking:  { lid: .28, by: -1, ba: 5,   tl: 6,  cheek: .3,  es: 1,    lift: 0,  breath: .012, speed: 1.1, v: 'open' },
+    driving:   { lid: .1,  by: -2, ba: -4,  tl: -2, cheek: .45, es: 1.1,  lift: -1, breath: .018, speed: 1.7, v: 'open' },
     speaking:  { lid: .14, by: -1, ba: 0,   tl: 0,  cheek: .4,  es: 1,    lift: 0,  breath: .016, speed: 1.8, v: 'open' },
     happy:     { lid: 0,   by: -3, ba: -4,  tl: -4, cheek: 1,   es: 1,    lift: -1, breath: .02,  speed: 2.2, v: 'happy' },
     error:     { lid: 0,   by: 1,  ba: -11, tl: 0,  cheek: 0,   es: 1,    lift: 0,  breath: .008, speed: .6,  v: 'x' },
@@ -445,9 +446,9 @@
   }
 
   /* ------------------------------ Notch ------------------------------- */
-  var LABEL = { idle: 'Ready', listening: 'Listening', thinking: 'Thinking', executing: 'Working', verifying: 'Checking', approval: 'Needs approval', answer: 'Answer', speaking: 'Speaking', happy: 'Done', error: 'Something went wrong', sleep: 'Asleep', paused: 'Paused', chat: 'Chat' };
-  var MASCOT = { idle: 'idle', listening: 'listening', thinking: 'thinking', executing: 'thinking', verifying: 'thinking', approval: 'ask', answer: 'idle', speaking: 'speaking', happy: 'happy', error: 'error', sleep: 'sleep', paused: 'sleep', chat: 'idle' };
-  var DEFAULT_SIZE = { idle: 'compact', sleep: 'compact', paused: 'compact', listening: 'medium', thinking: 'medium', executing: 'medium', verifying: 'medium', happy: 'medium', approval: 'expanded', answer: 'expanded', speaking: 'expanded', error: 'expanded', chat: 'chat' };
+  var LABEL = { idle: 'Ready', listening: 'Listening', thinking: 'Thinking', driving: 'Driving', executing: 'Working', verifying: 'Checking', approval: 'Needs approval', answer: 'Answer', speaking: 'Speaking', happy: 'Done', error: 'Something went wrong', sleep: 'Asleep', paused: 'Paused', chat: 'Chat' };
+  var MASCOT = { idle: 'idle', listening: 'listening', thinking: 'thinking', driving: 'driving', executing: 'thinking', verifying: 'thinking', approval: 'ask', answer: 'idle', speaking: 'speaking', happy: 'happy', error: 'error', sleep: 'sleep', paused: 'sleep', chat: 'idle' };
+  var DEFAULT_SIZE = { idle: 'compact', sleep: 'compact', paused: 'compact', listening: 'medium', thinking: 'medium', driving: 'medium', executing: 'medium', verifying: 'medium', happy: 'medium', approval: 'expanded', answer: 'expanded', speaking: 'expanded', error: 'expanded', chat: 'chat' };
   var SVG = function (inner) { return '<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">' + inner + '</svg>'; };
   var ICON = {
     settings: SVG('<circle cx="8" cy="8" r="2.2"/><path d="M8 1.8v2M8 12.2v2M1.8 8h2M12.2 8h2M3.6 3.6L5 5M11 11l1.4 1.4M12.4 3.6L11 5M5 11l-1.4 1.4"/>'),
@@ -536,7 +537,7 @@
         clearTimeout(lingerT); lingerDue = false; hasBands = false; curState = state;
         root.setAttribute('data-state', state); root.setAttribute('data-spec', 'false');
         var spoken = state === 'speaking' || (state === 'answer' && !!o.spoken);
-        setStop(spoken || /^(listening|thinking|executing|verifying)$/.test(state) || (state === 'chat' && streaming));
+        setStop(spoken || /^(listening|thinking|driving|executing|verifying)$/.test(state) || (state === 'chat' && streaming));
         statusEl.textContent = o.title || LABEL[state] || '';
         if (o.mode !== undefined) api.setMode(o.mode);
         setM(state === 'answer' ? (spoken ? 'speaking' : 'idle') : (MASCOT[state] || 'idle'));
