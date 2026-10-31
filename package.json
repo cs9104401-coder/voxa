@@ -33,6 +33,9 @@
     "productName": "Voxa",
     "artifactName": "Voxa-Setup-${version}.${ext}",
     "asar": true,
+    "electronLanguages": [
+      "en-US"
+    ],
     "asarUnpack": [
       "node_modules/uiohook-napi/**/*",
       "node_modules/node-gyp-build/**/*",
