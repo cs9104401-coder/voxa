@@ -96,7 +96,7 @@ const venvPy = path.join(root, 'whisper-server', '.venv', 'Scripts', 'python.exe
 const py = fs.existsSync(venvAsrPy) ? venvAsrPy : fs.existsSync(venvPy) ? venvPy : 'python';
 const pyFiles = files.filter((f) => {
   const name = rel(f);
-  return name.startsWith('asr/') || /^whisper-server\/[^/]+\.py$/.test(name);
+  return name.startsWith('asr/') || name.startsWith('omnivoice/') || /^whisper-server\/[^/]+\.py$/.test(name);
 });
 if (pyFiles.length) {
   const pr = spawnSync(py, ['-m', 'py_compile', ...pyFiles.map((f) => path.relative(root, f))], {

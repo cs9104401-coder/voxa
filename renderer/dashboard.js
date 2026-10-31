@@ -24,6 +24,19 @@ const ASR_ENGINE_FALLBACK = [
   { id: 'qwen3-asr-1.7b', label: 'Qwen3-ASR 1.7B', backend: 'qwen-asr', sizeBytes: 4700000000, languageHint: true, deviceHint: '30 languages with automatic detection, long-form input, and an optional language hint.' },
   { id: 'granite-speech-5.0-470m-turboctc', label: 'IBM Granite Speech 5.0 470M TurboCTC', backend: 'granite-transformers', sizeBytes: 946311576, languageHint: false, deviceHint: 'Compact multilingual CTC model. It detects the language internally; the hint is ignored. Text only.' }
 ];
+// OmniVoice runtime status lives outside `data` because it is only fetched
+// when the dictation page is open or the engine card is chosen.
+const omniState = { gpu: null, status: null, checking: false, log: '' };
+// OmniVoice rejects free-form descriptions and only accepts its published tag
+// vocabulary. Keep this list in sync with OMNI_INSTRUCT_TAGS in constants.cjs.
+const OMNI_INSTRUCT_GROUPS = [
+  { label: 'Voice', tags: ['female', 'male'] },
+  { label: 'Age', tags: ['child', 'teenager', 'young adult', 'middle-aged', 'elderly'] },
+  { label: 'Pitch', tags: ['very low pitch', 'low pitch', 'moderate pitch', 'high pitch', 'very high pitch'] },
+  { label: 'Accent', tags: ['american accent', 'australian accent', 'british accent', 'canadian accent', 'chinese accent', 'indian accent', 'japanese accent', 'korean accent', 'portuguese accent', 'russian accent'] },
+  { label: 'Style', tags: ['whisper'] }
+];
+const OMNI_INSTRUCT_ORDER = OMNI_INSTRUCT_GROUPS.flatMap((group) => group.tags);
 // Kokoro voice catalogue and language labels come from lib/tts-text.cjs over
 // app:state, so the dashboard never keeps a duplicate list.
 function ttsVoiceOptions(selected) {
@@ -412,6 +425,178 @@ function updateKokoroCard() {
   const cancel = document.getElementById('kokoroCancel');
   if (cancel) cancel.hidden = !state.cancel;
 }
+
+// ─── OmniVoice status, GPU probe, and setup ─────────────────────────────────
+function omniBadgeState() {
+  const status = omniState.status;
+  if (!status) return { label: 'Checking', tone: 'info', note: 'Reading the local runtime…' };
+  if (status.setupRunning) return { label: 'Setting up', tone: 'info', note: 'Downloading Python packages and model weights.' };
+  if (!status.installed) return { label: 'Setup needed', tone: 'neutral', note: 'Install the isolated runtime once to use OmniVoice.' };
+  if (!status.modelReady) return { label: 'Model missing', tone: 'neutral', note: 'The runtime is installed but the model weights are missing.' };
+  const health = status.health || {};
+  if (health.status === 'ready') return { label: 'Ready', tone: 'good', note: `Running on ${health.device || 'the selected device'} at ${health.sample_rate || 24000} Hz.` };
+  if (health.status === 'loading') return { label: 'Loading', tone: 'info', note: health.load_error || 'The model is loading on first use.' };
+  if (health.status === 'error') return { label: 'Error', tone: 'bad', note: health.load_error || 'The model could not load.' };
+  if (health.status === 'port-in-use') return { label: 'Port busy', tone: 'bad', note: `Port ${status.port || 8765} is used by another service.` };
+  if (status.running) return { label: 'Starting', tone: 'info', note: 'Waiting for the local server to become ready.' };
+  return { label: 'Stopped', tone: 'neutral', note: 'It starts automatically the next time a reply is spoken.' };
+}
+
+function updateOmniUi() {
+  const badge = document.getElementById('omniStatusBadge');
+  if (!badge) return;
+  const state = omniBadgeState();
+  badge.textContent = state.label;
+  badge.className = `badge ${state.tone}`;
+  const note = document.getElementById('omniStatusNote');
+  if (note) note.textContent = omniState.status?.error || state.note;
+  const gpu = document.getElementById('omniGpuNote');
+  if (gpu) {
+    if (!omniState.gpu) {
+      gpu.textContent = 'Checking for an NVIDIA GPU…';
+      gpu.className = 'card-note';
+    } else if (omniState.gpu.detected && omniState.gpu.gpus?.length) {
+      const first = omniState.gpu.gpus[0];
+      const memory = first.memoryMb ? ` · ${Math.round(first.memoryMb / 1024)} GB VRAM` : '';
+      gpu.textContent = `CUDA GPU: ${first.name}${memory}. Speech starts after the reply's first sentence.`;
+      gpu.className = 'card-note';
+    } else {
+      gpu.textContent = 'No NVIDIA CUDA GPU detected. OmniVoice will run on CPU and can be very slow; Kokoro is a lighter choice.';
+      gpu.className = 'card-note omni-warning';
+    }
+  }
+  const setup = document.getElementById('omniSetup');
+  if (setup) {
+    setup.textContent = omniState.status?.installed && omniState.status?.modelReady ? 'Re-run setup' : 'Set up OmniVoice';
+    setup.disabled = omniState.checking || Boolean(omniState.status?.setupRunning);
+  }
+  const cancel = document.getElementById('omniSetupCancel');
+  if (cancel) cancel.hidden = !omniState.status?.setupRunning;
+  const log = document.getElementById('omniSetupLog');
+  if (log) {
+    log.hidden = !omniState.log;
+    log.textContent = omniState.log;
+  }
+}
+
+async function refreshOmniStatus() {
+  if (omniState.checking) return;
+  if (!api.omnivoiceStatus) return;
+  omniState.checking = true;
+  updateOmniUi();
+  try {
+    const [status, gpu] = await Promise.all([
+      api.omnivoiceStatus(),
+      api.omnivoiceProbe ? api.omnivoiceProbe() : Promise.resolve(null)
+    ]);
+    if (status) omniState.status = status;
+    if (gpu) omniState.gpu = gpu;
+  } catch (error) {
+    omniState.status = { ...(omniState.status || {}), error: error.message || 'Could not read the OmniVoice status.' };
+  } finally {
+    omniState.checking = false;
+    updateOmniUi();
+  }
+}
+
+async function chooseOmniReference() {
+  if (!api.chooseOmnivoiceRefAudio) return;
+  try {
+    const file = await api.chooseOmnivoiceRefAudio();
+    if (!file) return;
+    const input = document.getElementById('ttsOmniRefAudio');
+    if (input) input.value = file;
+    settingsDirty = true;
+  } catch (error) {
+    showTtsNotice(error.message || 'Could not choose the reference audio.', 'warn');
+  }
+}
+
+async function setupOmniVoice() {
+  if (!api.omnivoiceSetup) return;
+  omniState.log = '';
+  omniState.status = { ...(omniState.status || {}), setupRunning: true };
+  updateOmniUi();
+  try {
+    const result = await api.omnivoiceSetup();
+    if (result?.ok === false && result.message) showTtsNotice(result.message, 'warn');
+    else showTtsNotice('OmniVoice runtime installed. The model is ready to load.', 'good');
+  } catch (error) {
+    showTtsNotice(error.message || 'OmniVoice setup failed. Check Logs for details.', 'warn');
+  } finally {
+    omniState.status = { ...(omniState.status || {}), setupRunning: false };
+    await refreshOmniStatus();
+  }
+}
+
+let ttsNoticeTimer = null;
+function showTtsNotice(message, level = 'warn') {
+  const notice = document.getElementById('ttsNotice');
+  if (!notice) return;
+  notice.textContent = String(message || '');
+  notice.className = `tts-notice ${level}`;
+  notice.hidden = !message;
+  clearTimeout(ttsNoticeTimer);
+  if (message) ttsNoticeTimer = setTimeout(() => { notice.hidden = true; }, 12000);
+}
+
+function updateTtsEngineCards({ probe = false } = {}) {
+  const engine = document.getElementById('ttsEngine')?.value || settings.ttsEngine || 'windows';
+  for (const card of $$('[data-tts-engine]')) {
+    const active = card.dataset.ttsEngine === engine;
+    card.classList.toggle('is-active', active);
+    card.setAttribute('aria-checked', active ? 'true' : 'false');
+    card.tabIndex = active ? 0 : -1;
+  }
+  const voice = document.getElementById('ttsVoice');
+  if (voice) voice.disabled = engine !== 'kokoro';
+  const omniPanel = document.getElementById('ttsOmniPanel');
+  if (omniPanel) omniPanel.hidden = engine !== 'omnivoice';
+  const kokoroCard = document.getElementById('kokoroModelCard');
+  if (kokoroCard) kokoroCard.hidden = engine !== 'kokoro';
+  if (engine === 'omnivoice' && (probe || !omniState.status)) void refreshOmniStatus();
+}
+
+function updateOmniModePanels() {
+  const mode = document.getElementById('ttsOmniMode')?.value || settings.ttsOmniMode || 'auto';
+  const instruct = document.getElementById('ttsOmniInstructWrap');
+  if (instruct) instruct.hidden = mode !== 'design';
+  const clone = document.getElementById('ttsOmniCloneWrap');
+  if (clone) clone.hidden = mode !== 'clone';
+  updateOmniInstructPreview();
+}
+
+function omniInstructSelection() {
+  const input = document.getElementById('ttsOmniInstruct');
+  const value = String(input?.value || '');
+  return new Set(value.split(',').map((part) => part.trim()).filter(Boolean));
+}
+
+function updateOmniInstructPreview() {
+  const selected = omniInstructSelection();
+  for (const chip of $$('[data-omni-tag]')) {
+    chip.setAttribute('aria-pressed', selected.has(chip.dataset.omniTag) ? 'true' : 'false');
+  }
+  const preview = document.getElementById('ttsOmniInstructPreview');
+  if (preview) {
+    const tags = OMNI_INSTRUCT_ORDER.filter((tag) => selected.has(tag));
+    preview.textContent = tags.length
+      ? `Design: ${tags.join(' · ')}`
+      : 'No tags selected. OmniVoice will choose an automatic voice.';
+  }
+}
+
+function toggleOmniInstructTag(tag) {
+  const input = document.getElementById('ttsOmniInstruct');
+  if (!input || !OMNI_INSTRUCT_ORDER.includes(tag)) return;
+  const selected = omniInstructSelection();
+  if (selected.has(tag)) selected.delete(tag);
+  else selected.add(tag);
+  input.value = OMNI_INSTRUCT_ORDER.filter((item) => selected.has(item)).join(', ');
+  updateOmniInstructPreview();
+  settingsDirty = true;
+}
+
 
 // A missing IPC handler, a wedged prompt, or a renderer thrown before the
 // reply must not leave the card on "Checking" forever. The timeout turns any
@@ -1107,7 +1292,29 @@ function dictation() {
       </div>
       <article class="card"><h2 class="card-title">Voice replies</h2>
         <div class="form-grid">
-          <label class="field">Engine<select class="select" id="ttsEngine"><option value="windows" ${(settings.ttsEngine || 'windows') === 'windows' ? 'selected' : ''}>Windows (built-in)</option><option value="kokoro" ${settings.ttsEngine === 'kokoro' ? 'selected' : ''}>Kokoro · natural voice</option></select></label>
+          <div class="field full">
+            <span>Engine</span>
+            <div class="tts-engine-cards" role="radiogroup" aria-label="Voice engine">
+              <button type="button" class="tts-engine-card" data-tts-engine="windows" role="radio" aria-checked="false">
+                <span class="tts-engine-title">Windows (built-in)</span>
+                <small>Instant and offline. Robotic, but always available.</small>
+              </button>
+              <button type="button" class="tts-engine-card" data-tts-engine="kokoro" role="radio" aria-checked="false">
+                <span class="tts-engine-title">Kokoro <span class="badge info">Natural</span></span>
+                <small>Small local model. Warm, natural voices with a one-time download.</small>
+              </button>
+              <button type="button" class="tts-engine-card" data-tts-engine="omnivoice" role="radio" aria-checked="false">
+                <span class="tts-engine-title">OmniVoice (local) <span class="badge high-end" title="Needs a CUDA GPU for good speed. Best quality, voice cloning, 600+ languages.">High-end</span></span>
+                <small>Needs a CUDA GPU for good speed. Best quality, voice cloning, 600+ languages.</small>
+              </button>
+            </div>
+            <select class="select" id="ttsEngine" hidden>
+              <option value="windows" ${(settings.ttsEngine || 'windows') === 'windows' ? 'selected' : ''}>Windows (built-in)</option>
+              <option value="kokoro" ${settings.ttsEngine === 'kokoro' ? 'selected' : ''}>Kokoro · natural voice</option>
+              <option value="omnivoice" ${settings.ttsEngine === 'omnivoice' ? 'selected' : ''}>OmniVoice (local)</option>
+            </select>
+            <div class="tts-notice" id="ttsNotice" hidden></div>
+          </div>
           <label class="field">Voice<select class="select" id="ttsVoice" ${(settings.ttsEngine || 'windows') !== 'kokoro' ? 'disabled' : ''}>${ttsVoiceOptions(settings.ttsVoice || 'af_heart')}</select><small class="card-note">Voice selection applies to Kokoro only.</small></label>
           <label class="field">Speed · <span id="ttsSpeedVal">${(settings.ttsSpeed || 1.0).toFixed(1)}×</span><input type="range" class="full" id="ttsSpeed" min="0.7" max="1.4" step="0.05" value="${settings.ttsSpeed || 1.0}"></label>
           <label class="field">Volume · <span id="ttsVolumeVal">${Math.round((settings.ttsVolume ?? 1.0) * 100)}%</span><input type="range" class="full" id="ttsVolume" min="0" max="1" step="0.05" value="${settings.ttsVolume ?? 1.0}"></label>
@@ -1127,6 +1334,39 @@ function dictation() {
           <div class="row-side" style="justify-content:space-between;margin-top:10px"><span class="card-note" id="kokoroActionNote">One-time download required for natural voice replies.</span><button class="button primary" id="kokoroAction" type="button" data-action="kokoro-download">Download model</button><button class="button" id="kokoroCancel" type="button" data-action="kokoro-cancel" hidden>Cancel</button></div>
         </div>
         ${kokoroProgressPanel()}
+        <div class="omni-panel" id="ttsOmniPanel" hidden>
+          <div class="row-side" style="justify-content:space-between;align-items:flex-start">
+            <div class="row-main"><b>OmniVoice local model</b><small class="card-note" id="omniStatusNote">Reading the local runtime…</small></div>
+            <span class="badge info" id="omniStatusBadge">Checking</span>
+          </div>
+          <div class="form-grid" style="margin-top:12px">
+            <label class="field">Voice mode<select class="select" id="ttsOmniMode"><option value="auto" ${settings.ttsOmniMode !== 'design' && settings.ttsOmniMode !== 'clone' ? 'selected' : ''}>Automatic voice</option><option value="design" ${settings.ttsOmniMode === 'design' ? 'selected' : ''}>Design from a description</option><option value="clone" ${settings.ttsOmniMode === 'clone' ? 'selected' : ''}>Clone a reference clip</option></select></label>
+            <label class="field">Language<input class="input" id="ttsOmniLanguage" maxlength="40" placeholder="Auto detect" value="${esc(settings.ttsOmniLanguage || '')}"><small class="card-note">Name or ISO code, for example English or en. Leave blank to detect.</small></label>
+            <div class="field full" id="ttsOmniInstructWrap" hidden>
+              <span>Voice design</span>
+              <input type="hidden" id="ttsOmniInstruct" value="${esc(settings.ttsOmniInstruct || '')}">
+              <div class="omni-tag-groups">
+                ${OMNI_INSTRUCT_GROUPS.map((group) => `<div class="omni-tag-group"><span class="omni-tag-label">${esc(group.label)}</span><div class="omni-tags">${group.tags.map((tag) => `<button type="button" class="omni-tag" data-omni-tag="${esc(tag)}" aria-pressed="false">${esc(tag)}</button>`).join('')}</div></div>`).join('')}
+              </div>
+              <small class="card-note">OmniVoice accepts these style tags. Pick any combination; leave all unselected for the automatic voice.</small>
+              <small class="card-note omni-instruct-preview" id="ttsOmniInstructPreview"></small>
+            </div>
+            <div class="field full" id="ttsOmniCloneWrap" hidden>
+              <label class="field">Reference audio<input class="input" id="ttsOmniRefAudio" maxlength="1024" placeholder="Choose a short WAV or FLAC clip" value="${esc(settings.ttsOmniRefAudio || '')}"></label>
+              <div class="row-side"><button class="button" id="ttsOmniBrowse" type="button">Choose audio…</button><button class="button" id="ttsOmniClear" type="button">Clear</button></div>
+              <label class="field">Reference transcript · optional<input class="input" id="ttsOmniRefText" maxlength="400" placeholder="What is said in the clip" value="${esc(settings.ttsOmniRefText || '')}"></label>
+              <small class="card-note">Add the transcript to skip Whisper and start cloning immediately. Without it, the first clone loads the transcription model once (about 20 seconds).</small>
+            </div>
+            <label class="field">If OmniVoice fails<select class="select" id="ttsFallbackEngine"><option value="windows" ${settings.ttsFallbackEngine !== 'kokoro' ? 'selected' : ''}>Windows voice</option><option value="kokoro" ${settings.ttsFallbackEngine === 'kokoro' ? 'selected' : ''}>Kokoro</option></select><small class="card-note">The fallback speaks the rest of the reply immediately, and the Windows voice is the last resort.</small></label>
+          </div>
+          <div class="row-side" style="justify-content:space-between;margin-top:12px"><span class="card-note" id="omniGpuNote">Checking for an NVIDIA GPU…</span><span class="card-note">Location <b>AppData/omnivoice</b></span></div>
+          <div class="row-side" style="justify-content:flex-start;margin-top:10px">
+            <button class="button primary" id="omniSetup" type="button">Set up OmniVoice</button>
+            <button class="button" id="omniSetupCancel" type="button" hidden>Cancel setup</button>
+            <button class="button" id="omniRefresh" type="button">Check status</button>
+          </div>
+          <pre class="omni-setup-log" id="omniSetupLog" hidden></pre>
+        </div>
       </article>
       ${whisperModelCard()}
       ${whisperProgressPanel()}
@@ -1877,6 +2117,12 @@ function collectPagePatch() {
     patch.ttsVoice = $('#ttsVoice')?.value || settings.ttsVoice;
     patch.ttsSpeed = parseFloat($('#ttsSpeed')?.value || settings.ttsSpeed || 1.0);
     patch.ttsVolume = parseFloat($('#ttsVolume')?.value || settings.ttsVolume || 1.0);
+    patch.ttsOmniMode = $('#ttsOmniMode')?.value || settings.ttsOmniMode;
+    patch.ttsOmniInstruct = $('#ttsOmniInstruct')?.value ?? settings.ttsOmniInstruct;
+    patch.ttsOmniRefAudio = $('#ttsOmniRefAudio')?.value ?? settings.ttsOmniRefAudio;
+    patch.ttsOmniRefText = $('#ttsOmniRefText')?.value ?? settings.ttsOmniRefText;
+    patch.ttsOmniLanguage = $('#ttsOmniLanguage')?.value ?? settings.ttsOmniLanguage;
+    patch.ttsFallbackEngine = $('#ttsFallbackEngine')?.value || settings.ttsFallbackEngine;
   } else if (activePage === 'agent') {
     const provider = $('#chatProvider')?.value || settings.chatProvider;
     const fallbackProvider = $('#fallbackProvider')?.value || settings.fallbackProvider || 'none';
@@ -2359,6 +2605,7 @@ function wire() {
   if (ttsEngineSelect) {
     ttsEngineSelect.onchange = () => {
       updateTtsVoiceSelect();
+      updateTtsEngineCards({ probe: ttsEngineSelect.value === 'omnivoice' });
       settingsDirty = activePage === 'dictation';
       // Re-render voice options if engine is changed
       const voiceSelect = $('#ttsVoice');
@@ -2366,7 +2613,62 @@ function wire() {
         voiceSelect.innerHTML = ttsVoiceOptions(settings.ttsVoice || 'af_heart');
       }
     };
+    for (const card of $$('[data-tts-engine]')) {
+      card.onclick = () => {
+        if (ttsEngineSelect.value === card.dataset.ttsEngine) return;
+        ttsEngineSelect.value = card.dataset.ttsEngine;
+        ttsEngineSelect.dispatchEvent(new Event('change'));
+      };
+      card.onkeydown = (event) => {
+        if (event.key !== 'Enter' && event.key !== ' ') return;
+        event.preventDefault();
+        card.click();
+      };
+    }
+    updateTtsEngineCards({ probe: ttsEngineSelect.value === 'omnivoice' });
   }
+
+  const omniMode = $('#ttsOmniMode');
+  if (omniMode) {
+    omniMode.onchange = () => {
+      updateOmniModePanels();
+      settingsDirty = true;
+    };
+  }
+  const omniTags = $('#ttsOmniInstructWrap');
+  if (omniTags) {
+    omniTags.addEventListener('click', (event) => {
+      const chip = event.target.closest('[data-omni-tag]');
+      if (!chip) return;
+      toggleOmniInstructTag(chip.dataset.omniTag);
+    });
+  }
+  for (const id of ['ttsOmniInstruct', 'ttsOmniRefAudio', 'ttsOmniRefText', 'ttsOmniLanguage', 'ttsFallbackEngine']) {
+    const field = $(`#${id}`);
+    if (field) field.oninput = field.onchange = () => { settingsDirty = true; };
+  }
+  const omniBrowse = $('#ttsOmniBrowse');
+  if (omniBrowse) omniBrowse.onclick = () => void chooseOmniReference();
+  const omniClear = $('#ttsOmniClear');
+  if (omniClear) {
+    omniClear.onclick = () => {
+      const input = $('#ttsOmniRefAudio');
+      if (input) input.value = '';
+      settingsDirty = true;
+    };
+  }
+  const omniSetup = $('#omniSetup');
+  if (omniSetup) omniSetup.onclick = () => void setupOmniVoice();
+  const omniRefresh = $('#omniRefresh');
+  if (omniRefresh) omniRefresh.onclick = () => void refreshOmniStatus();
+  const omniCancel = $('#omniSetupCancel');
+  if (omniCancel) {
+    omniCancel.onclick = async () => {
+      try { await api.omnivoiceCancelSetup(); } catch { /* the setup may already be done */ }
+    };
+  }
+  updateOmniModePanels();
+  updateOmniUi();
 
   const ttsSpeedSlider = $('#ttsSpeed');
   if (ttsSpeedSlider) {
@@ -2413,6 +2715,12 @@ function wire() {
         if ($('#ttsVoice')) patch.ttsVoice = $('#ttsVoice').value;
         if ($('#ttsSpeed')) patch.ttsSpeed = parseFloat($('#ttsSpeed').value);
         if ($('#ttsVolume')) patch.ttsVolume = parseFloat($('#ttsVolume').value);
+        if ($('#ttsOmniMode')) patch.ttsOmniMode = $('#ttsOmniMode').value;
+        if ($('#ttsOmniInstruct')) patch.ttsOmniInstruct = $('#ttsOmniInstruct').value;
+        if ($('#ttsOmniRefAudio')) patch.ttsOmniRefAudio = $('#ttsOmniRefAudio').value;
+        if ($('#ttsOmniRefText')) patch.ttsOmniRefText = $('#ttsOmniRefText').value;
+        if ($('#ttsOmniLanguage')) patch.ttsOmniLanguage = $('#ttsOmniLanguage').value;
+        if ($('#ttsFallbackEngine')) patch.ttsFallbackEngine = $('#ttsFallbackEngine').value;
         const saved = await api.saveSettings(patch);
         settings = { ...settings, ...saved };
         data.settings = settings;
@@ -2920,6 +3228,26 @@ api.on('tts:play-audio', (buffer) => {
 
 api.on('tts:stop-audio', () => {
   window.ttsPlayer?.stop();
+});
+
+api.on('tts:notice', (notice) => {
+  if (notice?.message) showTtsNotice(notice.message, notice.level === 'warn' ? 'warn' : 'good');
+});
+
+api.on('omnivoice:status-updated', (status) => {
+  if (!status || typeof status !== 'object') return;
+  omniState.status = { ...(omniState.status || {}), ...status };
+  updateOmniUi();
+});
+
+api.on('omnivoice:setup-progress', (payload) => {
+  const line = typeof payload === 'string' ? payload : payload?.line;
+  if (!line) return;
+  omniState.log = `${omniState.log ? `${omniState.log}\n` : ''}${line}`.split('\n').slice(-14).join('\n');
+  if (omniState.status) omniState.status.setupRunning = true;
+  updateOmniUi();
+  const log = document.getElementById('omniSetupLog');
+  if (log) log.scrollTop = log.scrollHeight;
 });
 
 api.on('tts:health-updated', (health) => {

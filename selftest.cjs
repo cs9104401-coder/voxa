@@ -392,7 +392,7 @@ function checkTtsNormaliser() {
 
 function checkTtsSegmenter() {
   try {
-    const { segmentSentences } = require('./lib/tts-text.cjs');
+    const { segmentSentences, takeCompleteSentences } = require('./lib/tts-text.cjs');
     const cases = [
       // Basic multi-sentence
       ['basic split', segmentSentences('Hello world. How are you? Fine!'), (r) => r.length === 3],
@@ -414,6 +414,14 @@ function checkTtsSegmenter() {
       ['empty', segmentSentences(''), (r) => r.length === 0],
       // Single word (no terminator)
       ['single word', segmentSentences('Hello'), (r) => r.length === 1 && r[0] === 'Hello'],
+      // Incremental streaming: an unfinished tail stays buffered.
+      ['stream complete', takeCompleteSentences('Hello world. The next'), (r) => r.ready === 'Hello world.' && r.rest === ' The next'],
+      // Abbreviation at the end of a delta must wait for the next chunk.
+      ['stream abbreviation', takeCompleteSentences('Dr. Smith arrived. He'), (r) => r.ready === 'Dr. Smith arrived.' && r.rest === ' He'],
+      // A decimal point never ends a sentence.
+      ['stream decimal', takeCompleteSentences('Pi is 3.14 exactly. Next'), (r) => r.ready === 'Pi is 3.14 exactly.' && r.rest === ' Next'],
+      // No terminator yet means no ready text.
+      ['stream incomplete', takeCompleteSentences('Still typing'), (r) => r.ready === '' && r.rest === 'Still typing'],
     ];
     const failures = [];
     for (const [name, result, check] of cases) {
@@ -434,18 +442,25 @@ function checkTtsSettings() {
   try {
     const { defaults } = require('./lib/constants.cjs');
     const base = defaults('TestUser');
-    const required = ['ttsEngine', 'ttsVoice', 'ttsSpeed', 'ttsVolume', 'ttsGpu', 'ttsAutoVoice', 'ttsTier', 'ttsModelVariant', 'ttsBatterySaver'];
+    const required = ['ttsEngine', 'ttsVoice', 'ttsSpeed', 'ttsVolume', 'ttsGpu', 'ttsAutoVoice', 'ttsTier', 'ttsModelVariant', 'ttsBatterySaver', 'ttsOmniMode', 'ttsOmniInstruct', 'ttsOmniRefAudio', 'ttsOmniRefText', 'ttsOmniLanguage', 'ttsFallbackEngine'];
     const missing = required.filter((key) => !(key in base));
-    const validEngine = base.ttsEngine === 'kokoro' || base.ttsEngine === 'windows';
+    const validEngine = ['kokoro', 'windows', 'omnivoice'].includes(base.ttsEngine);
     const validSpeed = typeof base.ttsSpeed === 'number' && base.ttsSpeed >= 0.7 && base.ttsSpeed <= 1.4;
     const validVolume = typeof base.ttsVolume === 'number' && base.ttsVolume >= 0 && base.ttsVolume <= 1;
     const validVariant = base.ttsModelVariant === 'quantized';
+    const validOmniMode = ['auto', 'design', 'clone'].includes(base.ttsOmniMode);
+    const validFallback = ['windows', 'kokoro'].includes(base.ttsFallbackEngine);
     const failures = [
       ...missing.map((k) => `missing default: ${k}`),
-      ...(!validEngine ? ['ttsEngine must be kokoro or windows'] : []),
+      ...(!validEngine ? ['ttsEngine must be kokoro, omnivoice, or windows'] : []),
       ...(!validSpeed ? [`ttsSpeed out of range: ${base.ttsSpeed}`] : []),
       ...(!validVolume ? [`ttsVolume out of range: ${base.ttsVolume}`] : []),
-      ...(!validVariant ? [`ttsModelVariant invalid: ${base.ttsModelVariant}`] : [])
+      ...(!validVariant ? [`ttsModelVariant invalid: ${base.ttsModelVariant}`] : []),
+      ...(!validOmniMode ? [`ttsOmniMode invalid: ${base.ttsOmniMode}`] : []),
+      ...(!validFallback ? [`ttsFallbackEngine invalid: ${base.ttsFallbackEngine}`] : []),
+      ...(typeof base.ttsOmniInstruct !== 'string' || typeof base.ttsOmniRefAudio !== 'string' || typeof base.ttsOmniRefText !== 'string' || typeof base.ttsOmniLanguage !== 'string'
+        ? ['OmniVoice text settings must be strings']
+        : [])
     ];
     record(
       'TTS settings defaults',

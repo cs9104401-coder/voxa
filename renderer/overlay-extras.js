@@ -726,17 +726,18 @@
     }
 
     function renderVoiceTab(body) {
-      const engine = settings.ttsEngine === 'kokoro' ? 'kokoro' : 'windows';
+      const engine = ['kokoro', 'omnivoice'].includes(settings.ttsEngine) ? settings.ttsEngine : 'windows';
       const replies = section('Spoken replies', 'Reply audio uses the same engine as the dashboard.');
       replies.append(toggleRow('Spoken replies', 'Read answers and confirmations aloud.', 'spokenReplies', { truthyDefault: true }));
 
-      const voiceSection = section('Voice', 'Kokoro provides the natural voices; Windows is always available.');
+      const voiceSection = section('Voice', 'Kokoro provides the natural voices; OmniVoice and its voice modes are configured in the dashboard; Windows is always available.');
       const engineRow = rowShell('Engine', 'Choose the voice pipeline used for replies.');
       const engineSelect = element('select', 'vxe-select');
       engineSelect.setAttribute('aria-label', 'Engine');
       for (const option of [
         { value: 'windows', label: 'Windows (built-in)' },
-        { value: 'kokoro', label: 'Kokoro · natural voice' }
+        { value: 'kokoro', label: 'Kokoro · natural voice' },
+        { value: 'omnivoice', label: 'OmniVoice (local)' }
       ]) {
         const node = document.createElement('option');
         node.value = option.value;
@@ -748,7 +749,9 @@
         void persist({ ttsEngine: engineSelect.value }, { rerender: true });
       });
       register('ttsEngine', () => {
-        if (document.activeElement !== engineSelect) engineSelect.value = settings.ttsEngine === 'kokoro' ? 'kokoro' : 'windows';
+        if (document.activeElement !== engineSelect) {
+          engineSelect.value = ['kokoro', 'omnivoice'].includes(settings.ttsEngine) ? settings.ttsEngine : 'windows';
+        }
       });
       engineRow.side.append(engineSelect);
       voiceSection.append(engineRow.row);
@@ -759,7 +762,7 @@
       register('ttsVoice', () => {
         if (document.activeElement === picker) return;
         picker.value = String(settings.ttsVoice || 'af_heart');
-        picker.disabled = (settings.ttsEngine === 'kokoro' ? 'kokoro' : 'windows') !== 'kokoro';
+        picker.disabled = settings.ttsEngine !== 'kokoro';
       });
       voiceSection.append(voiceRow.row);
       voiceSection.append(

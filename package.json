@@ -12,6 +12,7 @@
     "test:asr": "node scripts/asr-test.cjs",
     "test:asr:integration": "node scripts/asr-test.cjs --integration --no-python",
     "setup:asr-runtime": "node scripts/setup-asr-runtime.cjs",
+    "setup:omnivoice": "node scripts/setup-omnivoice.cjs",
     "postinstall": "electron-rebuild -f -w uiohook-napi",
     "build:icon": "node scripts/generate-icon.cjs",
     "build:whisper": "node scripts/build-whisper.cjs",
@@ -74,6 +75,17 @@
       {
         "from": "whisper-server/kokoro_server.py",
         "to": "whisper-server/kokoro_server.py"
+      },
+      {
+        "from": "omnivoice",
+        "to": "omnivoice",
+        "filter": [
+          "server.py"
+        ]
+      },
+      {
+        "from": "scripts/setup-omnivoice.cjs",
+        "to": "scripts/setup-omnivoice.cjs"
       }
     ],
     "publish": [

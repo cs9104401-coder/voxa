@@ -12,57 +12,69 @@ class TtsPlayer {
     this.analyserData = new Uint8Array(this.analyser.frequencyBinCount);
     this.speechTimer = null;
     this.queue = [];
+    this.sources = new Set();
     this.playing = false;
     this.currentSource = null;
+    this.nextStartTime = 0;
+    // decodeAudioData resolves in completion order, not call order. Chaining
+    // decodes keeps sentence audio in the order the sidecar produced it.
+    this.decodeChain = Promise.resolve();
   }
 
-  async play(buffer) {
-    if (!buffer || buffer.length === 0) return;
+  play(buffer) {
+    if (!buffer || buffer.length === 0) return Promise.resolve();
     const gen = this.gen || 0;
-
-    // Buffer is a Uint8Array from IPC. Need to copy to ArrayBuffer.
     const audioData = buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength);
-    if (this.context.state === 'suspended') await this.context.resume().catch(() => {});
-    const audioBuffer = await this.context.decodeAudioData(audioData);
-    if (gen !== (this.gen || 0)) return;
-    this.queue.push(audioBuffer);
-
-    if (!this.playing) {
-      this.playNext();
-    }
+    const job = this.decodeChain.then(async () => {
+      if (gen !== (this.gen || 0)) return;
+      if (this.context.state === 'suspended') await this.context.resume().catch(() => {});
+      const audioBuffer = await this.context.decodeAudioData(audioData);
+      if (gen !== (this.gen || 0)) return;
+      this.queue.push(audioBuffer);
+      if (!this.playing) {
+        this.playing = true;
+        this.nextStartTime = this.context.currentTime + 0.04;
+        this.startSpeechFeed();
+      }
+      this.schedule();
+    }).catch(() => {
+      // A malformed WAV must not poison the rest of the queue.
+    });
+    this.decodeChain = job;
+    return job;
   }
 
-  async playNext() {
-    if (this.queue.length === 0) {
-      this.playing = false;
-      this.stopSpeechFeed();
-      return;
-    }
+  schedule() {
+    while (this.queue.length) {
+      const audioBuffer = this.queue.shift();
+      const source = this.context.createBufferSource();
+      source.buffer = audioBuffer;
+      source.connect(this.analyser);
 
-    this.playing = true;
-    const audioBuffer = this.queue.shift();
-    const source = this.context.createBufferSource();
-    source.buffer = audioBuffer;
-    source.connect(this.analyser);
+      const startAt = Math.max(this.context.currentTime + 0.02, this.nextStartTime || 0);
+      this.nextStartTime = startAt + audioBuffer.duration;
+      this.currentSource = source;
+      this.sources.add(source);
 
-    this.currentSource = source;
+      source.onended = () => {
+        this.sources.delete(source);
+        if (this.currentSource === source) this.currentSource = null;
+        if (this.sources.size === 0 && this.queue.length === 0) {
+          this.playing = false;
+          this.nextStartTime = 0;
+          this.stopSpeechFeed();
+        }
+      };
 
-    source.onended = () => {
-      // stop() or a newer source already moved playback on: this end event is
-      // stale and must not pop the next queued buffer or stop the speech feed.
-      if (this.currentSource !== source) return;
-      this.currentSource = null;
-      this.playNext();
-    };
-
-    this.startSpeechFeed();
-    try {
-      source.start(0);
-    } catch {
-      if (this.currentSource === source) this.currentSource = null;
-      this.playing = false;
-      this.queue = [];
-      this.stopSpeechFeed();
+      try {
+        source.start(startAt);
+      } catch {
+        this.sources.delete(source);
+        if (this.currentSource === source) this.currentSource = null;
+        this.playing = false;
+        this.queue = [];
+        this.stopSpeechFeed();
+      }
     }
   }
 
@@ -101,15 +113,17 @@ class TtsPlayer {
   stop() {
     this.gen = (this.gen || 0) + 1;
     this.queue = [];
-    if (this.currentSource) {
+    for (const source of this.sources) {
       try {
-        this.currentSource.stop(0);
+        source.stop(0);
       } catch {
-        // May already have stopped
+        // May already have stopped.
       }
-      this.currentSource = null;
     }
+    this.sources.clear();
+    this.currentSource = null;
     this.playing = false;
+    this.nextStartTime = 0;
     this.stopSpeechFeed();
   }
 }

@@ -275,6 +275,12 @@ function speechSettings(source = settings, extra = {}) {
     ttsGpu: Boolean(source.ttsGpu),
     ttsAutoVoice: source.ttsAutoVoice !== false,
     ttsModelVariant: source.ttsModelVariant,
+    ttsOmniMode: source.ttsOmniMode,
+    ttsOmniInstruct: source.ttsOmniInstruct,
+    ttsOmniRefAudio: source.ttsOmniRefAudio,
+    ttsOmniRefText: source.ttsOmniRefText,
+    ttsOmniLanguage: source.ttsOmniLanguage,
+    ttsFallbackEngine: source.ttsFallbackEngine,
     ...extra
   };
 }
@@ -705,6 +711,7 @@ function saveSettingsPatch(patch) {
   const appearanceChanged = ['notchSize', 'notchScale', 'notchPosition', 'notchOffsetY', 'notchBehavior', 'notchCast', 'notchPalette', 'companionFollow']
     .some((key) => next[key] !== settings[key]);
   const ttsGpuChanged = Boolean(next.ttsGpu) !== Boolean(settings.ttsGpu);
+  const previousTtsEngine = settings.ttsEngine;
   const pausedNow = next.paused === true && settings.paused !== true;
   const previousNotchBehavior = settings.notchBehavior;
   const chatChanged = next.chatProvider !== settings.chatProvider
@@ -743,6 +750,17 @@ function saveSettingsPatch(patch) {
   if (ttsGpuChanged) {
     services.stopKokoro();
     logger.info('kokoro', `Compute preference changed to ${next.ttsGpu ? 'CUDA' : 'CPU'}; the voice server will restart on the next reply.`);
+  }
+  if (previousTtsEngine !== next.ttsEngine) {
+    if (next.ttsEngine === 'omnivoice') {
+      services.stopKokoro();
+      logger.info('omnivoice', 'Selected as the voice engine; starting the local sidecar.');
+      startOmniInBackground('engine selected');
+    } else if (previousTtsEngine === 'omnivoice') {
+      services.stopOmnivoice();
+      logger.info('omnivoice', 'Voice engine changed; the local sidecar was stopped to release the GPU.');
+      publishOmniRuntime({ ok: false, status: 'unreachable' });
+    }
   }
   if (next.notchBehavior === 'stay-open' && !next.paused && overlay && !overlay.state().visible && !currentTurn && !chatSession.open) {
     showRestingNotch();
@@ -1773,6 +1791,10 @@ function abortTurn(reason = 'cancelled', options = {}) {
   if (turn) {
     logger.info('turn', `Cancelled: ${reason}`);
     turn.controller.abort();
+    speechController?.abort();
+    sendToPlayer('tts:stop-audio', {});
+    speechController = null;
+    if (overlay?.state().speaking) overlay.setState({ speaking: false });
     if (turn.recorderId) recorderManager?.cancel(turn.recorderId, reason);
     finishTurn(turn);
     if (hide) overlay?.hide();
@@ -1838,6 +1860,7 @@ async function beginTurn(mode, origin = 'hotkey') {
     targetPromise: null,
     transcript: '',
     toolsExecuted: false,
+    liveSpeech: false,
     approvalCount: 0,
     approvalDecisions: new Map(),
     executedActions: new Set()
@@ -2622,7 +2645,34 @@ async function runConversation(turn, transcript, providerName, target) {
       const raw = services.messageText(message?.content);
       return raw ? cleanReply(raw) : '';
     },
-    callModel: (conversation) => services.chat(conversationSettings, key, conversation, tools, turn.controller.signal),
+    callModel: async (conversation) => {
+      const speech = beginLiveSpeech(turn);
+      try {
+        let result;
+        if (speech) {
+          result = await services.chatStream(
+            conversationSettings,
+            key,
+            conversation,
+            turn.controller.signal,
+            (_full, delta) => speech.push(delta),
+            {
+              tools,
+              message: true,
+              onToolCall: () => speech.stop()
+            }
+          );
+        } else {
+          result = await services.chat(conversationSettings, key, conversation, tools, turn.controller.signal);
+        }
+        if (result?.tool_calls?.length) speech?.stop();
+        else speech?.finish();
+        return result;
+      } catch (error) {
+        speech?.stop();
+        throw error;
+      }
+    },
     executeTool: async (call) => {
       turn.toolsExecuted = true;
       const toolResult = await executeTool(turn, call, providerName);
@@ -2690,6 +2740,158 @@ async function speakReply(turn, text) {
   }
 }
 
+// Sentence-by-sentence speech while the model is still writing. Only the neural
+// engines use this path: the Windows voice is spoken synchronously per sentence
+// and is handled after the reply by speakReply().
+function beginLiveSpeech(turn) {
+  if (!settings.spokenReplies) return null;
+  const tts = speechSettings();
+  if (tts.ttsEngine !== 'omnivoice' && tts.ttsEngine !== 'kokoro') return null;
+  if (Number(tts.ttsVolume || 0) <= 0) return null;
+
+  const controller = new AbortController();
+  const onTurnAbort = () => controller.abort();
+  turn.controller.signal.addEventListener('abort', onTurnAbort, { once: true });
+  speechController?.abort();
+  sendToPlayer('tts:stop-audio', {});
+  speechController = controller;
+  turn.liveSpeech = true;
+  let speaking = false;
+
+  const stream = services.createSpeechStream(tts, controller.signal, logger, (buffer) => {
+    if (controller.signal.aborted) return;
+    sendToPlayer('tts:play-audio', buffer);
+    if (!speaking) {
+      speaking = true;
+      overlay?.setState({ speaking: true });
+    }
+  }, {
+    onNotice: (notice) => {
+      if (!notice?.message) return;
+      logger.warn('speech', notice.message);
+      sendToDashboard('tts:notice', notice);
+    }
+  });
+
+  let finished = false;
+  const release = () => {
+    turn.controller.signal.removeEventListener('abort', onTurnAbort);
+    if (speechController === controller) {
+      speechController = null;
+      if (overlay?.state().speaking) overlay.setState({ speaking: false });
+    }
+  };
+  return {
+    push: (delta) => stream.push(delta),
+    finish: () => {
+      if (finished) return;
+      finished = true;
+      stream.finish().catch((error) => logger.warn('speech', cleanError(error))).finally(release);
+    },
+    stop: () => {
+      if (finished) return;
+      finished = true;
+      stream.cancel();
+      controller.abort();
+      sendToPlayer('tts:stop-audio', {});
+      release();
+    }
+  };
+}
+
+// ─── OmniVoice setup, diagnostics, and reference-clip picker ─────────────────
+let omniSetupController = null;
+
+function omniRuntimeStatus() {
+  const mod = services.omnivoiceMod();
+  return {
+    ...mod.omnivoiceStatus(),
+    installed: mod.isInstalled(),
+    modelReady: mod.isModelReady(),
+    setupRunning: Boolean(omniSetupController)
+  };
+}
+
+async function omniStatusPayload() {
+  const status = omniRuntimeStatus();
+  let health = null;
+  try {
+    health = await services.omniHealth();
+  } catch (error) {
+    health = { ok: false, status: 'unreachable', error: cleanError(error) };
+  }
+  return { ...status, health, gpu: services.probeOmni() };
+}
+
+function publishOmniRuntime(health) {
+  const status = omniRuntimeStatus();
+  if (health !== undefined) status.health = health;
+  sendToDashboard('omnivoice:status-updated', status);
+  return status;
+}
+
+function startOmniInBackground(reason) {
+  if (settings.ttsEngine !== 'omnivoice' || quitting) return;
+  services.startOmnivoice({ log: logger })
+    .then((health) => {
+      logger.info('omnivoice', `Runtime ready (${reason}) on ${health.device || 'CPU'}.`);
+      publishOmniRuntime(health);
+    })
+    .catch((error) => {
+      if (error.cancelled || quitting) return;
+      const message = `OmniVoice could not start: ${cleanError(error)}`;
+      logger.warn('omnivoice', message);
+      sendToDashboard('tts:notice', { level: 'warn', message });
+      publishOmniRuntime({ ok: false, status: 'unreachable', error: cleanError(error) });
+    });
+}
+
+async function chooseOmniReference() {
+  const result = await dialog.showOpenDialog(dashboardWindow && !dashboardWindow.isDestroyed() ? dashboardWindow : null, {
+    title: 'Choose reference audio for OmniVoice',
+    properties: ['openFile'],
+    filters: [
+      { name: 'Audio', extensions: ['wav', 'flac', 'mp3', 'ogg', 'm4a', 'aac', 'opus'] },
+      { name: 'All files', extensions: ['*'] }
+    ]
+  });
+  return result.canceled ? '' : (result.filePaths?.[0] || '');
+}
+
+async function runOmniSetup() {
+  if (omniSetupController) throw new Error('OmniVoice setup is already running.');
+  speechController?.abort();
+  sendToPlayer('tts:stop-audio', {});
+  speechController = null;
+  const controller = new AbortController();
+  omniSetupController = controller;
+  publishOmniRuntime();
+  let installed = false;
+  try {
+    const mod = services.omnivoiceMod();
+    const result = await mod.runSetup({
+      signal: controller.signal,
+      log: logger,
+      onOutput: (line) => sendToDashboard('omnivoice:setup-progress', { line })
+    });
+    installed = true;
+    pushFeedEvent({
+      title: 'OmniVoice runtime installed',
+      body: 'The local high-end voice is ready. It loads on the first spoken reply.',
+      kind: 'download',
+      tone: 'highlight'
+    });
+    return { ok: true, message: 'OmniVoice setup finished.', output: result.output };
+  } catch (error) {
+    if (error.cancelled) return { ok: false, message: 'Setup cancelled.' };
+    throw error;
+  } finally {
+    if (omniSetupController === controller) omniSetupController = null;
+    publishOmniRuntime();
+    if (installed && settings.ttsEngine === 'omnivoice') startOmniInBackground('setup finished');
+  }
+}
+
 async function processTurn(turn, audio, mime) {
   if (!turnAlive(turn) || turn.processing) return;
   turn.processing = true;
@@ -2731,7 +2933,7 @@ async function processTurn(turn, audio, mime) {
     const willSpeak = Boolean(settings.spokenReplies && stripForSpeech(answer));
     overlay.show({ status: 'answer', mode: 'agent', message: answer, canCopy: true, approval: null, streaming: false, speaking: willSpeak });
     scheduleOverlayHide(12000);
-    void speakReply(turn, answer);
+    if (!turn.liveSpeech) void speakReply(turn, answer);
   } catch (error) {
     if (error.cancelled || turn.controller.signal.aborted) return;
     showTurnError(turn, cleanError(error), `Turn failed: ${cleanError(error)}`);
@@ -3307,6 +3509,15 @@ function registerIpc() {
     return true;
   });
   handle('tts:health', () => kokoroModelHealth());
+  handle('omnivoice:status', () => omniStatusPayload());
+  handle('omnivoice:probe', () => services.probeOmni());
+  handle('omnivoice:setup', () => runOmniSetup());
+  handle('omnivoice:cancel-setup', () => {
+    if (!omniSetupController) return { ok: false, message: 'No setup is running.' };
+    omniSetupController.abort();
+    return { ok: true };
+  });
+  handle('omnivoice:choose-ref', () => chooseOmniReference());
   handle('tts:download', async () => {
     if (kokoroDownloadController) throw new Error('A Kokoro download is already running.');
     const kokoro = require('./lib/tts-kokoro.cjs');
@@ -3376,10 +3587,14 @@ function registerIpc() {
   handle('tts:speak', async (text, requested, signal) => {
     const tts = speechSettings({ ...settings, ...(requested || {}) });
     try {
-      await services.speakStreaming(String(text || ''), tts, signal, logger, (buffer) => {
+      const result = await services.speakStreaming(String(text || ''), tts, signal, logger, (buffer) => {
         sendToDashboard('tts:play-audio', buffer);
+      }, {
+        onNotice: (notice) => {
+          if (notice?.message) sendToDashboard('tts:notice', notice);
+        }
       });
-      return { ok: true };
+      return { ok: result?.ok !== false, fallback: Boolean(result?.fallback) };
     } catch (error) {
       logger.warn('speech', cleanError(error));
       return { ok: false, error: cleanError(error) };
@@ -3393,11 +3608,22 @@ function registerIpc() {
     speechController = controller;
     try {
       const tts = speechSettings();
-      await services.speakStreaming(`This is a voice test from ${APP_NAME}.`, tts, controller.signal, logger, (buffer) => {
+      const result = await services.speakStreaming(`This is a voice test from ${APP_NAME}.`, tts, controller.signal, logger, (buffer) => {
         sendToDashboard('tts:play-audio', buffer);
+      }, {
+        onNotice: (notice) => {
+          if (notice?.message) sendToDashboard('tts:notice', notice);
+        }
       });
       if (controller.signal.aborted) return { ok: false, message: 'Voice test stopped.' };
-      const engine = tts.ttsEngine === 'kokoro' ? 'Kokoro' : 'Windows';
+      const engine = tts.ttsEngine === 'omnivoice' ? 'OmniVoice' : tts.ttsEngine === 'kokoro' ? 'Kokoro' : 'Windows';
+      if (result?.fallback) {
+        const replacement = String(tts.ttsFallbackEngine || 'windows') === 'kokoro' ? 'Kokoro' : 'the Windows voice';
+        return { ok: true, message: `${engine} was unavailable; the test used ${replacement}.` };
+      }
+      if (result?.ok === false) {
+        return { ok: false, message: `${engine} did not produce any audio.` };
+      }
       return { ok: true, message: `${engine} voice test finished.` };
     } finally {
       if (speechController === controller) speechController = null;
@@ -3621,6 +3847,7 @@ app.on('before-quit', () => {
   desktop.disposeFocusHelper();
   services.stopWhisper();
   services.stopKokoro();
+  services.stopOmnivoice();
   asrService?.stop();
   stopAsrWatch();
   overlay?.destroy();
@@ -3699,6 +3926,7 @@ async function initialize() {
     desktop.warmFocusHelper();
     configureRecorderSession();
     registerIpc();
+    if (settings.ttsEngine === 'omnivoice') startOmniInBackground('startup');
     overlay = createOverlay({ log: logger });
     overlay.create();
     overlay.setStyle(settings.overlayStyle);
